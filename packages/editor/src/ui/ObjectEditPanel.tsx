@@ -5,9 +5,10 @@ import { WEB_LIMITS, type CommandType, type CommitResult, type DocumentInfo, typ
 import { useFontResources } from './font-resources.js';
 
 type Props = { document: DocumentInfo; page: PageModel; selectedIds: string[]; engine: EngineAdapter;
-  host: HostAdapter; disabled: boolean; onBusyChange(busy: boolean): void; onCommitted(result: CommitResult): Promise<void> };
+  host: HostAdapter; disabled: boolean; onBusyChange(busy: boolean): void;
+  onSelectionChange(ids: string[]): void; onCommitted(result: CommitResult): Promise<void> };
 
-export function ObjectEditPanel({ document, page, selectedIds, engine, host, disabled, onBusyChange, onCommitted }: Props) {
+export function ObjectEditPanel({ document, page, selectedIds, engine, host, disabled, onBusyChange, onSelectionChange, onCommitted }: Props) {
   const [x, setX] = useState(36), [y, setY] = useState(36);
   const [width, setWidth] = useState(240), [height, setHeight] = useState(120);
   const [dx, setDx] = useState(10), [dy, setDy] = useState(0);
@@ -87,6 +88,27 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
   function distributeSelection(axis: 'horizontal' | 'vertical') {
     return execute([{ type: 'objects.distribute', pageId: page.id, objectIds: selectedIds, axis }]);
   }
+  const groupable = page.objects.filter(object => selectedIds.includes(object.id) && !object.locator.containerPath.length);
+  const hasPersistentGroups = page.objects.some(object => object.type === 'group' && !object.locator.containerPath.length);
+  const canCopySelection = selectedIds.every(id => page.objects.find(object => object.id === id)?.type !== 'group');
+  const canGroup = groupable.length === selectedIds.length && groupable.length >= 2 &&
+    groupable.every(object => object.type !== 'form' && object.type !== 'group') &&
+    groupable.every((object, index) => index === 0 || object.locator.objectIndex === groupable[index - 1]!.locator.objectIndex + 1);
+  const selectedGroup = selectedIds.length === 1
+    ? page.objects.find(object => object.id === selectedIds[0] && object.type === 'group' && !object.locator.containerPath.length)
+    : undefined;
+  async function groupSelection() {
+    const groupId = crypto.randomUUID();
+    await execute([{ type: 'objects.group', pageId: page.id, objectIds: groupable.map(object => object.id), groupId }]);
+    onSelectionChange([groupId]);
+  }
+  async function ungroupSelection() {
+    if (!selectedGroup) return;
+    const childIds = page.objects.filter(object => object.locator.containerPath.length === 1 &&
+      object.locator.containerPath[0] === selectedGroup.locator.objectIndex).map(object => object.id);
+    await execute([{ type: 'objects.ungroup', pageId: page.id, groupId: selectedGroup.id }]);
+    onSelectionChange(childIds);
+  }
   async function addPageDecoration() {
     if (!chosenFont) throw new Error('Choose an embedded font first');
     if (!Number.isFinite(fontSize) || fontSize <= 0) throw new Error('Choose a positive font size');
@@ -145,7 +167,8 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
       <div className="text-edit-actions">
         {supports('pages.rotate') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.rotate', pageIds: [page.id], degrees: 90 }]))}>Rotate page</button>}
         {supports('pages.insert') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.insert', pageId: crypto.randomUUID(), afterPageId: page.id, widthPt: page.widthPt, heightPt: page.heightPt }]))}>Add blank page</button>}
-        {supports('pages.duplicate') && <button disabled={locked} onClick={() => void run(() => execute([
+        {supports('pages.duplicate') && <button disabled={locked || hasPersistentGroups} title={hasPersistentGroups ? 'Ungroup objects before duplicating this page' : undefined}
+          onClick={() => void run(() => execute([
           { type: 'pages.duplicate', pageIds: [page.id], newPageIds: [crypto.randomUUID()], afterPageId: page.id },
         ]))}>Duplicate page</button>}
         {supports('pages.import') && host.pickResource && <button disabled={locked} onClick={() => void run(() => insertResource('pdf', 'pages'))}>Import PDF pages</button>}
@@ -173,10 +196,12 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
         <button disabled={locked || selectedIds.length < 3} onClick={() => void run(() => distributeSelection('vertical'))}>Distribute vertically</button>
       </div>}
       <div className="text-edit-actions">
+        {supports('objects.group') && <button disabled={locked || !canGroup} onClick={() => void run(groupSelection)}>Group selected objects</button>}
+        {supports('objects.ungroup') && <button disabled={locked || !selectedGroup} onClick={() => void run(ungroupSelection)}>Ungroup selected objects</button>}
         {supports('objects.transform') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
         ]))}>Move selected objects</button>}
-        {supports('objects.copy') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
+        {supports('objects.copy') && <button disabled={locked || !selectedIds.length || !canCopySelection} onClick={() => void run(() => execute([
           { type: 'objects.copy', pageId: page.id, objectIds: selectedIds,
             newObjectIds: selectedIds.map(() => crypto.randomUUID()), offset: { x: dx, y: dy } },
         ]))}>Duplicate selected objects</button>}

@@ -35,6 +35,7 @@
 #endif
 
 #include "core/fpdfapi/font/cpdf_font.h"
+#include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/page/cpdf_contentmarkitem.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_form.h"
@@ -50,6 +51,8 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
@@ -107,7 +110,7 @@ constexpr std::string_view kCapabilitiesJson =
     "\"pages.delete\",\"pages.reorder\",\"pages.insert\","
     "\"image.insert\",\"content.insert\",\"pages.duplicate\","
     "\"pages.import\",\"image.replace\",\"image.crop\","
-    "\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\"]";
+    "\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\"]";
 
 struct Matrix {
   double a = 1;
@@ -261,6 +264,8 @@ enum class EditType : uint32_t {
   kAnnotationDelete = 23,
   kObjectsDistribute = 24,
   kPagesCrop = 25,
+  kObjectsGroup = 26,
+  kObjectsUngroup = 27,
 };
 
 struct EditCommand {
@@ -1095,6 +1100,19 @@ RetainPtr<const CPDF_Dictionary> ParagraphMetadata(FPDF_PAGEOBJECT object) {
          dictionary->GetFloatFor("Height") > 0 ? dictionary : nullptr;
 }
 
+RetainPtr<const CPDF_Dictionary> GroupMetadata(FPDF_PAGEOBJECT object) {
+  const auto* native = CPDFPageObjectFromFPDFPageObject(object);
+  const auto* form = native ? native->AsForm() : nullptr;
+  const auto dictionary = form ? form->form()->GetDict()->GetDictFor("KomoGroup") : nullptr;
+  const int count = form ? FPDFFormObj_CountObjects(object) : -1;
+  const auto ids = dictionary ? dictionary->GetArrayFor("Ids") : nullptr;
+  const auto text_ids = dictionary ? dictionary->GetArrayFor("TextIds") : nullptr;
+  return dictionary && dictionary->GetIntegerFor("Version") == 1 && count >= 2 &&
+         ids && text_ids && ids->size() == static_cast<size_t>(count) &&
+         text_ids->size() == static_cast<size_t>(count) &&
+         !dictionary->GetUnicodeTextFor("Id").IsEmpty() ? dictionary : nullptr;
+}
+
 bool IsOcrTextObject(FPDF_PAGEOBJECT object) {
   if (FPDFPageObj_CountMarks(object) != 1 ||
       FPDFTextObj_GetTextRenderMode(object) != FPDF_TEXTRENDERMODE_INVISIBLE) return false;
@@ -1178,6 +1196,30 @@ bool BuildSourceObjectIdentity(const Document& document,
         SetUnexpectedError();
       }
       return false;
+    }
+  }
+  if (const auto group = GroupMetadata(object)) {
+    const ByteString id = group->GetUnicodeTextFor("Id").ToUTF8();
+    if (id.GetLength() != std::strlen(id.c_str()) ||
+        !ValidateId(id.c_str(), "Saved group ID")) return false;
+    identity->id.assign(id.c_str(), id.GetLength());
+    std::set<std::string> seen{identity->id};
+    const auto ids = group->GetArrayFor("Ids");
+    const auto text_ids = group->GetArrayFor("TextIds");
+    for (size_t index = 0; index < identity->children.size(); ++index) {
+      const ByteString child = ids->GetUnicodeTextAt(index).ToUTF8();
+      const ByteString text = text_ids->GetUnicodeTextAt(index).ToUTF8();
+      if (child.GetLength() != std::strlen(child.c_str()) ||
+          text.GetLength() != std::strlen(text.c_str()) ||
+          !ValidateId(child.c_str(), "Saved group child ID") ||
+          !seen.insert({child.c_str(), child.GetLength()}).second ||
+          (!text.IsEmpty() && (!ValidateId(text.c_str(), "Saved text block ID") ||
+                             !seen.insert({text.c_str(), text.GetLength()}).second))) {
+        if (g_error_code.empty()) SetError("INVALID_REQUEST", "Saved group identities are duplicated or malformed.");
+        return false;
+      }
+      identity->children[index].id.assign(child.c_str(), child.GetLength());
+      identity->children[index].text_block_id.assign(text.c_str(), text.GetLength());
     }
   }
   return true;
@@ -1476,7 +1518,8 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
   data.id = identity.id;
   data.page_id = context->page_id;
   const int type = FPDFPageObj_GetType(object);
-  data.type = ObjectTypeName(type);
+  data.type = type == FPDF_PAGEOBJ_FORM && GroupMetadata(object)
+                  ? "group" : ObjectTypeName(type);
   data.object_index = path.back();
   data.container_path.assign(path.begin(), path.end() - 1);
 
@@ -3961,6 +4004,13 @@ bool ValidateImportedPageFeatures(FPDF_DOCUMENT source, int page_index) {
              "Tagged-PDF structure links are not imported with pages yet.");
     return false;
   }
+  for (int index = 0; index < FPDFPage_CountObjects(page.get()); ++index) {
+    if (GroupMetadata(FPDFPage_GetObject(page.get(), index))) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "Duplicating a persistent object group requires identity remapping.");
+      return false;
+    }
+  }
   RetainPtr<const CPDF_Array> annotations = page_dict->GetArrayFor("Annots");
   if (!annotations) {
     return true;
@@ -4767,6 +4817,11 @@ bool ApplyObjectsCopy(const Document& document,
                "Nested Form children cannot be copied independently yet.");
       return false;
     }
+    if (GroupMetadata(source.object)) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "Copying a persistent group requires separate child identities.");
+      return false;
+    }
     if (MetadataContainsId(*metadata, new_id)) {
       SetError("INVALID_REQUEST", "A copied object ID is already in use.");
       return false;
@@ -4817,6 +4872,7 @@ bool ApplyObjectsCopy(const Document& document,
 }
 
 #include "document_commands.h"
+#include "group_commands.h"
 
 bool ApplyCommand(
     const Document& document,
@@ -4853,6 +4909,10 @@ bool ApplyCommand(
       return ApplyObjectsAlign(pdf, metadata, command);
     case EditType::kObjectsDistribute:
       return ApplyObjectsDistribute(pdf, metadata, command);
+    case EditType::kObjectsGroup:
+      return ApplyObjectsGroup(document, pdf, metadata, command);
+    case EditType::kObjectsUngroup:
+      return ApplyObjectsUngroup(pdf, metadata, command);
     case EditType::kObjectsDelete:
       return ApplyObjectsDelete(pdf, metadata, command);
     case EditType::kPagesRotate:
@@ -4909,6 +4969,7 @@ bool ApplyTransactionToPdf(
                command.type == EditType::kImageInsert ||
                command.type == EditType::kContentInsert ||
                command.type == EditType::kAnnotationAdd ||
+               command.type == EditType::kObjectsGroup ||
                command.type == EditType::kFormCreate ||
                command.type == EditType::kTextReflow) {
       batch_new_ids.insert(command.target_id);
@@ -5060,7 +5121,7 @@ bool ValidateRectValues(const EditCommand& command) {
 
 bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
   if (source.type < static_cast<uint32_t>(EditType::kTextReplace) ||
-      source.type > static_cast<uint32_t>(EditType::kPagesCrop)) {
+      source.type > static_cast<uint32_t>(EditType::kObjectsUngroup)) {
     SetError("UNSUPPORTED_CAPABILITY",
              "The edit command type is not supported.");
     return false;
@@ -5194,6 +5255,20 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
           (target->values[0] != 0 && target->values[0] != 1)) {
         if (g_error_code.empty())
           SetError("INVALID_REQUEST", "Distribution requires three objects and horizontal or vertical axis.");
+        return false;
+      }
+      return true;
+    case EditType::kObjectsGroup:
+      if (!require_page() || !require_target() || target->ids.size() < 2 ||
+          target->flags != 0 || !target->resource_id.empty()) {
+        if (g_error_code.empty()) SetError("INVALID_REQUEST", "Grouping requires a new group ID and at least two object IDs.");
+        return false;
+      }
+      return true;
+    case EditType::kObjectsUngroup:
+      if (!require_page() || !require_target() || !target->ids.empty() ||
+          target->flags != 0 || !target->resource_id.empty()) {
+        if (g_error_code.empty()) SetError("INVALID_REQUEST", "Ungrouping requires an existing group ID.");
         return false;
       }
       return true;
@@ -5490,6 +5565,7 @@ bool ValidateNewCommandIds(const Document& document,
                command.type == EditType::kImageInsert ||
                command.type == EditType::kContentInsert ||
                command.type == EditType::kAnnotationAdd ||
+               command.type == EditType::kObjectsGroup ||
                command.type == EditType::kFormCreate ||
                command.type == EditType::kTextReflow) {
       new_ids.push_back(command.target_id);
@@ -5678,6 +5754,7 @@ void ReserveTransactionIds(const EditTransaction& transaction,
                command.type == EditType::kImageInsert ||
                command.type == EditType::kContentInsert ||
                command.type == EditType::kAnnotationAdd ||
+               command.type == EditType::kObjectsGroup ||
                command.type == EditType::kFormCreate ||
                command.type == EditType::kTextReflow) {
       reserved_ids->insert(command.target_id);

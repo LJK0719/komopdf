@@ -9,7 +9,8 @@ export const ABI3_BASE_CAPABILITIES: CommandType[] = [
 export const ABI3_CAPABILITIES: CommandType[] = [...ABI3_BASE_CAPABILITIES,
   'pages.duplicate', 'pages.import', 'image.replace', 'image.crop', 'objects.copy',
   'annotation.add', 'form.fill', 'form.create', 'text.reflow', 'objects.align',
-  'annotation.update', 'annotation.delete', 'objects.distribute', 'pages.crop'];
+  'annotation.update', 'annotation.delete', 'objects.distribute', 'pages.crop',
+  'objects.group', 'objects.ungroup'];
 
 type Allocator = { string(value: string): number; bytes(value: Uint8Array): number };
 type PackedCommand = { fields: number[]; values: number[] };
@@ -106,6 +107,11 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       values[0] = command.axis === 'horizontal' ? 0 : 1;
       break;
     case 'objects.delete': fields[0] = 5; ids(command.objectIds); break;
+    case 'objects.group':
+      if (command.objectIds.length < 2) throw new EngineError('INVALID_REQUEST', 'Grouping requires two objects');
+      fields[0] = 26; string(2, command.groupId); ids(command.objectIds); break;
+    case 'objects.ungroup':
+      fields[0] = 27; string(2, command.groupId); break;
     case 'pages.rotate': fields[0] = 6; ids(command.pageIds); values[0] = command.degrees; break;
     case 'pages.crop': fields[0] = 25; ids(command.pageIds); bounds(command.bounds); break;
     case 'pages.delete': fields[0] = 7; ids(command.pageIds); break;
@@ -163,7 +169,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       values[4] = command.fontSize ?? 12;
       if (command.fontId !== undefined) { fields[10] = 1; string(5, command.fontId); }
       break;
-    default: throw new EngineError('UNSUPPORTED_CAPABILITY', `Command is not connected to this core: ${command.type}`);
+    default: throw new EngineError('UNSUPPORTED_CAPABILITY', 'Command is not connected to this core');
   }
   return { fields, values };
 }
