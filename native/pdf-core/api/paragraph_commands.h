@@ -46,6 +46,7 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   if (command.flags & 4U) request.color = {static_cast<float>(command.values[5]), static_cast<float>(command.values[6]), static_cast<float>(command.values[7])};
   if (command.flags & 8U) request.letter_spacing = static_cast<float>(command.values[8]);
   if (command.flags & 16U) request.line_height = static_cast<float>(command.values[9]);
+  request.underline = (command.flags & kTextUnderlineFlag) != 0;
   request.alignment = (command.flags & 32U) ? pdf_editor::ParagraphAlignment::kCenter :
       (command.flags & 64U) ? pdf_editor::ParagraphAlignment::kRight : pdf_editor::ParagraphAlignment::kLeft;
   pdf_editor::ParagraphResult paragraph;
@@ -182,6 +183,7 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   request.utf8 = updated; request.width = info->GetFloatFor("Width"); request.height = info->GetFloatFor("Height");
   request.font_size = info->GetFloatFor("FontSize"); request.line_height = info->GetFloatFor("LineHeight");
   request.letter_spacing = info->GetFloatFor("LetterSpacing");
+  request.underline = info->GetBooleanFor("Underline", false);
   const auto color = info->GetArrayFor("Color");
   if (color && color->size() == 3) request.color = {color->GetFloatAt(0), color->GetFloatAt(1), color->GetFloatAt(2)};
   const auto align = info->GetNameFor("Alignment");

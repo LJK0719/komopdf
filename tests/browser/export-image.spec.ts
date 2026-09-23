@@ -34,6 +34,31 @@ function vectorAndImagePdf(): Buffer {
   return Buffer.concat(parts);
 }
 
+test('explicit local pixel downsampling preserves searchable vector text', async ({ page }) => {
+  const original = vectorAndImagePdf();
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'pixel-source.pdf', mimeType: 'application/pdf', buffer: original });
+  await expect(page.locator('.object-hitbox[data-object-type="image"]')).toHaveCount(1, { timeout: 60_000 });
+  await page.getByText('Protection & export', { exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Recompress supported images as JPEG (lossy)' }).check();
+  await page.getByLabel('Maximum image edge (pixels, optional)').fill('64');
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export PDF copy' }).click();
+  const resized = await readFile((await (await download).path())!);
+  expect(resized).not.toEqual(original);
+  expect(resized.toString('latin1')).toMatch(/\/Width\s+64\b/);
+  expect(resized.toString('latin1')).toMatch(/\/Height\s+64\b/);
+  await expect(page.getByText('pixel-source.pdf', { exact: true })).toBeVisible();
+  const reopen = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await reopen).setFiles({ name: 'downsampled.pdf', mimeType: 'application/pdf', buffer: resized });
+  await expect(page.locator('.object-hitbox[data-object-type="image"]')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Select Text object' }).click();
+  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Vector text remains');
+});
+
 test('explicit local JPEG copy optimization preserves searchable vector text', async ({ page }) => {
   const original = vectorAndImagePdf();
   await page.goto('/editor/');

@@ -36,7 +36,8 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   const [strokeWidth, setStrokeWidth] = useState('2');
   const [inkPoints, setInkPoints] = useState('36,36; 96,64');
   const [fieldName, setFieldName] = useState('New field');
-  const [fieldType, setFieldType] = useState<'text' | 'checkbox'>('text');
+  const [fieldType, setFieldType] = useState<'text' | 'checkbox' | 'combo' | 'list'>('text');
+  const [fieldOptions, setFieldOptions] = useState('Option A\nOption B');
   const [fieldFontId, setFieldFontId] = useState('');
   const [fieldFontSize, setFieldFontSize] = useState('12');
   const [annotations, setAnnotations] = useState<PdfAnnotationInfo[]>([]);
@@ -218,7 +219,10 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   async function createField(): Promise<void> {
     const name = fieldName.trim();
     if (!name) throw new Error('Field name is required');
-    if (fieldType === 'text' && !chosenFont) throw new Error('Choose an available embedded font for the text field');
+    if (fieldType !== 'checkbox' && !chosenFont) throw new Error('Choose an available embedded font for the field');
+    const choice = fieldType === 'combo' || fieldType === 'list';
+    const options = fieldOptions.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    if (choice && !options.length) throw new Error('Enter one choice per line');
     await execute({
       type: 'form.create',
       pageId: page.id,
@@ -226,10 +230,11 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
       name,
       fieldType,
       bounds: readBounds(boundsDraft),
-      ...(fieldType === 'text' ? {
+      ...(fieldType !== 'checkbox' ? {
         fontId: chosenFont!.id,
         fontSize: readPositive(fieldFontSize, 'Font size'),
       } : {}),
+      ...(choice ? { options } : {}),
     });
   }
 
@@ -334,10 +339,14 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
         {supportsFormCreate ? <fieldset disabled={locked || !document.permissions.modify}>
           <legend>Create a field</legend>
           <label>Field name<input value={fieldName} onChange={event => setFieldName(event.target.value)} /></label>
-          <label>Field type<select value={fieldType} onChange={event => setFieldType(event.target.value as 'text' | 'checkbox')}>
+          <label>Field type<select value={fieldType} onChange={event => setFieldType(event.target.value as typeof fieldType)}>
             <option value="text">Text</option><option value="checkbox">Checkbox</option>
+            <option value="combo">Dropdown choice</option><option value="list">List choice</option>
           </select></label>
-          {fieldType === 'text' ? <>
+          {(fieldType === 'combo' || fieldType === 'list') && <label>Options (one per line)
+            <textarea rows={4} value={fieldOptions} onChange={event => setFieldOptions(event.target.value)} />
+          </label>}
+          {fieldType !== 'checkbox' ? <>
             <label>Field font<select value={chosenFont?.id ?? ''} onChange={event => setFieldFontId(event.target.value)}>
               {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
             </select></label>
@@ -345,7 +354,7 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
               onChange={event => setFieldFontSize(event.target.value)} /></label>
             {fontError ? <p role="alert">{fontError}</p> : null}
           </> : null}
-          <button type="button" disabled={fieldType === 'text' && !chosenFont} onClick={() => void run(createField)}>Create field</button>
+          <button type="button" disabled={fieldType !== 'checkbox' && !chosenFont} onClick={() => void run(createField)}>Create field</button>
         </fieldset> : null}
         {supportsFormCreate && !document.permissions.modify ? <p role="alert">This document does not permit creating fields.</p> : null}
       </>}

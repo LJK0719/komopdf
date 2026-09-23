@@ -43,8 +43,9 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
   const bounds = (rect: { x: number; y: number; width: number; height: number }) => {
     values.splice(0, 4, rect.x, rect.y, rect.width, rect.height);
   };
-  const style = (input: TextStyle, insert: boolean) => {
-    const supported = ['fontId', 'fontSize', 'color', 'characterSpacing', ...(insert ? ['lineHeight', 'alignment'] : [])];
+  const style = (input: TextStyle, insert: boolean, paragraph = false) => {
+    const supported = ['fontId', 'fontSize', 'color', 'characterSpacing',
+      ...(insert ? ['lineHeight', 'alignment'] : []), ...(paragraph ? ['underline'] : [])];
     if (Object.keys(input).some(key => !supported.includes(key))) {
       throw new EngineError('UNSUPPORTED_CAPABILITY', 'This core does not yet support the requested text style');
     }
@@ -57,6 +58,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
     if (insert && input.alignment === 'center') flags |= 32;
     if (insert && input.alignment === 'right') flags |= 64;
     if (insert && input.alignment === 'justify') throw new EngineError('UNSUPPORTED_CAPABILITY', 'Justified text is not supported by this layout engine yet');
+    if (paragraph && input.underline) flags |= 2048;
     if (insert && (flags & 3) !== 3) throw new EngineError('INVALID_REQUEST', 'New text requires an explicit font and font size');
     fields[10] = flags;
   };
@@ -79,7 +81,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       break;
     case 'text.insert':
       fields[0] = 3; string(2, command.objectId); fields[4] = allocations.string(command.text);
-      bounds(command.bounds); style(command.style, true);
+      bounds(command.bounds); style(command.style, true, command.paragraph === true);
       if (command.paragraph && (command.invisible || command.fitBounds || command.ocr)) throw new EngineError('INVALID_REQUEST', 'paragraph is mutually exclusive with invisible, fitBounds, and ocr');
       if (command.fitBounds && !command.invisible) throw new EngineError('INVALID_REQUEST', 'fitBounds requires invisible text');
       if (command.ocr && (!command.invisible || !command.fitBounds)) throw new EngineError('INVALID_REQUEST', 'OCR text requires invisible fitted bounds');
@@ -91,7 +93,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
     case 'text.reflow':
       fields[0] = 20; string(2, command.objectId); ids(command.blockIds);
       fields[4] = allocations.string(command.text);
-      bounds(command.bounds); style(command.style, true);
+      bounds(command.bounds); style(command.style, true, true);
       fields[10]! |= 1024;
       break;
     case 'objects.transform': fields[0] = 4; ids(command.objectIds); values.splice(0, 6, ...command.matrix); break;
@@ -168,6 +170,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       fields[4] = allocations.string(command.name); bounds(command.bounds);
       values[4] = command.fontSize ?? 12;
       if (command.fontId !== undefined) { fields[10] = 1; string(5, command.fontId); }
+      if (command.options) ids(command.options);
       break;
     default: throw new EngineError('UNSUPPORTED_CAPABILITY', 'Command is not connected to this core');
   }

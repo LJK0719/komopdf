@@ -40,6 +40,7 @@ struct Job
     bool has_owner_password{false};
     bool encrypt_metadata{true};
     int image_quality{0};
+    int image_max_edge{0};
     Permissions permissions;
 };
 
@@ -107,6 +108,25 @@ int require_quality(Dict const& values)
     return quality;
 }
 
+int require_max_edge(Dict const& values)
+{
+    auto item = values.find("imageMaxEdge");
+    std::string number;
+    if (item == values.end() || !item->second.getNumber(number)) {
+        throw std::runtime_error("imageMaxEdge must be a positive integer in pixels");
+    }
+    int max_edge = 0;
+    try {
+        max_edge = std::stoi(number);
+    } catch (std::exception const&) {
+        throw std::runtime_error("imageMaxEdge must be a positive integer in pixels");
+    }
+    if (max_edge < 1 || std::to_string(max_edge) != number) {
+        throw std::runtime_error("imageMaxEdge must be a positive integer in pixels");
+    }
+    return max_edge;
+}
+
 bool optional_bool(Dict const& values, std::string const& key, bool fallback)
 {
     auto item = values.find(key);
@@ -162,7 +182,7 @@ Job parse_job(std::string const& text)
     reject_unknown(
         values,
         {"operation", "inputFile", "outputFile", "inputPassword", "userPassword",
-         "ownerPassword", "encryptMetadata", "permissions", "imageQuality"},
+         "ownerPassword", "encryptMetadata", "permissions", "imageQuality", "imageMaxEdge"},
         "job");
 
     Job job;
@@ -179,13 +199,19 @@ Job parse_job(std::string const& text)
     }
 
     if ((job.operation != "decrypt") && (job.operation != "encrypt-aes256") &&
-        (job.operation != "optimize-lossless") && (job.operation != "optimize-images")) {
+        (job.operation != "optimize-lossless") && (job.operation != "optimize-images") &&
+        (job.operation != "resample-images")) {
         throw std::runtime_error("unsupported QPDF export operation");
     }
-    if (job.operation == "optimize-images") {
+    if (job.operation == "optimize-images" || job.operation == "resample-images") {
         job.image_quality = require_quality(values);
     } else if (values.count("imageQuality") != 0) {
-        throw std::runtime_error("imageQuality is only used for optimize-images");
+        throw std::runtime_error("imageQuality is only used for optimize-images or resample-images");
+    }
+    if (job.operation == "resample-images") {
+        job.image_max_edge = require_max_edge(values);
+    } else if (values.count("imageMaxEdge") != 0) {
+        throw std::runtime_error("imageMaxEdge is only used for resample-images");
     }
     if (job.input_file.empty() || job.output_file.empty()) {
         throw std::runtime_error("inputFile and outputFile must not be empty");
@@ -206,6 +232,8 @@ void execute_job(Job const& job)
 
     if (job.operation == "optimize-images") {
         optimize_export_images(pdf, job.image_quality);
+    } else if (job.operation == "resample-images") {
+        resample_export_images(pdf, job.image_quality, job.image_max_edge);
     }
     QPDFWriter writer(pdf, job.output_file.c_str());
     if (job.operation == "decrypt") {
@@ -222,7 +250,7 @@ void execute_job(Job const& job)
             job.permissions.modify_other,
             job.permissions.print,
             job.encrypt_metadata);
-    } else if (job.operation == "optimize-images") {
+    } else if (job.operation == "optimize-images" || job.operation == "resample-images") {
         writer.setPreserveEncryption(true);
     } else {
         writer.setObjectStreamMode(qpdf_o_generate);

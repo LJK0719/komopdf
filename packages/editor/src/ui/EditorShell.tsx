@@ -19,6 +19,7 @@ import { ParagraphPanel } from './ParagraphPanel.js';
 import { FontPanel } from './FontPanel.js';
 import { PasswordDialog, type PasswordPrompt } from './PasswordDialog.js';
 import { ExportPanel, type ExportSettings } from './ExportPanel.js';
+import { PrintPanel } from './PrintPanel.js';
 import { ObjectEditPanel } from './ObjectEditPanel.js';
 import { DocumentToolsPanel } from './DocumentToolsPanel.js';
 import { OcrPanel } from './OcrPanel.js';
@@ -744,6 +745,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
           <FontPanel engine={engine} host={host} disabled={operationBusy} onBusyChange={setEditPending} />
           {document && <ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} onExport={exportDocument} />}
+          {host.capabilities.platform === 'web' && document && <PrintPanel disabled={isBusy} docId={document.info.id} engine={engine} />}
 
           {document && (
             <ParagraphPanel

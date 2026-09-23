@@ -98,9 +98,11 @@ constexpr uint32_t kTextInvisibleFlag = 128U;
 constexpr uint32_t kTextFitBoundsFlag = 256U;
 constexpr uint32_t kTextOcrFlag = 512U;
 constexpr uint32_t kTextParagraphFlag = 1024U;
+constexpr uint32_t kTextUnderlineFlag = 2048U;
 constexpr uint32_t kKnownTextInsertFlags =
     kKnownStyleFlags | kTextInsertLineHeightFlag | kTextInsertCenterFlag |
-    kTextInsertRightFlag | kTextInvisibleFlag | kTextFitBoundsFlag | kTextOcrFlag | kTextParagraphFlag;
+    kTextInsertRightFlag | kTextInvisibleFlag | kTextFitBoundsFlag |
+    kTextOcrFlag | kTextParagraphFlag | kTextUnderlineFlag;
 constexpr double kDefaultLineHeight = 1.2;
 constexpr double kLayoutEpsilon = 0.01;
 constexpr double kMatrixEpsilon = 1e-12;
@@ -177,6 +179,7 @@ struct TextStyleData {
   std::optional<double> character_spacing;
   std::optional<int> weight;
   std::optional<bool> italic;
+  std::optional<bool> underline;
 };
 
 struct TextBlockData {
@@ -1113,6 +1116,31 @@ RetainPtr<const CPDF_Dictionary> GroupMetadata(FPDF_PAGEOBJECT object) {
          !dictionary->GetUnicodeTextFor("Id").IsEmpty() ? dictionary : nullptr;
 }
 
+bool RewriteGroupMetadata(FPDF_PAGEOBJECT object, const ObjectIdentity& identity) {
+  auto* native = CPDFPageObjectFromFPDFPageObject(object);
+  auto* form = native ? native->AsForm() : nullptr;
+  if (!form || !GroupMetadata(object) ||
+      form->form()->GetPageObjectCount() != identity.children.size()) {
+    SetError("INVALID_REQUEST", "A copied group has inconsistent child identities.");
+    return false;
+  }
+  // Imported pages and copied objects may share the original Form stream.
+  form->form()->DetachStreamForEditing();
+  auto group = form->form()->GetMutableDict()->GetMutableDictFor("KomoGroup");
+  const WideString name = WideString::FromUTF8(ByteStringView(identity.id));
+  group->SetNewFor<CPDF_String>("Id", name.AsStringView());
+  auto ids = group->SetNewFor<CPDF_Array>("Ids");
+  auto text_ids = group->SetNewFor<CPDF_Array>("TextIds");
+  for (const auto& child : identity.children) {
+    const WideString id = WideString::FromUTF8(ByteStringView(child.id));
+    const WideString text_id = WideString::FromUTF8(ByteStringView(child.text_block_id));
+    ids->AppendNew<CPDF_String>(id.AsStringView());
+    text_ids->AppendNew<CPDF_String>(text_id.AsStringView());
+  }
+  native->SetDirty(true);
+  return true;
+}
+
 bool IsOcrTextObject(FPDF_PAGEOBJECT object) {
   if (FPDFPageObj_CountMarks(object) != 1 ||
       FPDFTextObj_GetTextRenderMode(object) != FPDF_TEXTRENDERMODE_INVISIBLE) return false;
@@ -1556,6 +1584,7 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
     block.is_paragraph = true;
     block.style.font_size = paragraph->GetFloatFor("FontSize");
     block.style.character_spacing = paragraph->GetFloatFor("LetterSpacing");
+    if (paragraph->GetBooleanFor("Underline", false)) block.style.underline = true;
     const auto color = paragraph->GetArrayFor("Color");
     if (color && color->size() == 3)
       block.style.color = std::array<double, 3>{color->GetFloatAt(0), color->GetFloatAt(1), color->GetFloatAt(2)};
@@ -1740,6 +1769,11 @@ void AppendTextStyle(std::string* output, const TextStyleData& style) {
     property();
     output->append("\"italic\":");
     output->append(*style.italic ? "true" : "false");
+  }
+  if (style.underline) {
+    property();
+    output->append("\"underline\":");
+    output->append(*style.underline ? "true" : "false");
   }
   output->push_back('}');
 }
@@ -2532,9 +2566,53 @@ bool GetPageMatrices(FPDF_PAGE page, Matrix* pdf_to_page, Matrix* page_to_pdf) {
   return true;
 }
 
+bool ParentFormToPdf(FPDF_PAGE page,
+                     const std::vector<size_t>& path,
+                     Matrix* parent_to_pdf) {
+  *parent_to_pdf = Matrix{};
+  if (path.size() < 2) return true;
+  FPDF_PAGEOBJECT parent = FPDFPage_GetObject(page, static_cast<int>(path[0]));
+  for (size_t depth = 1; depth < path.size(); ++depth) {
+    FS_MATRIX matrix{};
+    if (!parent || FPDFPageObj_GetType(parent) != FPDF_PAGEOBJ_FORM ||
+        !FPDFPageObj_GetMatrix(parent, &matrix)) {
+      SetError("CORE_UNAVAILABLE", "The parent Form transform is unavailable.");
+      return false;
+    }
+    *parent_to_pdf = MatrixFromFs(matrix).Then(*parent_to_pdf);
+    if (depth + 1 < path.size())
+      parent = FPDFFormObj_GetObject(parent, static_cast<unsigned long>(path[depth]));
+  }
+  return true;
+}
+
+bool NestedObjectFitsForm(FPDF_PAGE page,
+                          FPDF_PAGEOBJECT object,
+                          const std::vector<size_t>& path) {
+  auto* native = CPDFPageObjectFromFPDFPageObject(object);
+  if (!native) { SetUnexpectedError(); return false; }
+  CFX_FloatRect bounds = native->GetRect();
+  for (size_t depth = path.size() - 1; depth > 0; --depth) {
+    const std::vector<size_t> prefix(path.begin(), path.begin() + depth);
+    auto* ancestor = CPDFPageObjectFromFPDFPageObject(ObjectAtPath(page, prefix));
+    auto* form = ancestor ? ancestor->AsForm() : nullptr;
+    if (!form) { SetUnexpectedError(); return false; }
+    const CFX_FloatRect clip = form->form()->GetDict()->GetRectFor("BBox");
+    if (bounds.left < clip.left - 0.01f || bounds.bottom < clip.bottom - 0.01f ||
+        bounds.right > clip.right + 0.01f || bounds.top > clip.top + 0.01f) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "The nested object would extend beyond its parent Form clipping bounds.");
+      return false;
+    }
+    bounds = form->form_matrix().TransformRect(bounds);
+  }
+  return true;
+}
+
 bool ApplyNormalizedTransform(FPDF_PAGE page,
                               FPDF_PAGEOBJECT object,
-                              const Matrix& normalized_transform) {
+                              const Matrix& normalized_transform,
+                              const Matrix& parent_to_pdf = Matrix{}) {
   if (!IsFiniteMatrix(normalized_transform)) {
     SetError("INVALID_REQUEST", "The object transform must be finite.");
     return false;
@@ -2544,8 +2622,14 @@ bool ApplyNormalizedTransform(FPDF_PAGE page,
   if (!GetPageMatrices(page, &pdf_to_page, &page_to_pdf)) {
     return false;
   }
+  const Matrix local_to_page = parent_to_pdf.Then(pdf_to_page);
+  const auto page_to_local = InverseMatrix(local_to_page);
+  if (!page_to_local) {
+    SetError("UNSUPPORTED_CAPABILITY", "The parent Form transform is not invertible.");
+    return false;
+  }
   const Matrix pdf_transform =
-      pdf_to_page.Then(normalized_transform).Then(page_to_pdf);
+      local_to_page.Then(normalized_transform).Then(*page_to_local);
   const FS_MATRIX value{
       static_cast<float>(pdf_transform.a), static_cast<float>(pdf_transform.b),
       static_cast<float>(pdf_transform.c), static_cast<float>(pdf_transform.d),
@@ -3611,15 +3695,18 @@ bool ApplyObjectsTransform(FPDF_DOCUMENT pdf,
                           false, &target)) {
       return false;
     }
-    if (target.path.size() != 1) {
-      SetError(
-          "UNSUPPORTED_CAPABILITY",
-          "Nested Form XObject children cannot be transformed independently.");
+    Matrix parent_to_pdf;
+    if (!ParentFormToPdf(page.get(), target.path, &parent_to_pdf)) return false;
+    CPDF_PageObjectHolder* holder = nullptr;
+    std::optional<pdf_editor::PreparedFormPath> prepared;
+    if (!PrepareObjectHolder(page.get(), target.path, &holder, &prepared) ||
+        !ApplyNormalizedTransform(page.get(), target.object, transform, parent_to_pdf))
       return false;
-    }
-    if (!ApplyNormalizedTransform(page.get(), target.object, transform)) {
+    if (prepared &&
+        (!NestedObjectFitsForm(page.get(), target.object, target.path) ||
+         !GenerateEditedObjectHolder(
+             page.get(), prepared, "The transformed Form could not be generated.")))
       return false;
-    }
   }
   if (!FPDFPage_GenerateContent(page.get())) {
     SetError("CORE_UNAVAILABLE",
@@ -3744,32 +3831,46 @@ bool ApplyObjectsDelete(FPDF_DOCUMENT pdf,
   if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) {
     return false;
   }
-  std::vector<size_t> indices;
+  std::vector<std::vector<size_t>> paths;
   for (const std::string& object_id : command.ids) {
     ObjectTarget target;
     if (!FindObjectTarget(page.get(), &metadata->pages[page_index], object_id,
-                          false, &target)) {
-      return false;
+                          false, &target)) return false;
+    for (size_t depth = 1; depth < target.path.size(); ++depth) {
+      std::vector<size_t> ancestor(target.path.begin(), target.path.begin() + depth);
+      if (GroupMetadata(ObjectAtPath(page.get(), ancestor))) {
+        SetError("UNSUPPORTED_CAPABILITY",
+                 "Ungroup persistent members before deleting them separately.");
+        return false;
+      }
     }
-    if (target.path.size() != 1) {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Nested Form XObject children cannot be deleted independently.");
-      return false;
-    }
-    indices.push_back(target.path[0]);
+    paths.push_back(std::move(target.path));
   }
-  std::sort(indices.rbegin(), indices.rend());
-  for (size_t index : indices) {
-    FPDF_PAGEOBJECT object =
-        FPDFPage_GetObject(page.get(), static_cast<int>(index));
-    if (!object || !FPDFPage_RemoveObject(page.get(), object)) {
+  std::sort(paths.begin(), paths.end());
+  for (size_t index = 1; index < paths.size(); ++index) {
+    const auto& previous = paths[index - 1];
+    const auto& current = paths[index];
+    if (previous.size() <= current.size() &&
+        std::equal(previous.begin(), previous.end(), current.begin())) {
+      SetError("INVALID_REQUEST", "Delete targets overlap or repeat.");
+      return false;
+    }
+  }
+  for (auto it = paths.rbegin(); it != paths.rend(); ++it) {
+    CPDF_PageObjectHolder* holder = nullptr;
+    std::optional<pdf_editor::PreparedFormPath> prepared;
+    if (!PrepareObjectHolder(page.get(), *it, &holder, &prepared)) return false;
+    auto* object = holder->GetPageObjectByIndex(it->back());
+    if (!object || !holder->RemovePageObject(object)) {
       SetError("CORE_UNAVAILABLE", "The page object could not be deleted.");
       return false;
     }
-    FPDFPageObj_Destroy(object);
-    metadata->pages[page_index].objects.erase(
-        metadata->pages[page_index].objects.begin() +
-        static_cast<std::ptrdiff_t>(index));
+    auto* identities = &metadata->pages[page_index].objects;
+    for (size_t depth = 0; depth + 1 < it->size(); ++depth)
+      identities = &(*identities)[(*it)[depth]].children;
+    identities->erase(identities->begin() + static_cast<std::ptrdiff_t>(it->back()));
+    if (prepared && !GenerateEditedObjectHolder(
+            page.get(), prepared, "The edited Form could not be generated.")) return false;
   }
   if (!FPDFPage_GenerateContent(page.get())) {
     SetError("CORE_UNAVAILABLE", "The edited page could not be generated.");
@@ -4004,13 +4105,6 @@ bool ValidateImportedPageFeatures(FPDF_DOCUMENT source, int page_index) {
              "Tagged-PDF structure links are not imported with pages yet.");
     return false;
   }
-  for (int index = 0; index < FPDFPage_CountObjects(page.get()); ++index) {
-    if (GroupMetadata(FPDFPage_GetObject(page.get(), index))) {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Duplicating a persistent object group requires identity remapping.");
-      return false;
-    }
-  }
   RetainPtr<const CPDF_Array> annotations = page_dict->GetArrayFor("Annots");
   if (!annotations) {
     return true;
@@ -4155,6 +4249,20 @@ bool ApplyImportedPages(const Document& document,
     if (!BuildGeneratedPageIdentity(document, pdf, insertion_index + offset,
                                     new_page_ids[offset], *metadata,
                                     &identity)) {
+      return false;
+    }
+    ScopedPage copied(FPDF_LoadPage(pdf, static_cast<int>(insertion_index + offset)));
+    if (!copied.get()) { SetUnexpectedError(); return false; }
+    bool rewritten_group = false;
+    for (size_t index = 0; index < identity.objects.size(); ++index) {
+      FPDF_PAGEOBJECT object = FPDFPage_GetObject(copied.get(), static_cast<int>(index));
+      if (GroupMetadata(object)) {
+        if (!RewriteGroupMetadata(object, identity.objects[index])) return false;
+        rewritten_group = true;
+      }
+    }
+    if (rewritten_group && !FPDFPage_GenerateContent(copied.get())) {
+      SetError("CORE_UNAVAILABLE", "The copied group page could not be generated.");
       return false;
     }
     metadata->pages.insert(
@@ -4817,11 +4925,7 @@ bool ApplyObjectsCopy(const Document& document,
                "Nested Form children cannot be copied independently yet.");
       return false;
     }
-    if (GroupMetadata(source.object)) {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Copying a persistent group requires separate child identities.");
-      return false;
-    }
+    const bool copying_group = GroupMetadata(source.object) != nullptr;
     if (MetadataContainsId(*metadata, new_id)) {
       SetError("INVALID_REQUEST", "A copied object ID is already in use.");
       return false;
@@ -4842,6 +4946,9 @@ bool ApplyObjectsCopy(const Document& document,
       }
       return false;
     }
+    if (copying_group &&
+        !RewriteGroupMetadata(FPDFPageObjectFromCPDFPageObject(clone.get()), identity))
+      return false;
     copies.push_back({source.path[0], std::move(clone), std::move(identity)});
   }
   std::stable_sort(copies.begin(), copies.end(),
@@ -5075,8 +5182,10 @@ bool CopyIdVector(const PdeEditCommand& source,
   ids->reserve(source.id_count);
   for (uint32_t index = 0; index < source.id_count; ++index) {
     const bool source_half = paired && index % 2 == 0;
-    if (type == EditType::kFormFill) {
-      if (!ValidateUtf8Argument(source.ids[index], "Form option value", true)) return false;
+    if (type == EditType::kFormFill || type == EditType::kFormCreate) {
+      if (!ValidateUtf8Argument(source.ids[index],
+                               type == EditType::kFormFill ? "Form option value" : "Choice option",
+                               type == EditType::kFormFill)) return false;
     } else if (type == EditType::kPagesImport && source_half) {
       if (!ValidateUtf8Argument(source.ids[index], "Source page index",
                                 false)) {
@@ -5214,6 +5323,7 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
           target->text.empty() ||
           (target->type == EditType::kTextReflow ? target->ids.empty() : !target->ids.empty()) ||
           (target->type == EditType::kTextReflow && !(target->flags & kTextParagraphFlag)) ||
+          ((target->flags & kTextUnderlineFlag) && !(target->flags & kTextParagraphFlag)) ||
           ((target->flags & kTextParagraphFlag) &&
            (target->flags & (kTextInvisibleFlag | kTextFitBoundsFlag | kTextOcrFlag))) ||
           (target->flags & ~kKnownTextInsertFlags) != 0 ||
@@ -5408,17 +5518,23 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
         return false;
       }
       return true;
-    case EditType::kFormCreate:
+    case EditType::kFormCreate: {
+      const bool choice = target->resource_id == "combo" || target->resource_id == "list";
       if (!require_page() || !require_target() || !ValidateRectValues(*target) ||
-          !target->ids.empty() || (target->flags & ~1U) ||
+          (target->flags & ~1U) ||
           (((target->flags & 1U) != 0) != !target->font_id.empty()) ||
-          (target->resource_id != "text" && target->resource_id != "checkbox") ||
+          (target->resource_id != "text" && target->resource_id != "checkbox" && !choice) ||
+          (choice ? target->ids.empty() || target->font_id.empty() : !target->ids.empty()) ||
           target->text.empty() || !ValidateLayoutText(target->text, "Form name") ||
           target->values[4] <= 0 || target->values[4] > 1000) {
         if (g_error_code.empty()) SetError("INVALID_REQUEST", "The new form field is invalid.");
         return false;
       }
+      for (const auto& option : target->ids) {
+        if (!ValidateLayoutText(option, "Choice option")) return false;
+      }
       return true;
+    }
     case EditType::kObjectsCopy:
       if (!require_page() || target->ids.empty() ||
           target->ids.size() % 2 != 0 || target->flags != 0 ||

@@ -46,7 +46,7 @@ export type TextLayoutResult = { bounds: Rect; overflow: boolean; lines: { bound
 export type TextInsertLayoutRequest = { docId: string; baseRevision: number; command: Extract<EditCommand, { type: 'text.insert' | 'text.reflow' }> };
 export type CommitResult = { docId: string; revision: number; changedPageIds: string[]; pageOrder: string[]; canUndo: boolean; canRedo: boolean };
 export type SaveRequest = { docId: string; target?: string; protection: 'preserve' | 'remove' | 'set'; password?: string;
-  optimize?: boolean; imageOptimization?: { quality: number } };
+  optimize?: boolean; imageOptimization?: { quality: number; maxEdge?: number } };
 export type SaveResult = { docId: string; savedRevision: number } & (
   | { kind: 'bytes'; bytes: ArrayBuffer }
   | { kind: 'native-file'; handle: string }

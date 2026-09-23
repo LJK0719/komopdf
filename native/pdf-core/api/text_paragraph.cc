@@ -25,6 +25,7 @@
 #include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
@@ -39,6 +40,8 @@
 #include "core/fxcrt/widestring.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "shaped_font.h"
+#include "hb-ot.h"
+#include "hb.h"
 #include "unicode/ubrk.h"
 #include "unicode/utypes.h"
 
@@ -79,6 +82,11 @@ struct LayoutLine {
   float bounds_y = 0;
   float bounds_height = 0;
   float baseline = 0;
+};
+
+struct UnderlineMetrics {
+  float offset = 0;  // PDF y-up distance from the text baseline.
+  float thickness = 0;  // Zero means a PDF hairline (device-dependent).
 };
 
 struct MappingKey {
@@ -685,8 +693,71 @@ bool InstallParagraphToUnicode(
   return true;
 }
 
+bool ReadUnderlineMetrics(std::span<const uint8_t> sfnt,
+                          float font_size,
+                          float descent,
+                          UnderlineMetrics* metrics,
+                          std::string* error_message) {
+  std::unique_ptr<hb_blob_t, decltype(&hb_blob_destroy)> blob(
+      hb_blob_create_or_fail(reinterpret_cast<const char*>(sfnt.data()),
+                             static_cast<unsigned int>(sfnt.size()),
+                             HB_MEMORY_MODE_READONLY, nullptr, nullptr),
+      &hb_blob_destroy);
+  if (!blob) {
+    return Fail("HarfBuzz could not read the underline font face.",
+                error_message);
+  }
+  std::unique_ptr<hb_face_t, decltype(&hb_face_destroy)> face(
+      hb_face_create_or_fail(blob.get(), 0), &hb_face_destroy);
+  if (!face || hb_face_get_upem(face.get()) == 0) {
+    return Fail("HarfBuzz could not read the underline font metrics.",
+                error_message);
+  }
+  std::unique_ptr<hb_font_t, decltype(&hb_font_destroy)> font(
+      hb_font_create(face.get()), &hb_font_destroy);
+  if (!font || font.get() == hb_font_get_empty()) {
+    return Fail("HarfBuzz could not create the underline font.", error_message);
+  }
+  const unsigned int upem = hb_face_get_upem(face.get());
+  hb_font_set_scale(font.get(), static_cast<int>(upem),
+                    static_cast<int>(upem));
+  const float scale = font_size / upem;
+  hb_position_t position = 0;
+  hb_position_t thickness = 0;
+  if (hb_ot_metrics_get_position(font.get(),
+                                 HB_OT_METRICS_TAG_UNDERLINE_OFFSET,
+                                 &position)) {
+    metrics->offset = position * scale;
+  } else {
+    // The PDFium descent is a real font metric, not an underline position.
+    // Mid-descent is only an approximation when the face has no post metric.
+    if (!std::isfinite(descent) || descent >= 0) {
+      return Fail("The font has neither an underline position nor a usable "
+                  "descent for positioning a fallback underline.",
+                  error_message);
+    }
+    metrics->offset = descent / 2;
+  }
+  if (hb_ot_metrics_get_position(font.get(),
+                                 HB_OT_METRICS_TAG_UNDERLINE_SIZE,
+                                 &thickness) && thickness > 0) {
+    metrics->thickness = thickness * scale;
+  } else {
+    // No thickness can be inferred from ascent/descent. PDF's zero-width
+    // stroke is a visible vector hairline, but its width varies by device.
+    metrics->thickness = 0;
+  }
+  if (!std::isfinite(metrics->offset) ||
+      !std::isfinite(metrics->thickness)) {
+    return Fail("The underline font metrics exceed the usable range.",
+                error_message);
+  }
+  return true;
+}
+
 bool BuildContentStream(const ParagraphRequest& request,
                         const std::vector<LayoutLine>& lines,
+                        const UnderlineMetrics& underline,
                         fxcrt::string* content,
                         std::string* error_message) {
   fxcrt::ostringstream output;
@@ -767,7 +838,32 @@ bool BuildContentStream(const ParagraphRequest& request,
       first = limit;
     }
   }
-  output << "ET\nQ\n";
+  output << "ET\n";
+  if (request.underline) {
+    // The line bounds already cover the visual glyph origins and advances,
+    // including bidi runs, offsets and letter spacing after wrapping.
+    WriteFloat(output, request.color.red) << ' ';
+    WriteFloat(output, request.color.green) << ' ';
+    WriteFloat(output, request.color.blue) << " RG\n";
+    WriteFloat(output, underline.thickness) << " w\n/Artifact BMC\n";
+    for (const LayoutLine& line : lines) {
+      if (line.shaped.glyphs.empty() || line.width <= 0) {
+        continue;
+      }
+      const float y = line.baseline + underline.offset;
+      const float right = line.x + line.width;
+      if (!std::isfinite(y) || !std::isfinite(right)) {
+        return Fail("A paragraph underline exceeds the usable coordinate range.",
+                    error_message);
+      }
+      WriteFloat(output, line.x) << ' ';
+      WriteFloat(output, y) << " m ";
+      WriteFloat(output, right) << ' ';
+      WriteFloat(output, y) << " l S\n";
+    }
+    output << "EMC\n";
+  }
+  output << "Q\n";
   *content = output.str();
   return true;
 }
@@ -822,6 +918,9 @@ void SetParagraphMetadata(CPDF_Document* document,
   metadata->SetNewFor<CPDF_Number>("FontSize", request.font_size);
   metadata->SetNewFor<CPDF_Number>("LineHeight", request.line_height);
   metadata->SetNewFor<CPDF_Number>("LetterSpacing", request.letter_spacing);
+  if (request.underline) {
+    metadata->SetNewFor<CPDF_Boolean>("Underline", true);
+  }
   metadata->SetNewFor<CPDF_Name>("Alignment",
                                  AlignmentName(request.alignment));
   metadata->SetNewFor<CPDF_Name>("Direction",
@@ -997,8 +1096,15 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
     return false;
   }
 
+  UnderlineMetrics underline;
+  if (request.underline &&
+      !ReadUnderlineMetrics(sfnt, request.font_size, descent, &underline,
+                            error_message)) {
+    return false;
+  }
   fxcrt::string content;
-  if (!BuildContentStream(request, lines, &content, error_message)) {
+  if (!BuildContentStream(request, lines, underline, &content,
+                          error_message)) {
     return false;
   }
   output.object = CreateFormObject(native_document, native_font, request,

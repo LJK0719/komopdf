@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CitationRef } from '@pdf-editor/contracts';
 import { IndexedDbTaskStore } from '../src/ui/AiPanelTaskStore.js';
 import { computeTextDiff } from '../src/ui/AiPanelDiff.js';
+import { batchSourceId } from '../src/ui/AiPanelBatch.js';
 
 describe('AI 结构化提取与导出 (AiPanelExtraction)', () => {
   it('正确转义包含特殊字符的 CSV 字段', () => {
@@ -32,6 +33,19 @@ describe('AI 结构化提取与导出 (AiPanelExtraction)', () => {
     expect(field.rawValue).toBe('$50,000');
     expect(field.normalizedValue).toBe('50000 USD');
     expect(field.citations[0]?.evidenceId).toBe('e-1');
+  });
+});
+
+describe('批量翻译证据来源', () => {
+  it('多来源文档使用每个文本块的真实来源，而非默认第一个来源', () => {
+    expect(batchSourceId(['source-A', 'source-B'], 'source-B')).toBe('source-B');
+    expect(() => batchSourceId(['source-A', 'source-B'])).toThrow('missing source mapping');
+    expect(() => batchSourceId(['source-A', 'source-B'], 'other')).toThrow('missing source mapping');
+  });
+
+  it('单来源旧任务仍可恢复，无来源身份时不伪造新来源', () => {
+    expect(batchSourceId(['source-A'])).toBe('source-A');
+    expect(() => batchSourceId([])).toThrow('missing source mapping');
   });
 });
 

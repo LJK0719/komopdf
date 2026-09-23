@@ -101,7 +101,8 @@ const char* pde_apply_text(uint32_t document,
 // enables start_utf16/end_utf16 range formatting of exactly one block in ids;
 // flags 1/2/4/8 and their values retain the whole-block style layout.
 // Type 3 also accepts 128=invisible, 256=fitBounds (requires invisible),
-// 512=OCR (requires both), or 1024=logical paragraph (mutually exclusive).
+// 512=OCR (requires both), 1024=logical paragraph (mutually exclusive),
+// or 2048=real paragraph underline (requires 1024). Type 20 can use 2048 too.
 // Type 20 is paragraph reflow: type-3 geometry/style plus ids=source block IDs;
 // target_id is the new logical object's ID and flag 1024 is required.
 // Type 21 aligns two or more top-level object IDs on one page; values[0] is

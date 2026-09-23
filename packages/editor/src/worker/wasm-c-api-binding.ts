@@ -489,11 +489,14 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     const imageOptimization = request.imageOptimization;
     if (imageOptimization !== undefined &&
         (!imageOptimization || typeof imageOptimization !== 'object' ||
-         Object.keys(imageOptimization).some(key => key !== 'quality') ||
-         !Number.isInteger(imageOptimization.quality) || imageOptimization.quality < 1 || imageOptimization.quality > 95)) {
-      throw new EngineError('INVALID_REQUEST', 'Image quality must be an integer between 1 and 95');
+         Object.keys(imageOptimization).some(key => key !== 'quality' && key !== 'maxEdge') ||
+         !Number.isInteger(imageOptimization.quality) || imageOptimization.quality < 1 || imageOptimization.quality > 95 ||
+         (imageOptimization.maxEdge !== undefined && (!Number.isInteger(imageOptimization.maxEdge) ||
+           imageOptimization.maxEdge < 1 || imageOptimization.maxEdge > 0x7fffffff)))) {
+      throw new EngineError('INVALID_REQUEST', 'Image quality must be 1–95 and maximum edge a positive pixel count');
     }
     const imageQuality = imageOptimization?.quality;
+    const imageMaxEdge = imageOptimization?.maxEdge;
     if (request.protection === 'set' && (typeof request.password !== 'string' || !request.password || request.password.includes('\0'))) throw new EngineError('INVALID_REQUEST', 'A nonempty PDF password without null characters is required');
     if (request.protection !== 'set' && request.password !== undefined) throw new EngineError('INVALID_REQUEST', 'A new password is only used when setting protection');
     const session = this.document(request.docId);
@@ -514,7 +517,8 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     if (request.optimize) bytes = await transformPdfExport(bytes, { operation: 'optimize-lossless',
       ...(inputPassword === undefined ? {} : { inputPassword }) });
     if (imageQuality !== undefined) bytes = await transformPdfExport(bytes, {
-      operation: 'optimize-images', imageQuality,
+      operation: imageMaxEdge === undefined ? 'optimize-images' : 'resample-images', imageQuality,
+      ...(imageMaxEdge === undefined ? {} : { imageMaxEdge }),
       ...(inputPassword === undefined ? {} : { inputPassword }),
     });
     return { kind: 'bytes', docId: request.docId, savedRevision: metadata.savedRevision, bytes };

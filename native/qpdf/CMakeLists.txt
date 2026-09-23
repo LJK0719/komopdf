@@ -84,7 +84,7 @@ if(EMSCRIPTEN)
     -sMAXIMUM_MEMORY=1073741824
     -sUSE_ZLIB=1
     -sUSE_LIBJPEG=1
-    "-sEXPORTED_FUNCTIONS=['_pde_qpdf_abi_version','_pde_qpdf_version','_pde_qpdf_transform','_pde_qpdf_optimize_images','_pde_qpdf_last_error','_pde_qpdf_free','_malloc','_free']"
+    "-sEXPORTED_FUNCTIONS=['_pde_qpdf_abi_version','_pde_qpdf_version','_pde_qpdf_transform','_pde_qpdf_optimize_images','_pde_qpdf_resample_images','_pde_qpdf_last_error','_pde_qpdf_free','_malloc','_free']"
     "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU32','UTF8ToString','stringToUTF8','lengthBytesUTF8']")
   set_target_properties(pdf_editor_qpdf_wasm PROPERTIES
     OUTPUT_NAME "pdf-editor-qpdf"
@@ -94,4 +94,11 @@ else()
   target_include_directories(pdf_editor_qpdf_cli PRIVATE ${PDE_JPEG_INCLUDE})
   target_link_libraries(pdf_editor_qpdf_cli PRIVATE libqpdf)
   set_target_properties(pdf_editor_qpdf_cli PROPERTIES OUTPUT_NAME "pdf-editor-qpdf")
+endif()
+
+option(PDE_QPDF_TESTS "Build focused qpdf bridge tests" OFF)
+if(PDE_QPDF_TESTS AND NOT EMSCRIPTEN)
+  add_executable(pdf_editor_qpdf_resample_test tests/test_resample_api.cpp)
+  target_include_directories(pdf_editor_qpdf_resample_test PRIVATE include)
+  target_link_libraries(pdf_editor_qpdf_resample_test PRIVATE pdf_editor_qpdf_bridge)
 endif()

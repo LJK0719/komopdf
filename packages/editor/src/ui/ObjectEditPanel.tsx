@@ -89,8 +89,6 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
     return execute([{ type: 'objects.distribute', pageId: page.id, objectIds: selectedIds, axis }]);
   }
   const groupable = page.objects.filter(object => selectedIds.includes(object.id) && !object.locator.containerPath.length);
-  const hasPersistentGroups = page.objects.some(object => object.type === 'group' && !object.locator.containerPath.length);
-  const canCopySelection = selectedIds.every(id => page.objects.find(object => object.id === id)?.type !== 'group');
   const canGroup = groupable.length === selectedIds.length && groupable.length >= 2 &&
     groupable.every(object => object.type !== 'form' && object.type !== 'group') &&
     groupable.every((object, index) => index === 0 || object.locator.objectIndex === groupable[index - 1]!.locator.objectIndex + 1);
@@ -167,8 +165,7 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
       <div className="text-edit-actions">
         {supports('pages.rotate') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.rotate', pageIds: [page.id], degrees: 90 }]))}>Rotate page</button>}
         {supports('pages.insert') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.insert', pageId: crypto.randomUUID(), afterPageId: page.id, widthPt: page.widthPt, heightPt: page.heightPt }]))}>Add blank page</button>}
-        {supports('pages.duplicate') && <button disabled={locked || hasPersistentGroups} title={hasPersistentGroups ? 'Ungroup objects before duplicating this page' : undefined}
-          onClick={() => void run(() => execute([
+        {supports('pages.duplicate') && <button disabled={locked} onClick={() => void run(() => execute([
           { type: 'pages.duplicate', pageIds: [page.id], newPageIds: [crypto.randomUUID()], afterPageId: page.id },
         ]))}>Duplicate page</button>}
         {supports('pages.import') && host.pickResource && <button disabled={locked} onClick={() => void run(() => insertResource('pdf', 'pages'))}>Import PDF pages</button>}
@@ -201,7 +198,7 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
         {supports('objects.transform') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
         ]))}>Move selected objects</button>}
-        {supports('objects.copy') && <button disabled={locked || !selectedIds.length || !canCopySelection} onClick={() => void run(() => execute([
+        {supports('objects.copy') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.copy', pageId: page.id, objectIds: selectedIds,
             newObjectIds: selectedIds.map(() => crypto.randomUUID()), offset: { x: dx, y: dy } },
         ]))}>Duplicate selected objects</button>}

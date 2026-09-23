@@ -80,6 +80,21 @@ PDE_QPDF_EXPORT int pde_qpdf_optimize_images(
     unsigned char** output_data,
     size_t* output_size);
 
+/* Separate explicit lossy export on a copy: only opaque 8-bit DeviceRGB/Gray
+ * page images whose longer side exceeds max_edge (positive pixels) are area-
+ * resampled to that maximum, with aspect ratio preserved and encoded at quality
+ * 1..95. Returns an error with no output when no image dimensions shrink.
+ * Existing quality-only pde_qpdf_optimize_images retains its ABI2 semantics.
+ */
+PDE_QPDF_EXPORT int pde_qpdf_resample_images(
+    unsigned char const* input_data,
+    size_t input_size,
+    char const* input_password,
+    int quality,
+    int max_edge,
+    unsigned char** output_data,
+    size_t* output_size);
+
 PDE_QPDF_EXPORT char const* pde_qpdf_last_error(void);
 PDE_QPDF_EXPORT void pde_qpdf_free(void* pointer);
 
