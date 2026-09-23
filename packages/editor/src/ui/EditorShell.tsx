@@ -22,6 +22,7 @@ import { ExportPanel, type ExportSettings } from './ExportPanel.js';
 import { PrintPanel } from './PrintPanel.js';
 import { ObjectEditPanel } from './ObjectEditPanel.js';
 import { DocumentToolsPanel } from './DocumentToolsPanel.js';
+import { SignaturePanel } from './SignaturePanel.js';
 import { OcrPanel } from './OcrPanel.js';
 import { PdfSearchPanel } from './PdfSearchPanel.js';
 import { PageThumbnail } from './PageThumbnail.js';
@@ -738,6 +739,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
             onSelectionChange={setSelectedIds} onCommitted={handleCommitted} />}
 
           {document && <DocumentToolsPanel document={document.info} page={document.page} selectedIds={selectedIds}
+            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
+          {document && <SignaturePanel document={document.info} page={document.page}
             engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
 
           {host.capabilities.ocr && document && <OcrPanel document={document.info} page={document.page} selectedIds={selectedIds}
