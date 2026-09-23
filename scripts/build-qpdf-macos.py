@@ -182,6 +182,7 @@ def test_c_bridge(
     include_dir: Path,
     work_dir: Path,
     env: dict[str, str],
+    arch: str,
 ) -> dict[str, object]:
     test_src = work_dir / "test_bridge.cpp"
     test_bin = work_dir / "test_bridge"
@@ -278,7 +279,7 @@ int main() {
             "-std=c++20",
             "-O2",
             "-arch",
-            "arm64",
+            "x86_64" if arch == "x64" else "arm64",
             "-mmacosx-version-min=13.0",
             f"-I{include_dir}",
             test_src,
@@ -321,6 +322,7 @@ def build_and_package(
     package_dir: Path,
     artifacts_dir: Path,
     jpeg_root: Path,
+    arch: str,
 ) -> dict[str, object]:
     work_dir.mkdir(parents=True, exist_ok=True)
     sources_dir = work_dir / "sources"
@@ -340,7 +342,7 @@ def build_and_package(
     clang_bin = shutil.which("clang") or "/usr/bin/clang"
     clangxx_bin = shutil.which("clang++") or "/usr/bin/clang++"
 
-    build_dir = work_dir / "build-macos-arm64"
+    build_dir = work_dir / f"build-macos-{arch}"
     build_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
@@ -352,7 +354,7 @@ def build_and_package(
     if not jpeg_lib.exists():
         raise FileNotFoundError(f"Static libjpeg not found: {jpeg_lib}")
 
-    print("Configuring CMake for macOS arm64...", flush=True)
+    print(f"Configuring CMake for macOS {arch}...", flush=True)
     run(
         [
             cmake_bin,
@@ -364,7 +366,7 @@ def build_and_package(
             "Ninja",
             f"-DCMAKE_MAKE_PROGRAM={ninja_bin}",
             "-DCMAKE_BUILD_TYPE=Release",
-            "-DCMAKE_OSX_ARCHITECTURES=arm64",
+            f"-DCMAKE_OSX_ARCHITECTURES={'x86_64' if arch == 'x64' else 'arm64'}",
             "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0",
             f"-DCMAKE_C_COMPILER={clang_bin}",
             f"-DCMAKE_CXX_COMPILER={clangxx_bin}",
@@ -403,6 +405,10 @@ def build_and_package(
     for b in (wrapper, qpdf_bin, bridge_lib, qpdf_lib):
         if not b.exists():
             raise FileNotFoundError(f"Expected build artifact missing: {b}")
+    expected_cpu = "x86_64" if arch == "x64" else "arm64"
+    for binary in (wrapper, qpdf_bin):
+        if expected_cpu not in run(["file", "-b", binary], env=env, capture=True).stdout:
+            raise RuntimeError(f"QPDF executable does not target {expected_cpu}: {binary}")
 
     # Smoke testing
     print("Running synthetic PDF smoke tests...", flush=True)
@@ -412,7 +418,7 @@ def build_and_package(
     # C bridge testing
     print("Running C bridge in-memory tests...", flush=True)
     bridge_results = test_c_bridge(
-        bridge_lib, qpdf_lib, jpeg_lib, package_dir / "include", work_dir, env
+        bridge_lib, qpdf_lib, jpeg_lib, package_dir / "include", work_dir, env, arch
     )
     smoke_results["cBridge"] = bridge_results
 
@@ -461,10 +467,11 @@ def build_and_package(
         (artifacts_dir / "licenses" / "libjpeg-turbo-LICENSE.md").write_text("libjpeg-turbo 3.2.0 (IJG / BSD / Zlib)\n")
 
     # zlib license
-    zlib_lic = package_dir.parent / "artifacts" / "wasm" / "licenses" / "zlib-LICENSE.txt"
+    zlib_lic = package_dir / "licenses" / "zlib-LICENSE.txt"
     if not zlib_lic.exists():
-        zlib_lic = work_dir / "zlib-LICENSE.txt"
-        zlib_lic.write_text("zlib general purpose compression library license\n")
+        zlib_lic = package_dir.parents[1] / "third_party/notices/qpdf-zlib-LICENSE.txt"
+    if not zlib_lic.exists():
+        raise FileNotFoundError(f"Pinned zlib license is missing: {zlib_lic}")
     shutil.copy2(zlib_lic, artifacts_dir / "licenses" / "zlib-LICENSE.txt")
 
     manifest = {
@@ -472,7 +479,7 @@ def build_and_package(
         "status": "built-and-smoke-tested",
         "qpdfVersion": QPDF_VERSION,
         "qpdfCommit": QPDF_COMMIT,
-        "target": "aarch64-apple-darwin",
+        "target": "x86_64-apple-darwin" if arch == "x64" else "aarch64-apple-darwin",
         "configuration": {
             "buildType": "Release",
             "sharedLibraries": False,
@@ -500,12 +507,13 @@ def build_and_package(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
 
-    print(f"Packaged macOS arm64 artifact at {artifacts_dir}")
+    print(f"Packaged macOS {arch} artifact at {artifacts_dir}")
     return manifest
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--arch", choices=("arm64", "x64"), default="arm64")
     parser.add_argument(
         "--work-dir",
         type=Path,
@@ -544,6 +552,7 @@ def main() -> int:
         package_dir=args.package_dir,
         artifacts_dir=args.output_dir,
         jpeg_root=args.jpeg_root,
+        arch=args.arch,
     )
 
     if args.tar_results:
@@ -597,13 +606,14 @@ def main() -> int:
             sha_lines.append(f"{file_info['sha256']}  {file_info['path']}")
         (results_dir / "sha256.txt").write_text("\n".join(sha_lines) + "\n", encoding="utf-8")
 
-        tar_path = args.work_dir / "mac-qpdf-arm64-results.tar.gz"
+        tar_name = f"mac-qpdf-{args.arch}-results.tar.gz"
+        tar_path = args.work_dir / tar_name
         with tarfile.open(tar_path, "w:gz") as tar:
-            tar.add(args.output_dir, arcname="macos-arm64")
+            tar.add(args.output_dir, arcname=f"macos-{args.arch}")
             tar.add(results_dir, arcname="results")
         tar_sha = sha256(tar_path)
-        (args.work_dir / "mac-qpdf-arm64-results.tar.gz.sha256").write_text(
-            f"{tar_sha}  mac-qpdf-arm64-results.tar.gz\n", encoding="utf-8"
+        (args.work_dir / f"{tar_name}.sha256").write_text(
+            f"{tar_sha}  {tar_name}\n", encoding="utf-8"
         )
         print(f"Packed results tarball: {tar_path} (SHA-256: {tar_sha})", flush=True)
 

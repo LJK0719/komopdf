@@ -750,25 +750,34 @@ def build_wasm(
     return package_wasm(build, smoke, env)
 
 
-def build_macos(remote_device: str = "ljkmacbook-air") -> tuple[dict[str, object], Path]:
-    destination = ARTIFACTS / "macos-arm64"
+def build_macos(remote_device: str = "ljkmacbook-air", arch: str = "arm64",
+                jpeg_root: str | None = None) -> tuple[dict[str, object], Path]:
+    if arch not in ("arm64", "x64"):
+        raise ValueError(f"Unsupported Mac architecture: {arch}")
+    jpeg_root = jpeg_root or (
+        "/Users/ljk/data/workspace/pdf-editor/tmp/mac-qpdf-x64-20260924/jpeg-x64"
+        if arch == "x64" else "/opt/homebrew/opt/jpeg-turbo")
+    destination = ARTIFACTS / f"macos-{arch}"
     if sys.platform == "darwin":
         macos_script = ROOT / "scripts" / "build-qpdf-macos.py"
         run([
             sys.executable,
             str(macos_script),
+            "--arch", arch,
             "--package-dir", str(PACKAGE),
             "--output-dir", str(destination),
+            "--jpeg-root", str(jpeg_root),
             "--tar-results",
         ])
     else:
         ssh_connect = Path.home() / ".claude" / "accounts" / "ssh-connect.py"
         if not ssh_connect.exists():
             raise FileNotFoundError(f"SSH connect entry script not found: {ssh_connect}")
-        remote_work = "/Users/ljk/data/workspace/pdf-editor/tmp/mac-qpdf-resample-20260923"
+        remote_work = ("/Users/ljk/data/workspace/pdf-editor/tmp/mac-qpdf-x64-20260924"
+                       if arch == "x64" else "/Users/ljk/data/workspace/pdf-editor/tmp/mac-qpdf-resample-20260923")
         source_archive = "/Users/ljk/data/workspace/pdf-editor/tmp/mac-qpdf-20260922/qpdf-12.4.1.tar.gz"
         run([sys.executable, str(ssh_connect), remote_device, "mkdir", "-p", f"{remote_work}/package"])
-        overlay_tar = WORK / "qpdf-source-overlay.tar.gz"
+        overlay_tar = WORK / f"qpdf-source-overlay-{arch}.tar.gz"
         WORK.mkdir(parents=True, exist_ok=True)
         with tarfile.open(overlay_tar, "w:gz") as tar:
             for rel in [
@@ -782,19 +791,26 @@ def build_macos(remote_device: str = "ljkmacbook-air") -> tuple[dict[str, object
                 "src/image_optimizer.h",
             ]:
                 tar.add(PACKAGE / rel, arcname=rel)
+            tar.add(ROOT / "third_party/notices/qpdf-zlib-LICENSE.txt",
+                    arcname="licenses/zlib-LICENSE.txt")
         run([sys.executable, str(ssh_connect), "--scp", remote_device, str(overlay_tar), f"{remote_work}/qpdf-source-overlay.tar.gz"])
         macos_script = ROOT / "scripts" / "build-qpdf-macos.py"
         run([sys.executable, str(ssh_connect), "--scp", remote_device, str(macos_script), f"{remote_work}/build-qpdf-macos.py"])
         run([sys.executable, str(ssh_connect), remote_device, "/usr/bin/tar", "-xzf",
              f"{remote_work}/qpdf-source-overlay.tar.gz", "-C", f"{remote_work}/package"])
-        run([sys.executable, str(ssh_connect), remote_device, "/usr/bin/python3",
-             f"{remote_work}/build-qpdf-macos.py", "--work-dir", remote_work,
+        run([sys.executable, str(ssh_connect), remote_device,
+             *(["/usr/bin/arch", "-x86_64"] if arch == "x64" else []),
+             "/usr/bin/python3", f"{remote_work}/build-qpdf-macos.py",
+             "--arch", arch, "--work-dir", remote_work,
              "--source-archive", source_archive, "--package-dir", f"{remote_work}/package",
-             "--output-dir", f"{remote_work}/artifacts/macos-arm64", "--tar-results"])
-        local_results_tar = WORK / "mac-qpdf-arm64-resample-results.tar.gz"
-        local_results_sha = WORK / "mac-qpdf-arm64-resample-results.tar.gz.sha256"
-        run([sys.executable, str(ssh_connect), "--download", remote_device, f"{remote_work}/mac-qpdf-arm64-results.tar.gz", str(local_results_tar)])
-        run([sys.executable, str(ssh_connect), "--download", remote_device, f"{remote_work}/mac-qpdf-arm64-results.tar.gz.sha256", str(local_results_sha)])
+             "--output-dir", f"{remote_work}/artifacts/macos-{arch}",
+             "--jpeg-root", str(jpeg_root), "--tar-results"])
+        local_results_tar = WORK / f"mac-qpdf-{arch}-resample-results.tar.gz"
+        local_results_sha = WORK / f"mac-qpdf-{arch}-resample-results.tar.gz.sha256"
+        run([sys.executable, str(ssh_connect), "--download", remote_device,
+             f"{remote_work}/mac-qpdf-{arch}-results.tar.gz", str(local_results_tar)])
+        run([sys.executable, str(ssh_connect), "--download", remote_device,
+             f"{remote_work}/mac-qpdf-{arch}-results.tar.gz.sha256", str(local_results_sha)])
         expected_sha = local_results_sha.read_text(encoding="utf-8").strip().split()[0]
         actual_sha = sha256(local_results_tar)
         if actual_sha != expected_sha:
@@ -803,9 +819,10 @@ def build_macos(remote_device: str = "ljkmacbook-air") -> tuple[dict[str, object
             rmtree_force(destination)
         destination.mkdir(parents=True, exist_ok=True)
         with tarfile.open(local_results_tar) as tar:
-            members = [m for m in tar.getmembers() if m.name.startswith("macos-arm64/")]
+            prefix = f"macos-{arch}/"
+            members = [m for m in tar.getmembers() if m.name.startswith(prefix)]
             for m in members:
-                m.name = m.name[len("macos-arm64/"):]
+                m.name = m.name[len(prefix):]
             tar.extractall(destination, members=[m for m in members if m.name])
         # Ensure writable permissions on Windows
         for root, _, files in os.walk(destination):
@@ -820,8 +837,9 @@ def build_macos(remote_device: str = "ljkmacbook-air") -> tuple[dict[str, object
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", choices=("windows", "wasm", "macos", "all"), default="all")
+    parser.add_argument("--target", choices=("windows", "wasm", "macos", "macos-x64", "all"), default="all")
     parser.add_argument("--device", default="ljkmacbook-air", help="Authorized remote Mac device label in registry")
+    parser.add_argument("--jpeg-root", help="POSIX path to static libjpeg-turbo for the selected Mac architecture")
     args = parser.parse_args()
 
     prepare_sources()
@@ -835,7 +853,7 @@ def main() -> int:
     if manifest_path.exists():
         try:
             loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
-            for key in ("windows", "macos", "wasm"):
+            for key in ("windows", "macos", "macosX64", "wasm"):
                 if key in loaded:
                     summary[key] = loaded[key]
         except Exception:
@@ -883,7 +901,7 @@ def main() -> int:
         }
 
     if args.target == "macos" or (args.target == "all" and sys.platform == "darwin"):
-        macos_manifest, _ = build_macos(remote_device=args.device)
+        macos_manifest, _ = build_macos(remote_device=args.device, jpeg_root=args.jpeg_root)
         summary["macos"] = {
             "status": macos_manifest["status"],
             "target": "macos-arm64",
@@ -896,6 +914,22 @@ def main() -> int:
             "target": "macos-arm64",
             "artifact": "native/qpdf/artifacts/macos-arm64",
             "manifestSha256": sha256(ARTIFACTS / "macos-arm64" / "manifest.json"),
+        }
+
+    if args.target == "macos-x64":
+        x64_manifest, _ = build_macos(remote_device=args.device, arch="x64", jpeg_root=args.jpeg_root)
+        summary["macosX64"] = {
+            "status": x64_manifest["status"],
+            "target": "macos-x64",
+            "artifact": "native/qpdf/artifacts/macos-x64",
+            "manifestSha256": sha256(ARTIFACTS / "macos-x64" / "manifest.json"),
+        }
+    elif (ARTIFACTS / "macos-x64" / "manifest.json").exists():
+        summary["macosX64"] = {
+            "status": "built-and-smoke-tested",
+            "target": "macos-x64",
+            "artifact": "native/qpdf/artifacts/macos-x64",
+            "manifestSha256": sha256(ARTIFACTS / "macos-x64" / "manifest.json"),
         }
 
     (PACKAGE / "build-manifest.json").write_text(
