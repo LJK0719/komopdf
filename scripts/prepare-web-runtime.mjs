@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -24,4 +24,8 @@ for (const name of ['pdf-core-runtime.js', 'pdf-core-runtime.wasm']) {
 }
 await prepareQpdfRuntime({ web: true, desktop: false, coreRoot: root, webPublic: destination });
 const fonts = await stageFonts(root, path.join(destination, 'fonts'));
+await cp(path.join(root, 'third_party/notices'), path.join(destination, 'licenses/third-party'), { recursive: true });
+for (const name of ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']) {
+  await copyFile(path.join(root, name), path.join(destination, 'licenses', name));
+}
 console.log(`Prepared web-only PDF core, QPDF and ${fonts.length} font faces in ${destination}`);
