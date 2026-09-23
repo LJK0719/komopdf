@@ -51,7 +51,7 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
   await page.getByLabel('Y', { exact: true }).fill('120');
   await page.getByLabel('Width', { exact: true }).fill('140');
   await page.getByLabel('Height', { exact: true }).fill('30');
-  await page.getByLabel('Annotation text', { exact: true }).fill('审核批注测试 Note');
+  await page.getByRole('textbox', { name: 'Annotation text', exact: true }).fill('审核批注测试 Note');
   await page.getByRole('button', { name: 'Add note', exact: true }).click();
 
   const annotationList = page.locator('.document-tools-list');
@@ -62,6 +62,23 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
 
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect(annotationList).toContainText('审核批注测试 Note');
+
+  // Edit the same PDF annotation rather than drawing a visual overlay.
+  await page.getByRole('button', { name: 'Edit text annotation' }).click();
+  await page.getByRole('textbox', { name: 'Annotation text', exact: true }).fill('Updated note in the real PDF');
+  await page.getByRole('button', { name: 'Update selected annotation' }).click();
+  await expect(annotationList).toContainText('Updated note in the real PDF');
+  await expect(annotationList).not.toContainText('审核批注测试 Note');
+
+  await page.getByRole('button', { name: 'Add rectangle' }).click();
+  await expect(annotationList.locator('li')).toHaveCount(2);
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Delete rectangle annotation' }).click();
+  await expect(annotationList.locator('li')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(annotationList.locator('li')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(annotationList.locator('li')).toHaveCount(1);
 
   // 5. Save the modified document and verify changes were written
   const download = page.waitForEvent('download');
@@ -88,7 +105,8 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
   await expect(reopenedCheckboxField).toBeVisible({ timeout: 30_000 });
   await expect(reopenedCheckboxField.getByRole('checkbox', { name: 'Checked' })).toBeChecked();
 
-  await expect(page.locator('.document-tools-list')).toContainText('审核批注测试 Note');
+  await expect(page.locator('.document-tools-list')).toContainText('Updated note in the real PDF');
+  await expect(page.locator('.document-tools-list').locator('li')).toHaveCount(1);
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
   expect(posts).toEqual([]);
 });

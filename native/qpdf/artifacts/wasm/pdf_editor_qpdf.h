@@ -14,7 +14,7 @@ extern "C" {
 #  define PDE_QPDF_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define PDE_QPDF_ABI_VERSION 1u
+#define PDE_QPDF_ABI_VERSION 2u
 
 typedef enum pde_qpdf_operation {
     PDE_QPDF_DECRYPT = 1,
@@ -65,6 +65,18 @@ PDE_QPDF_EXPORT int pde_qpdf_transform(
     char const* owner_password,
     uint32_t permissions,
     int encrypt_metadata,
+    unsigned char** output_data,
+    size_t* output_size);
+
+/* Explicit lossy export on a copy only. Quality is 1..95. Reports an error
+ * instead of returning an unchanged PDF when no supported opaque RGB/gray
+ * images were actually reduced. Masks/alpha and unsupported formats are kept.
+ */
+PDE_QPDF_EXPORT int pde_qpdf_optimize_images(
+    unsigned char const* input_data,
+    size_t input_size,
+    char const* input_password,
+    int quality,
     unsigned char** output_data,
     size_t* output_size);
 

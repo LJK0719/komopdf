@@ -294,9 +294,12 @@ int main() {
     )
     result = run([test_bin], env=env, capture=True)
     print(result.stdout.strip())
+    match = re.search(r"\babi=(\d+)\b", result.stdout)
+    if not match:
+        raise RuntimeError("The Mac QPDF C bridge did not report its actual ABI")
     test_bin.unlink(missing_ok=True)
     test_src.unlink(missing_ok=True)
-    return {"result": "pass", "abi": 1, "version": "12.4.1"}
+    return {"result": "pass", "abi": int(match.group(1)), "version": QPDF_VERSION}
 
 
 def otool_dependencies(executable: Path, env: dict[str, str]) -> list[dict[str, object]]:

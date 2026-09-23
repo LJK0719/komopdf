@@ -112,6 +112,50 @@ std::string SerializeForms(const Document& document) {
   return result;
 }
 
+std::string SerializeOutline(const Document& document) {
+  std::string result = "[";
+  std::set<FPDF_BOOKMARK> visited;
+  std::vector<std::pair<FPDF_BOOKMARK, uint32_t>> pending;
+  if (FPDF_BOOKMARK first = FPDFBookmark_GetFirstChild(document.pdf, nullptr))
+    pending.emplace_back(first, 0);
+  while (!pending.empty()) {
+    auto [bookmark, level] = pending.back();
+    pending.pop_back();
+    if (!visited.insert(bookmark).second) continue;
+    const unsigned long bytes = FPDFBookmark_GetTitle(bookmark, nullptr, 0);
+    std::string title;
+    if (bytes >= sizeof(FPDF_WCHAR) && bytes % sizeof(FPDF_WCHAR) == 0) {
+      std::vector<FPDF_WCHAR> utf16(bytes / sizeof(FPDF_WCHAR));
+      if (FPDFBookmark_GetTitle(bookmark, utf16.data(), bytes) == bytes) {
+        if (!utf16.empty() && utf16.back() == 0) utf16.pop_back();
+        title = Utf16ToUtf8(utf16, utf16.size());
+      }
+    }
+    if (result.size() > 1) result += ',';
+    result += "{\"title\":"; AppendJsonString(&result, title);
+    result += ",\"pageId\":";
+    FPDF_DEST destination = FPDFBookmark_GetDest(document.pdf, bookmark);
+    if (!destination) {
+      const FPDF_ACTION action = FPDFBookmark_GetAction(bookmark);
+      if (action && FPDFAction_GetType(action) == PDFACTION_GOTO)
+        destination = FPDFAction_GetDest(document.pdf, action);
+    }
+    const int page_index = destination ? FPDFDest_GetDestPageIndex(document.pdf, destination) : -1;
+    if (page_index >= 0 && static_cast<size_t>(page_index) < document.metadata.pages.size())
+      AppendJsonString(&result, document.metadata.pages[page_index].id);
+    else result += "null";
+    result += ",\"level\":";
+    AppendJsonUnsigned(&result, level);
+    result += '}';
+    if (FPDF_BOOKMARK sibling = FPDFBookmark_GetNextSibling(document.pdf, bookmark))
+      pending.emplace_back(sibling, level);
+    if (FPDF_BOOKMARK child = FPDFBookmark_GetFirstChild(document.pdf, bookmark))
+      pending.emplace_back(child, level + 1);
+  }
+  result += ']';
+  return result;
+}
+
 std::string SerializeAnnotations(const Document& document, size_t page_index) {
   ScopedPage page(FPDF_LoadPage(document.pdf, static_cast<int>(page_index)));
   Matrix to_page, to_pdf;
@@ -158,6 +202,35 @@ std::string SerializeAnnotations(const Document& document, size_t page_index) {
   return result;
 }
 
+std::optional<size_t> FindAnnotationIndex(const Document& document,
+                                          FPDF_DOCUMENT pdf,
+                                          const CandidateMetadata& metadata,
+                                          size_t page_index,
+                                          const std::string& id) {
+  CPDF_Document* native = CPDFDocumentFromFPDFDocument(pdf);
+  const auto page = native->GetPageDictionary(static_cast<int>(page_index));
+  const auto annots = page ? page->GetArrayFor("Annots") : nullptr;
+  std::optional<size_t> match;
+  if (annots) for (size_t index = 0; index < annots->size(); ++index) {
+    const auto annot = annots->GetDictAt(index);
+    if (!annot || annot->GetNameFor("Subtype") == "Widget") continue;
+    const ByteString stored = annot->GetUnicodeTextFor("NM").ToUTF8();
+    const std::string current = stored.IsEmpty() ?
+        "a:" + std::to_string(document.session_id) + ":" +
+            std::to_string(annot->GetObjNum()) + ":" +
+            metadata.pages[page_index].id + ":" + std::to_string(index) :
+        std::string(stored.c_str(), stored.GetLength());
+    if (current != id) continue;
+    if (match) {
+      SetError("INVALID_REQUEST", "The annotation ID is ambiguous on this page.");
+      return std::nullopt;
+    }
+    match = index;
+  }
+  if (!match) SetError("INVALID_REQUEST", "The annotation does not exist on the requested page.");
+  return match;
+}
+
 void CollectDocumentToolIds(const Document& document, std::set<std::string>* ids) {
   CPDF_Document* native = CPDFDocumentFromFPDFDocument(document.pdf);
   CPDF_InteractiveForm form(native);
@@ -200,6 +273,20 @@ bool ApplyDocumentTool(
   size_t page_index = 0;
   ScopedPage page(nullptr);
   if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) return false;
+  if (command.type == EditType::kAnnotationUpdate ||
+      command.type == EditType::kAnnotationDelete) {
+    const auto index = FindAnnotationIndex(document, pdf, *metadata,
+                                           page_index, command.target_id);
+    if (!index) return false;
+    if (*index > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+        !FPDFPage_RemoveAnnot(page.get(), static_cast<int>(*index))) {
+      SetError("CORE_UNAVAILABLE", "The annotation could not be removed from its PDF page.");
+      return false;
+    }
+    if (command.type == EditType::kAnnotationDelete) return true;
+    // Rebuild the replacement appearance from a complete annotation spec.
+    // The candidate document is discarded if appearance creation fails.
+  }
   Matrix to_page, to_pdf;
   if (!GetPageMatrices(page.get(), &to_page, &to_pdf)) return false;
   const Rect rect = TransformBounds(command.values[0], command.values[1],

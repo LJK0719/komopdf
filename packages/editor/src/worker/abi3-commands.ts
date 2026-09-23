@@ -8,7 +8,8 @@ export const ABI3_BASE_CAPABILITIES: CommandType[] = [
 
 export const ABI3_CAPABILITIES: CommandType[] = [...ABI3_BASE_CAPABILITIES,
   'pages.duplicate', 'pages.import', 'image.replace', 'image.crop', 'objects.copy',
-  'annotation.add', 'form.fill', 'form.create', 'text.reflow'];
+  'annotation.add', 'form.fill', 'form.create', 'text.reflow', 'objects.align',
+  'annotation.update', 'annotation.delete', 'objects.distribute', 'pages.crop'];
 
 type Allocator = { string(value: string): number; bytes(value: Uint8Array): number };
 type PackedCommand = { fields: number[]; values: number[] };
@@ -93,8 +94,20 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       fields[10]! |= 1024;
       break;
     case 'objects.transform': fields[0] = 4; ids(command.objectIds); values.splice(0, 6, ...command.matrix); break;
+    case 'objects.align': {
+      if (command.objectIds.length < 2) throw new EngineError('INVALID_REQUEST', 'Alignment requires at least two objects');
+      fields[0] = 21; ids(command.objectIds);
+      values[0] = ['left', 'center', 'right', 'top', 'middle', 'bottom'].indexOf(command.axis);
+      break;
+    }
+    case 'objects.distribute':
+      if (command.objectIds.length < 3) throw new EngineError('INVALID_REQUEST', 'Distribution requires at least three objects');
+      fields[0] = 24; ids(command.objectIds);
+      values[0] = command.axis === 'horizontal' ? 0 : 1;
+      break;
     case 'objects.delete': fields[0] = 5; ids(command.objectIds); break;
     case 'pages.rotate': fields[0] = 6; ids(command.pageIds); values[0] = command.degrees; break;
+    case 'pages.crop': fields[0] = 25; ids(command.pageIds); bounds(command.bounds); break;
     case 'pages.delete': fields[0] = 7; ids(command.pageIds); break;
     case 'pages.reorder': fields[0] = 8; ids(command.pageIds); break;
     case 'pages.insert':
@@ -121,8 +134,9 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       if (command.objectIds.length !== command.newObjectIds.length) throw new EngineError('INVALID_REQUEST', 'Copied object count mismatch');
       ids(command.objectIds.flatMap((id, index) => [id, command.newObjectIds[index]!]));
       values[0] = command.offset.x; values[1] = command.offset.y; break;
-    case 'annotation.add': {
-      fields[0] = 17; string(2, command.annotationId); string(3, command.subtype);
+    case 'annotation.add': case 'annotation.update': {
+      fields[0] = command.type === 'annotation.add' ? 17 : 22;
+      string(2, command.annotationId); string(3, command.subtype);
       fields[4] = allocations.string(command.text ?? ''); bounds(command.bounds);
       let flags = 0;
       if (command.color !== undefined) { flags |= 1; values.splice(4, 3, ...command.color); }
@@ -135,6 +149,8 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       fields[10] = flags;
       break;
     }
+    case 'annotation.delete':
+      fields[0] = 23; string(2, command.annotationId); break;
     case 'form.fill':
       fields[0] = 18; string(2, command.fieldId);
       if (typeof command.value === 'string') fields[4] = allocations.string(command.value);

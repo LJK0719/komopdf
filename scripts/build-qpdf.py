@@ -777,6 +777,8 @@ def build_macos(remote_device: str = "ljkmacbook-air") -> tuple[dict[str, object
                 "include/pdf_editor_qpdf.h",
                 "src/pdf_editor_qpdf.cpp",
                 "src/qpdf_job_main.cpp",
+                "src/image_optimizer.cpp",
+                "src/image_optimizer.h",
             ]:
                 tar.add(PACKAGE / rel, arcname=rel)
         run([sys.executable, str(ssh_connect), "--scp", remote_device, str(overlay_tar), f"{remote_work}/qpdf-source-overlay.tar.gz"])

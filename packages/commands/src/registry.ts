@@ -6,18 +6,20 @@ const labels: Record<CommandType, string> = {
   'text.replace': 'Replace Text', 'text.style': 'Format Text', 'text.insert': 'Insert Text',
   'text.reflow': 'Reflow Text',
   'objects.transform': 'Transform Objects', 'objects.delete': 'Delete Objects', 'objects.align': 'Align Objects',
-  'objects.copy': 'Duplicate Objects', 'pages.import': 'Import PDF Pages',
+  'objects.copy': 'Duplicate Objects', 'objects.distribute': 'Distribute Objects', 'pages.import': 'Import PDF Pages',
   'objects.group': 'Group Objects', 'objects.ungroup': 'Ungroup Objects',
-  'pages.rotate': 'Rotate Pages', 'pages.delete': 'Delete Pages', 'pages.reorder': 'Reorder Pages',
+  'pages.rotate': 'Rotate Pages', 'pages.crop': 'Crop Pages', 'pages.delete': 'Delete Pages', 'pages.reorder': 'Reorder Pages',
   'pages.duplicate': 'Duplicate Pages', 'pages.insert': 'Insert Blank Page',
   'content.insert': 'Insert PDF Content',
   'image.insert': 'Insert Image', 'image.replace': 'Replace Image', 'image.crop': 'Crop Image',
-  'annotation.add': 'Add Annotation', 'form.fill': 'Fill Form', 'form.create': 'Create Form Field',
+  'annotation.add': 'Add Annotation', 'annotation.update': 'Edit Annotation', 'annotation.delete': 'Delete Annotation',
+  'form.fill': 'Fill Form', 'form.create': 'Create Form Field',
 };
 export type CommandContext = {
   document: DocumentInfo;
   pages: ReadonlyMap<string, PageModel>;
   fields?: ReadonlyMap<string, { pageId: string; type: 'text' | 'checkbox' | 'radio' | 'choice'; options?: readonly string[]; readOnly?: boolean }>;
+  annotations?: ReadonlyMap<string, { pageId: string; subtype: string }>;
   resourceIds?: ReadonlySet<string>;
   fontIds?: ReadonlySet<string>;
   clusterBoundaries?: ReadonlyMap<string, ReadonlySet<number>>;
@@ -41,7 +43,7 @@ function validateRange(context: CommandContext, pageId: string, blockId: string,
 }
 function validatePermission(context: CommandContext, command: EditCommand): void {
   const permission = command.type === 'form.fill' ? context.document.permissions.fillForms
-    : command.type === 'annotation.add' ? context.document.permissions.annotate : context.document.permissions.modify;
+    : command.type.startsWith('annotation.') ? context.document.permissions.annotate : context.document.permissions.modify;
   if (!permission) invalid('This modification is not permitted on the current document');
 }
 
@@ -53,13 +55,15 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
   }
   const pages = new Map([...context.pages].map(([id, page]) => [id, { ...page, objects: [...page.objects] }]));
   const fields = new Map(context.fields);
-  context = { ...context, pages, fields };
+  const annotations = new Map(context.annotations);
+  context = { ...context, pages, fields, ...(context.annotations ? { annotations } : {}) };
   const pageIds = new Set(context.document.pageOrder);
   const deletedObjects = new Set<string>();
   const touchedText = new Map<string, TextRange[]>();
   const newIds = new Set<string>([
     ...pageIds, ...[...context.pages.values()].flatMap(page => page.objects.flatMap(object => [object.id, ...(object.textBlock ? [object.textBlock.id] : [])])),
     ...context.fields?.keys() ?? [],
+    ...context.annotations?.keys() ?? [],
   ]);
   const addId = (id: string) => { if (newIds.has(id)) invalid('New object ID already exists'); newIds.add(id); };
   for (const command of transaction.commands) {
@@ -108,6 +112,17 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         }
         if (command.range && command.blockIds.length !== 1) invalid('Range style can only apply to a single block');
         break;
+      case 'pages.crop':
+        if (command.bounds.width <= 0 || command.bounds.height <= 0) invalid('Crop must have positive dimensions');
+        for (const id of command.pageIds) {
+          const current = requirePage(context, id);
+          if (command.bounds.x < 0 || command.bounds.y < 0 ||
+              command.bounds.x + command.bounds.width > current.widthPt + 0.01 ||
+              command.bounds.y + command.bounds.height > current.heightPt + 0.01) {
+            invalid('Crop rectangle must fit inside every selected page');
+          }
+        }
+        break;
       case 'pages.delete':
         command.pageIds.forEach(id => pageIds.delete(id));
         if (pageIds.size === 0) invalid('Working document must retain at least one page');
@@ -128,6 +143,12 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         if (command.afterPageId !== null && !pageIds.has(command.afterPageId)) invalid('Import position does not exist');
         if (command.pageIndices.length !== command.newPageIds.length) invalid('Imported page count mismatch');
         command.newPageIds.forEach(id => { addId(id); pageIds.add(id); });
+        break;
+      case 'objects.align':
+        if (command.objectIds.length < 2) invalid('Select at least two objects to align');
+        break;
+      case 'objects.distribute':
+        if (command.objectIds.length < 3) invalid('Select at least three objects to distribute');
         break;
       case 'objects.copy': {
         if (command.objectIds.length !== command.newObjectIds.length) invalid('Copied object count mismatch');
@@ -203,7 +224,21 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
       case 'annotation.add':
         addId(command.annotationId);
         if (command.subtype === 'ink' && (!command.points || command.points.length < 2)) invalid('Ink annotation requires at least two points');
+        annotations.set(command.annotationId, { pageId: command.pageId, subtype: command.subtype });
         break;
+      case 'annotation.update': {
+        const existing = annotations.get(command.annotationId);
+        if (context.annotations && (!existing || existing.pageId !== command.pageId)) invalid('Annotation does not exist on this page');
+        if (command.subtype === 'ink' && (!command.points || command.points.length < 2)) invalid('Replacing ink requires at least two stroke points');
+        annotations.set(command.annotationId, { pageId: command.pageId, subtype: command.subtype });
+        break;
+      }
+      case 'annotation.delete': {
+        const existing = annotations.get(command.annotationId);
+        if (context.annotations && (!existing || existing.pageId !== command.pageId)) invalid('Annotation does not exist on this page');
+        annotations.delete(command.annotationId);
+        break;
+      }
       case 'form.create':
         addId(command.fieldId);
         fields.set(command.fieldId, { pageId: command.pageId, type: command.fieldType, options: [], readOnly: false });

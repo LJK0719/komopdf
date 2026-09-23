@@ -40,6 +40,7 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   const [fieldFontId, setFieldFontId] = useState('');
   const [fieldFontSize, setFieldFontSize] = useState('12');
   const [annotations, setAnnotations] = useState<PdfAnnotationInfo[]>([]);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [fields, setFields] = useState<FormFieldInfo[]>([]);
   const [fieldDrafts, setFieldDrafts] = useState<Record<string, FormValue>>({});
   const [dataScope, setDataScope] = useState('');
@@ -57,7 +58,10 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
     ?? fonts.find(font => font.id === DEFAULT_FORM_FONT_ID)
     ?? fonts[0];
   const locked = disabled || busy;
-  const supportsAnnotations = document.capabilities.includes('annotation.add');
+  const supportsAnnotations = document.capabilities.some(capability => capability.startsWith('annotation.'));
+  const canAddAnnotation = document.capabilities.includes('annotation.add');
+  const canUpdateAnnotation = document.capabilities.includes('annotation.update');
+  const canDeleteAnnotation = document.capabilities.includes('annotation.delete');
   const supportsFormCreate = document.capabilities.includes('form.create');
   const supportsFormFill = document.capabilities.includes('form.fill');
   const canReadAnnotations = supportsAnnotations && Boolean(engine.describeAnnotations);
@@ -110,6 +114,7 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
     ? fields.filter(field => field.widgets.some(widget => widget.pageId === page.id))
     : [];
   const currentAnnotations = dataScope === scope ? annotations : [];
+  const selectedAnnotation = currentAnnotations.find(annotation => annotation.id === selectedAnnotationId);
 
   async function execute(command: EditCommand): Promise<void> {
     const expectedScope = scope;
@@ -124,6 +129,8 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
       document,
       pages: new Map([[page.id, page]]),
       fields: buildFieldContext(dataScope === scope ? fields : [], page.id),
+      annotations: new Map(currentAnnotations.map(annotation => [annotation.id,
+        { pageId: annotation.pageId, subtype: annotation.subtype }])),
       ...(command.type === 'form.create' && command.fontId
         ? { fontIds: new Set([command.fontId]) }
         : {}),
@@ -178,6 +185,34 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
       points: parseInkPoints(inkPoints),
       ...(annotationText ? { text: annotationText } : {}),
     });
+  }
+
+  function selectAnnotation(annotation: PdfAnnotationInfo): void {
+    setSelectedAnnotationId(annotation.id);
+    setBoundsDraft({
+      x: formatNumber(annotation.bounds.x), y: formatNumber(annotation.bounds.y),
+      width: formatNumber(annotation.bounds.width), height: formatNumber(annotation.bounds.height),
+    });
+    setAnnotationText(annotation.text);
+    setAnnotationColor(rgbToHex(annotation.color));
+    setOpacity(formatNumber(annotation.opacity));
+  }
+
+  async function updateAnnotation(annotation: PdfAnnotationInfo): Promise<void> {
+    if (annotation.subtype === 'other') throw new Error('This annotation subtype cannot be rebuilt');
+    await execute({
+      type: 'annotation.update', pageId: page.id, annotationId: annotation.id,
+      subtype: annotation.subtype, bounds: readBounds(boundsDraft), text: annotationText,
+      color: hexToRgb(annotationColor), opacity: readOpacity(opacity),
+      ...(annotation.subtype === 'rectangle' || annotation.subtype === 'ink'
+        ? { strokeWidth: readPositive(strokeWidth, 'Stroke width') } : {}),
+      ...(annotation.subtype === 'ink' ? { points: parseInkPoints(inkPoints) } : {}),
+    });
+  }
+
+  async function deleteAnnotation(annotation: PdfAnnotationInfo): Promise<void> {
+    await execute({ type: 'annotation.delete', pageId: page.id, annotationId: annotation.id });
+    setSelectedAnnotationId(null);
   }
 
   async function createField(): Promise<void> {
@@ -235,6 +270,13 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
             <strong>{annotation.subtype}</strong>
             <span>{formatRect(annotation.bounds)} · {Math.round(annotation.opacity * 100)}%</span>
             {annotation.text ? <span>{annotation.text}</span> : null}
+            <button type="button" disabled={locked} onClick={() => selectAnnotation(annotation)}
+              aria-label={`Edit ${annotation.subtype} annotation`}>Select for editing</button>
+            {canDeleteAnnotation && <button type="button" disabled={locked || !document.permissions.annotate}
+              aria-label={`Delete ${annotation.subtype} annotation`} onClick={() => {
+                if (window.confirm('Delete this annotation? You can undo this change.'))
+                  void run(() => deleteAnnotation(annotation));
+              }}>Delete</button>}
           </li>)}
         </ul> : null}
         <label>Annotation text<textarea rows={2} value={annotationText} disabled={locked || !supportsAnnotations}
@@ -247,14 +289,20 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
           <label>Stroke width<input type="number" min="0.1" step="0.1" value={strokeWidth} disabled={locked || !supportsAnnotations}
             onChange={event => setStrokeWidth(event.target.value)} /></label>
         </div>
+        {canUpdateAnnotation && selectedAnnotation && selectedAnnotation.subtype !== 'other' && <button type="button"
+          disabled={locked || !document.permissions.annotate} onClick={() => void run(() => updateAnnotation(selectedAnnotation))}>
+          Update selected annotation
+        </button>}
         <div className="text-edit-actions">
-          <button type="button" disabled={locked || !supportsAnnotations || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('text'))}>Add note</button>
-          <button type="button" disabled={locked || !supportsAnnotations || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('highlight'))}>Add highlight</button>
-          <button type="button" disabled={locked || !supportsAnnotations || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('rectangle'))}>Add rectangle</button>
+          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('text'))}>Add note</button>
+          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('highlight'))}>Add highlight</button>
+          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('rectangle'))}>Add rectangle</button>
         </div>
-        <label>Ink points (x,y; x,y; …)<textarea rows={2} value={inkPoints} disabled={locked || !supportsAnnotations}
+        <label>Ink points (x,y; x,y; …)<textarea rows={2} value={inkPoints}
+          disabled={locked || (!canAddAnnotation && !(canUpdateAnnotation && selectedAnnotation?.subtype === 'ink'))}
           onChange={event => setInkPoints(event.target.value)} /></label>
-        <button type="button" disabled={locked || !supportsAnnotations || !document.permissions.annotate} onClick={() => void run(addInk)}>Add ink</button>
+        {selectedAnnotation?.subtype === 'ink' && <p>Updating ink replaces its stroke with these points.</p>}
+        <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(addInk)}>Add ink</button>
         {!document.permissions.annotate ? <p role="alert">This document does not permit annotations.</p> : null}
       </>}
     </details>
@@ -389,6 +437,10 @@ function parseInkPoints(value: string): [number, number][] {
   });
   if (points.length < 2) throw new Error('Ink requires at least two coordinate points');
   return points;
+}
+
+function rgbToHex(color: [number, number, number]): string {
+  return `#${color.map(component => Math.round(component * 255).toString(16).padStart(2, '0')).join('')}`;
 }
 
 function hexToRgb(value: string): [number, number, number] {

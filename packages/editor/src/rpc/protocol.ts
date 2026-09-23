@@ -5,6 +5,7 @@ export const ENGINE_METHODS = [
   'describePage',
   'describeForms',
   'describeAnnotations',
+  'describeOutline',
   'describeFonts',
   'render',
   'extract',

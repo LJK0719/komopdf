@@ -17,6 +17,9 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
   const [color, setColor] = useState('#000000');
   const [lineHeight, setLineHeight] = useState(1.2);
   const [alignment, setAlignment] = useState<'left' | 'center' | 'right'>('left');
+  const [pageRange, setPageRange] = useState('current');
+  const [decoration, setDecoration] = useState<'number' | 'header' | 'footer' | 'watermark'>('number');
+  const [decorationText, setDecorationText] = useState('komopdf');
   const [textPreview, setTextPreview] = useState<{ key: string; layout: TextLayoutResult } | null>(null);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const { fonts } = useFontResources(engine);
@@ -42,9 +45,10 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
     await execute([command], new Set(), Boolean(engine.previewTextInsert));
   }
 
-  async function execute(commands: EditCommand[], resourceIds = new Set<string>(), alreadyPreviewed = false) {
+  async function execute(commands: EditCommand[], resourceIds = new Set<string>(), alreadyPreviewed = false,
+    loadedPages: Map<string, PageModel> = new Map([[page.id, page]])) {
     const transaction = { id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision, source: 'manual' as const, commands };
-    const context = { document, pages: new Map([[page.id, page]]), fontIds: new Set(fonts.map(font => font.id)), resourceIds,
+    const context = { document, pages: loadedPages, fontIds: new Set(fonts.map(font => font.id)), resourceIds,
       ...(host.capabilities.platform === 'web' ? { pageLimit: WEB_LIMITS.pagesPerDocument } : {}) };
     validateTransaction(transaction, context);
     if (!alreadyPreviewed) await engine.previewTransaction(transaction);
@@ -77,12 +81,39 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
     return execute([{ type: 'objects.transform', pageId: page.id, objectIds: selectedIds,
       matrix: [a, b, c, d, cx - a * cx - c * cy, cy - b * cx - d * cy] }]);
   }
-  function alignSelection(axis: 'left' | 'top') {
-    const objects = page.objects.filter(object => selectedIds.includes(object.id));
-    const edge = Math.min(...objects.map(object => axis === 'left' ? object.bounds.x : object.bounds.y));
-    return execute(objects.map(object => ({ type: 'objects.transform', pageId: page.id, objectIds: [object.id],
-      matrix: [1, 0, 0, 1, axis === 'left' ? edge - object.bounds.x : 0, axis === 'top' ? edge - object.bounds.y : 0] })));
+  function alignSelection(axis: Extract<EditCommand, { type: 'objects.align' }>['axis']) {
+    return execute([{ type: 'objects.align', pageId: page.id, objectIds: selectedIds, axis }]);
   }
+  function distributeSelection(axis: 'horizontal' | 'vertical') {
+    return execute([{ type: 'objects.distribute', pageId: page.id, objectIds: selectedIds, axis }]);
+  }
+  async function addPageDecoration() {
+    if (!chosenFont) throw new Error('Choose an embedded font first');
+    if (!Number.isFinite(fontSize) || fontSize <= 0) throw new Error('Choose a positive font size');
+    const targetIds = parsePageRange(pageRange, document.pageOrder, page.id);
+    if (targetIds.length > 4096) throw new Error('The native transaction can contain at most 4096 page decorations; use smaller ranges');
+    const loaded = new Map<string, PageModel>();
+    const commands: EditCommand[] = [];
+    for (const pageId of targetIds) {
+      const target = pageId === page.id ? page : await engine.describePage(document.id, pageId);
+      loaded.set(pageId, target);
+      const number = document.pageOrder.indexOf(pageId) + 1;
+      const margin = Math.min(36, target.widthPt * 0.08, target.heightPt * 0.08);
+      const height = Math.min(48, target.heightPt * 0.2);
+      const bounds = { x: margin, y: decoration === 'header' ? margin
+        : decoration === 'watermark' ? (target.heightPt - height) / 2
+          : target.heightPt - margin - height, width: target.widthPt - 2 * margin, height };
+      const label = decoration === 'number' ? String(number) : decorationText.replaceAll('{page}', String(number));
+      if (!label.trim()) throw new Error('Enter the page decoration text');
+      commands.push({ type: 'text.insert', pageId, objectId: crypto.randomUUID(), bounds,
+        text: label, style: { fontId: chosenFont, fontSize,
+          color: decoration === 'watermark' ? [0.65, 0.65, 0.65] : rgb,
+          alignment: decoration === 'number' ? 'right' : decoration === 'watermark' ? 'center' : 'left' },
+        paragraph: true });
+    }
+    await execute(commands, new Set(), false, loaded);
+  }
+
   async function insertResource(kind: 'image' | 'pdf', mode: 'insert' | 'replace' | 'pages' = 'insert') {
     if (mode === 'insert' && (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0)) throw new Error('Enter valid positive insertion dimensions');
     const source = await host.pickResource?.(kind);
@@ -131,9 +162,16 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
         {numberField('Scale (%)', scale, setScale)}{numberField('Rotation (degrees)', angle, setAngle)}
         <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('scale'))}>Scale selected objects</button>
         <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('rotate'))}>Rotate selected objects</button>
-        <button disabled={locked || selectedIds.length < 2} onClick={() => void run(() => alignSelection('left'))}>Align left</button>
-        <button disabled={locked || selectedIds.length < 2} onClick={() => void run(() => alignSelection('top'))}>Align top</button>
       </>}
+      {supports('objects.align') && <div className="text-edit-actions" aria-label="Align selected objects">
+        {(['left', 'center', 'right', 'top', 'middle', 'bottom'] as const).map(axis =>
+          <button key={axis} disabled={locked || selectedIds.length < 2}
+            onClick={() => void run(() => alignSelection(axis))}>Align {axis}</button>)}
+      </div>}
+      {supports('objects.distribute') && <div className="text-edit-actions" aria-label="Distribute selected objects">
+        <button disabled={locked || selectedIds.length < 3} onClick={() => void run(() => distributeSelection('horizontal'))}>Distribute horizontally</button>
+        <button disabled={locked || selectedIds.length < 3} onClick={() => void run(() => distributeSelection('vertical'))}>Distribute vertically</button>
+      </div>}
       <div className="text-edit-actions">
         {supports('objects.transform') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
@@ -147,12 +185,44 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
         ]))}>Delete selected objects</button>}
       </div>
     </details>
+    {supports('text.insert') && <details><summary>Page numbers, headers, footers & watermark</summary>
+      <label>Pages<input value={pageRange} disabled={locked} placeholder="current, all, or 1-3,5"
+        onChange={event => setPageRange(event.target.value)} /></label>
+      <label>Decoration<select value={decoration} disabled={locked}
+        onChange={event => setDecoration(event.target.value as typeof decoration)}>
+        <option value="number">Page number</option><option value="header">Header</option>
+        <option value="footer">Footer</option><option value="watermark">Watermark</option>
+      </select></label>
+      {decoration !== 'number' && <label>Decoration text (use {'{page}'} for page number)
+        <input value={decorationText} disabled={locked} onChange={event => setDecorationText(event.target.value)} />
+      </label>}
+      <label>Decoration font<select disabled={locked} value={chosenFont ?? ''}
+        onChange={event => setFontId(event.target.value)}>
+        {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
+      </select></label>
+      {numberField('Decoration font size (pt)', fontSize, setFontSize)}
+      <label>Decoration color<input type="color" value={color} disabled={locked}
+        onChange={event => setColor(event.target.value)} /></label>
+      <button disabled={locked || !chosenFont} onClick={() => void run(addPageDecoration)}>Apply to selected pages</button>
+      <p>Inserts real searchable PDF text in one undoable transaction; existing page content is not covered.</p>
+    </details>}
     <details><summary>Insert & format</summary>
       <p>Top-left coordinates and dimensions in PDF points.</p>
       {numberField('X (pt)', x, setX)}{numberField('Y (pt)', y, setY)}
       {numberField('Width (pt)', width, setWidth)}{numberField('Height (pt)', height, setHeight)}
+      {supports('pages.crop') && <>
+        <button disabled={locked} onClick={() => {
+          if (window.confirm('Crop this page to the specified box? Hidden content remains in the PDF and this can be undone.'))
+            void run(() => execute([{ type: 'pages.crop', pageIds: [page.id], bounds }]));
+        }}>Crop page to box</button>
+        <p>Page cropping changes the real PDF CropBox; it is not secure redaction.</p>
+      </>}
       {host.pickResource && <>
-        {supports('image.insert') && <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>Insert image</button>}
+        {supports('image.insert') && <>
+          <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>Insert image</button>
+          <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>Place visual signature image</button>
+          <p>A visual signature is an editable PDF image object, not a certificate signature. Existing digital signatures may be invalidated.</p>
+        </>}
         {supports('image.replace') && <button disabled={locked || selectedIds.length !== 1 || page.objects.find(object => object.id === selectedIds[0])?.type !== 'image'}
           onClick={() => void run(() => insertResource('image', 'replace'))}>Replace selected image</button>}
         {supports('image.crop') && <>
@@ -191,4 +261,21 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
     </details>
     {error && <p role="alert">{error}</p>}
   </section>;
+}
+
+function parsePageRange(input: string, order: string[], currentPage: string): string[] {
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'current') return [currentPage];
+  if (normalized === 'all') return [...order];
+  const positions = new Set<number>();
+  for (const part of normalized.split(',')) {
+    const match = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(part.trim());
+    if (!match) throw new Error('Use current, all, or page numbers such as 1-3,5');
+    const start = Number(match[1]), end = match[2] ? Number(match[2]) : start;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end > order.length) {
+      throw new Error('Page range must refer to existing pages in ascending order');
+    }
+    for (let index = start; index <= end; index++) positions.add(index);
+  }
+  return [...positions].sort((a, b) => a - b).map(index => order[index - 1]!);
 }

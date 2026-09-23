@@ -104,6 +104,15 @@ const char* pde_apply_text(uint32_t document,
 // 512=OCR (requires both), or 1024=logical paragraph (mutually exclusive).
 // Type 20 is paragraph reflow: type-3 geometry/style plus ids=source block IDs;
 // target_id is the new logical object's ID and flag 1024 is required.
+// Type 21 aligns two or more top-level object IDs on one page; values[0] is
+// 0=left, 1=center, 2=right, 3=top, 4=middle, 5=bottom.
+// Types 22/23 update or delete a persistent annotation on page_id. Type 22
+// takes the same complete appearance/geometry payload as annotation.add;
+// both preserve the annotation ID and enter the ordinary PDF transaction.
+// Type 24 distributes three or more top-level objects by center within the
+// selected outer centers; values[0] 0=horizontal, 1=vertical.
+// Type 25 crops each page in ids to a top-left normalized rectangle in
+// values[0..3]. Pixels outside CropBox remain in the PDF; this is not redaction.
 typedef struct PdeEditCommand {
   uint32_t type;
   const char* page_id;
@@ -155,6 +164,9 @@ const char* pde_export_recovery(uint32_t document);
 const char* pde_recovery_resources(uint32_t document);
 const char* pde_describe_forms(uint32_t document);
 const char* pde_describe_annotations(uint32_t document, uint32_t page_index);
+// Read-only outline entries in display order. Invalid or external destinations
+// have a null page ID; no actions or PDF JavaScript are executed.
+const char* pde_describe_outline(uint32_t document);
 const char* pde_export_recovery_file_utf8(uint32_t document, const char* path_utf8);
 uint32_t pde_restore_recovery(const uint8_t* bytes, uint32_t length,
                               const char* password_utf8);

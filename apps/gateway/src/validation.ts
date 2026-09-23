@@ -47,10 +47,12 @@ function validateCommand(request: AiRequest, command: ProposedCommand, allowedCo
     case 'objects.transform':
     case 'objects.delete':
     case 'objects.align':
+    case 'objects.distribute':
       assert(pageIds.has(command.pageId), 'Object command page is not in request context');
       for (const objectId of command.objectIds) assert(objectPage.get(objectId) === command.pageId, 'Object command target does not match page');
       return;
     case 'pages.rotate':
+    case 'pages.crop':
     case 'pages.delete':
     case 'pages.reorder':
       for (const pageId of command.pageIds) assert(pageIds.has(pageId), 'Page command target is not in request context');

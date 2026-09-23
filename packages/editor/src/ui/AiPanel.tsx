@@ -2,8 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   type AiFeature,
   type AiRequest,
-  type CommitResult,
-  type DocumentInfo,
+  type CommandType,
+  type CommitResult,  type DocumentInfo,
   type EditTransaction,
   type EngineAdapter,
   type FormFieldInfo,
@@ -322,12 +322,14 @@ export function AiPanel(props: Props) {
       }
 
       const availableCommands = feature === 'commands.plan'
-        ? ['pages.rotate', 'pages.delete', 'pages.reorder', 'objects.delete', 'objects.align', 'objects.transform', 'text.style']
+        ? ['pages.rotate', 'pages.crop', 'pages.delete', 'pages.reorder', 'objects.delete', 'objects.align', 'objects.distribute', 'objects.transform', 'text.style']
         : feature === 'blocks.organize'
-          ? ['text.style', 'objects.align', 'objects.transform', 'objects.delete']
+          ? ['text.style', 'objects.align', 'objects.distribute', 'objects.transform', 'objects.delete']
           : feature === 'form.suggest'
             ? ['form.fill']
             : undefined;
+
+      const advertisedCommands = availableCommands?.filter(command => document.capabilities.includes(command as CommandType));
 
       const objectsMetadata = (feature === 'commands.plan' || feature === 'blocks.organize')
         ? currentPage.objects.map(obj => ({
@@ -352,7 +354,7 @@ export function AiPanel(props: Props) {
           scope: effectiveScope,
           evidence,
           ...(requestImages ? { images: requestImages } : {}),
-          ...(availableCommands ? { availableCommands } : {}),
+          ...(advertisedCommands ? { availableCommands: advertisedCommands } : {}),
           ...(objectsMetadata ? { objects: objectsMetadata } : {}),
           ...(pagesMetadata ? { pages: pagesMetadata } : {}),
           ...(pageFormFields.length > 0 ? {

@@ -41,6 +41,16 @@ function packed(commands: EditCommand[]) {
 }
 
 describe('ABI 3 command encoding', () => {
+  it('encodes native alignment axes without changing the ABI3 record', () => {
+    const { bytes, record } = packed((['left', 'center', 'right', 'top', 'middle', 'bottom'] as const)
+      .map(axis => ({ type: 'objects.align', pageId: 'page-1', objectIds: ['path-a', 'path-b'], axis })));
+    expect(bytes.byteLength).toBe(6 * EDIT_COMMAND_STRIDE);
+    for (let index = 0; index < 6; index++) {
+      expect(record(index).fields[0]).toBe(21);
+      expect(record(index).values[0]).toBe(index);
+      expect(record(index).ids).toEqual(['path-a', 'path-b']);
+    }
+  });
   it('encodes annotation.add flags, geometry and repeated ink coordinates without changing stride', () => {
     const { bytes, record } = packed([{
       type: 'annotation.add', pageId: 'page-1', annotationId: 'annotation-1', subtype: 'ink',
@@ -57,6 +67,46 @@ describe('ABI 3 command encoding', () => {
     expect(command.fields[10]).toBe(7);
     expect(command.values.slice(0, 9)).toEqual([1, 2, 30, 40, 0.1, 0.2, 0.3, 0.5, 2.5]);
     expect(command.ids).toEqual(['4', '5', '4', '5']);
+  });
+
+  it('encodes a real CropBox edit for selected pages', () => {
+    const { bytes, record } = packed([{
+      type: 'pages.crop', pageIds: ['p1', 'p2'], bounds: { x: 12, y: 18, width: 80, height: 120 },
+    }]);
+    expect(bytes.byteLength).toBe(EDIT_COMMAND_STRIDE);
+    expect(record(0).fields[0]).toBe(25);
+    expect(record(0).ids).toEqual(['p1', 'p2']);
+    expect(record(0).values.slice(0, 4)).toEqual([12, 18, 80, 120]);
+  });
+
+  it('encodes distribution on either page axis without widening the ABI', () => {
+    const { bytes, record } = packed([
+      { type: 'objects.distribute', pageId: 'page-1', objectIds: ['a', 'b', 'c'], axis: 'horizontal' },
+      { type: 'objects.distribute', pageId: 'page-1', objectIds: ['a', 'b', 'c'], axis: 'vertical' },
+    ]);
+    expect(bytes.byteLength).toBe(2 * EDIT_COMMAND_STRIDE);
+    expect(record(0).fields[0]).toBe(24);
+    expect(record(1).fields[0]).toBe(24);
+    expect(record(0).values[0]).toBe(0);
+    expect(record(1).values[0]).toBe(1);
+    expect(record(0).ids).toEqual(['a', 'b', 'c']);
+  });
+
+  it('encodes annotation updates and deletion with a stable ID', () => {
+    const { bytes, record } = packed([
+      { type: 'annotation.update', pageId: 'page-1', annotationId: 'note-1', subtype: 'text',
+        bounds: { x: 4, y: 5, width: 20, height: 20 }, text: 'Edited', color: [0, 0, 1], opacity: 0.8 },
+      { type: 'annotation.delete', pageId: 'page-1', annotationId: 'note-1' },
+    ]);
+    expect(bytes.byteLength).toBe(2 * EDIT_COMMAND_STRIDE);
+    expect(record(0).fields[0]).toBe(22);
+    expect(record(0).string(2)).toBe('note-1');
+    expect(record(0).string(4)).toBe('Edited');
+    expect(record(0).fields[10]).toBe(3);
+    expect(record(0).values.slice(0, 8)).toEqual([4, 5, 20, 20, 0, 0, 1, 0.8]);
+    expect(record(1).fields[0]).toBe(23);
+    expect(record(1).string(2)).toBe('note-1');
+    expect(record(1).ids).toEqual([]);
   });
 
   it('encodes all form.fill value variants including empty string and empty option list', () => {

@@ -26,7 +26,7 @@
   "smoke": {
     "result": "pass",
     "nodeResult": {
-      "abi": 1,
+      "abi": 2,
       "encrypted": 1734,
       "decrypted": 1087,
       "optimized": 904
@@ -60,18 +60,18 @@
     },
     {
       "path": "pdf-editor-qpdf.js",
-      "bytes": 76937,
-      "sha256": "927b34664bcaed7fe6d0550b5dbb424b45387443ac9f44d59660bb9439256e68"
+      "bytes": 77282,
+      "sha256": "d9a0a62879f21a308807549fe856604ec19080d3e2db6c872131053737d7217f"
     },
     {
       "path": "pdf-editor-qpdf.wasm",
-      "bytes": 1135375,
-      "sha256": "b0d735dfd75aa90be6479ffb47f005e78c53f6da0a7729397a43f71745bc88b8"
+      "bytes": 1165091,
+      "sha256": "392d5807c5d86af9234cda4c312fbd9d76ac5293c60330f652b8285d98f4fc46"
     },
     {
       "path": "pdf_editor_qpdf.h",
-      "bytes": 2267,
-      "sha256": "16b2d6f1a975ece4b61ec2e5319dbfac2b0a7c116f2cca87dbc7c80644d0da2f"
+      "bytes": 2716,
+      "sha256": "eeb6a0b149ab94b6f943512dd86df315c135a3539dd14509aaae3d7af48c122b"
     }
   ]
 }

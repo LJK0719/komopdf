@@ -55,14 +55,22 @@ endif()
 
 add_subdirectory("${QPDF_SOURCE_DIR}" qpdf-upstream EXCLUDE_FROM_ALL)
 
-add_library(pdf_editor_qpdf_bridge STATIC src/pdf_editor_qpdf.cpp)
-target_include_directories(pdf_editor_qpdf_bridge PUBLIC include)
+# Pl_DCT's public header includes jpeglib.h; qpdf keeps its JPEG include
+# directory private, so the image optimizer needs it explicitly as well.
+if(MSVC)
+  set(PDE_JPEG_INCLUDE "${QPDF_SOURCE_DIR}/vcpkg/installed/x64-windows-static/include")
+elseif(APPLE)
+  set(PDE_JPEG_INCLUDE "${LIBJPEG_H_PATH}")
+endif()
+
+add_library(pdf_editor_qpdf_bridge STATIC src/pdf_editor_qpdf.cpp src/image_optimizer.cpp)
+target_include_directories(pdf_editor_qpdf_bridge PUBLIC include PRIVATE ${PDE_JPEG_INCLUDE})
 target_link_libraries(pdf_editor_qpdf_bridge PUBLIC libqpdf)
 set_target_properties(pdf_editor_qpdf_bridge PROPERTIES OUTPUT_NAME "pdf-editor-qpdf-bridge")
 
 if(EMSCRIPTEN)
-  add_executable(pdf_editor_qpdf_wasm src/pdf_editor_qpdf.cpp)
-  target_include_directories(pdf_editor_qpdf_wasm PRIVATE include)
+  add_executable(pdf_editor_qpdf_wasm src/pdf_editor_qpdf.cpp src/image_optimizer.cpp)
+  target_include_directories(pdf_editor_qpdf_wasm PRIVATE include ${PDE_JPEG_INCLUDE})
   target_link_libraries(pdf_editor_qpdf_wasm PRIVATE libqpdf)
   target_compile_options(pdf_editor_qpdf_wasm PRIVATE -fexceptions)
   target_link_options(pdf_editor_qpdf_wasm PRIVATE
@@ -76,13 +84,14 @@ if(EMSCRIPTEN)
     -sMAXIMUM_MEMORY=1073741824
     -sUSE_ZLIB=1
     -sUSE_LIBJPEG=1
-    "-sEXPORTED_FUNCTIONS=['_pde_qpdf_abi_version','_pde_qpdf_version','_pde_qpdf_transform','_pde_qpdf_last_error','_pde_qpdf_free','_malloc','_free']"
+    "-sEXPORTED_FUNCTIONS=['_pde_qpdf_abi_version','_pde_qpdf_version','_pde_qpdf_transform','_pde_qpdf_optimize_images','_pde_qpdf_last_error','_pde_qpdf_free','_malloc','_free']"
     "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU32','UTF8ToString','stringToUTF8','lengthBytesUTF8']")
   set_target_properties(pdf_editor_qpdf_wasm PROPERTIES
     OUTPUT_NAME "pdf-editor-qpdf"
     SUFFIX ".js")
 else()
-  add_executable(pdf_editor_qpdf_cli src/qpdf_job_main.cpp)
+  add_executable(pdf_editor_qpdf_cli src/qpdf_job_main.cpp src/image_optimizer.cpp)
+  target_include_directories(pdf_editor_qpdf_cli PRIVATE ${PDE_JPEG_INCLUDE})
   target_link_libraries(pdf_editor_qpdf_cli PRIVATE libqpdf)
   set_target_properties(pdf_editor_qpdf_cli PROPERTIES OUTPUT_NAME "pdf-editor-qpdf")
 endif()
