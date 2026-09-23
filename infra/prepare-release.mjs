@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,8 +26,15 @@ await mkdir(path.dirname(stageDir), { recursive: true });
 await mkdir(stageDir, { recursive: false });
 const gatewayStageDir = path.join(stageDir, 'apps/gateway');
 run('pnpm', ['--filter', '@pdf-editor/gateway', 'deploy', '--legacy', '--prod', gatewayStageDir, '--config.confirmModulesPurge=false']);
-// Keep the generated package.json, virtual store and links together. In particular,
-// do not merge multiple versions under a single package name or erase .pnpm.
+// pnpm 11 legacy deploy retains an alias for the deployed workspace itself.
+// Point that one alias at the deployed application, not the build checkout.
+const selfLink = path.join(gatewayStageDir, 'node_modules/.pnpm/node_modules/@pdf-editor/gateway');
+const selfInfo = await lstat(selfLink).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+if (selfInfo?.isSymbolicLink()) {
+  await unlink(selfLink);
+  await symlink(path.relative(path.dirname(selfLink), gatewayStageDir), selfLink, 'dir');
+}
+// Keep all other dependency versions and links exactly as pnpm resolved them.
 await cp(path.join(root, 'apps/gateway/dist/cli.mjs'), path.join(gatewayStageDir, 'dist/cli.mjs'));
 
 console.log('[3/4] Assembling static files and deployment configuration...');

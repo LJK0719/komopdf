@@ -35,11 +35,11 @@ async function stage(source, destination, desktop) {
   await writeFile(path.join(destination, 'manifest.json'), JSON.stringify({ ...manifest, files }, null, 2) + '\n');
 }
 
-export async function prepareQpdfRuntime({ web = true, desktop = false, target, coreRoot = root, desktopRoot = root, webPublic = path.join(coreRoot, 'apps/web/public') } = {}) {
+export async function prepareQpdfRuntime({ web = true, desktop = false, target, coreRoot = root, desktopRoot = root, desktopArtifacts = path.join(desktopRoot, 'native/qpdf/artifacts'), webPublic = path.join(coreRoot, 'apps/web/public') } = {}) {
   if (web) await stage(path.join(coreRoot, 'native/qpdf/artifacts/wasm'), path.join(webPublic, 'engines/qpdf'), false);
   if (desktop) {
     const selectedTarget = target || (process.platform === 'win32' ? 'windows-x64' : `macos-${process.arch}`);
-    await stage(path.join(desktopRoot, 'native/qpdf/artifacts', selectedTarget), path.join(desktopRoot, 'apps/desktop/src-tauri/runtime/qpdf'), true);
+    await stage(path.join(desktopArtifacts, selectedTarget), path.join(desktopRoot, 'apps/desktop/src-tauri/runtime/qpdf'), true);
   }
 }
 
