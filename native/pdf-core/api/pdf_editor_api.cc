@@ -5520,11 +5520,12 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
       return true;
     case EditType::kFormCreate: {
       const bool choice = target->resource_id == "combo" || target->resource_id == "list";
+      const bool radio = target->resource_id == "radio";
       if (!require_page() || !require_target() || !ValidateRectValues(*target) ||
           (target->flags & ~1U) ||
           (((target->flags & 1U) != 0) != !target->font_id.empty()) ||
-          (target->resource_id != "text" && target->resource_id != "checkbox" && !choice) ||
-          (choice ? target->ids.empty() || target->font_id.empty() : !target->ids.empty()) ||
+          (target->resource_id != "text" && target->resource_id != "checkbox" && !choice && !radio) ||
+          ((choice || radio) ? target->ids.empty() || (choice && target->font_id.empty()) : !target->ids.empty()) ||
           target->text.empty() || !ValidateLayoutText(target->text, "Form name") ||
           target->values[4] <= 0 || target->values[4] > 1000) {
         if (g_error_code.empty()) SetError("INVALID_REQUEST", "The new form field is invalid.");

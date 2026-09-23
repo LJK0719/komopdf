@@ -1450,6 +1450,61 @@ void TestDocumentTools(const std::string& font_id,
   Require(pde_close(doc) == 1, "close document tools fixture");
 }
 
+void TestRadioFields() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] "
+      "/Resources << >> /Contents 4 0 R >>",
+      Stream(""),
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "radio-doc", "radio-source", nullptr);
+  Require(doc != 0, "open radio group fixture");
+  const std::string page_id = PageIdFromDescription(pde_describe_page(doc, 0));
+  const char* options[] = {"\xE5\x8C\x97\xE4\xBA\xAC", "\xE4\xB8\x8A\xE6\xB5\xB7"};
+  PdeEditCommand create{};
+  create.type = 19; create.page_id = page_id.c_str(); create.target_id = "radio-city";
+  create.resource_id = "radio"; create.text_utf8 = "Select city";
+  create.ids = options; create.id_count = 2;
+  create.values[0] = 20; create.values[1] = 30; create.values[2] = 160;
+  create.values[3] = 32; create.values[4] = 12;
+  const auto blank = RenderPixels(doc, 0, 300, 200);
+  Require(pde_preview_commands(doc, 0, &create, 1) != nullptr &&
+          std::string(pde_describe_forms(doc)) == "[]",
+          "radio group preview leaves the PDF unchanged");
+  Require(pde_apply_commands(doc, 0, "radio-create", &create, 1) != nullptr,
+          "create real multi-widget radio group");
+  const std::string initial = RequireResult(pde_describe_forms(doc), "describe radio group");
+  Require(initial.find("\"id\":\"radio-city\"") != std::string::npos &&
+          initial.find("\"type\":\"radio\"") != std::string::npos &&
+          initial.find(options[0]) != std::string::npos &&
+          initial.find(options[1]) != std::string::npos &&
+          Count(initial, "\"pageId\"") == 2 &&
+          RenderPixels(doc, 0, 300, 200) != blank,
+          "radio options have independent real Widget appearances");
+  PdeEditCommand fill{};
+  fill.type = 18; fill.target_id = "radio-city"; fill.text_utf8 = options[1];
+  Require(pde_apply_commands(doc, 1, "radio-select", &fill, 1) != nullptr,
+          "form.fill selects one persistent radio option");
+  const std::string selected = RequireResult(pde_describe_forms(doc), "describe selected radio");
+  Require(selected.find(std::string("\"value\":\"") + options[1] + "\"") != std::string::npos &&
+          pde_save_memory(doc) != nullptr,
+          "radio selection updates PDF value and saves");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "radio-reopened", "radio-saved", nullptr);
+  Require(reopened != 0 &&
+          std::string(pde_describe_forms(reopened)).find(
+              std::string("\"value\":\"") + options[1] + "\"") != std::string::npos &&
+          RenderPixels(reopened, 0, 300, 200) == RenderPixels(doc, 0, 300, 200),
+          "selected radio Widget persists after save and reopen");
+  Require(pde_undo(doc) != nullptr && std::string(pde_describe_forms(doc)) == initial,
+          "undo restores the unselected radio group");
+  Require(pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close radio group fixture");
+}
+
 void TestChoiceFields(const std::string& font_id) {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -2238,6 +2293,7 @@ int main(int argc, char** argv) {
   TestPageCrop();
   TestOutlineNavigation();
   TestAnnotationPageDuplicate();
+  TestRadioFields();
   TestP1bTransactions();
   TestFontRuntime(font_options);
   pde_shutdown();

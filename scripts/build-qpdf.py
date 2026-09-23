@@ -765,7 +765,8 @@ def build_macos(remote_device: str = "ljkmacbook-air") -> tuple[dict[str, object
         ssh_connect = Path.home() / ".claude" / "accounts" / "ssh-connect.py"
         if not ssh_connect.exists():
             raise FileNotFoundError(f"SSH connect entry script not found: {ssh_connect}")
-        remote_work = "/Users/ljk/data/workspace/pdf-editor/tmp/mac-qpdf-20260922"
+        remote_work = "/Users/ljk/data/workspace/pdf-editor/tmp/mac-qpdf-resample-20260923"
+        source_archive = "/Users/ljk/data/workspace/pdf-editor/tmp/mac-qpdf-20260922/qpdf-12.4.1.tar.gz"
         run([sys.executable, str(ssh_connect), remote_device, "mkdir", "-p", f"{remote_work}/package"])
         overlay_tar = WORK / "qpdf-source-overlay.tar.gz"
         WORK.mkdir(parents=True, exist_ok=True)
@@ -784,16 +785,14 @@ def build_macos(remote_device: str = "ljkmacbook-air") -> tuple[dict[str, object
         run([sys.executable, str(ssh_connect), "--scp", remote_device, str(overlay_tar), f"{remote_work}/qpdf-source-overlay.tar.gz"])
         macos_script = ROOT / "scripts" / "build-qpdf-macos.py"
         run([sys.executable, str(ssh_connect), "--scp", remote_device, str(macos_script), f"{remote_work}/build-qpdf-macos.py"])
-        run([
-            sys.executable,
-            str(ssh_connect),
-            remote_device,
-            "/bin/bash",
-            "-c",
-            f"tar -xzf {remote_work}/qpdf-source-overlay.tar.gz -C {remote_work}/package && /usr/bin/python3 {remote_work}/build-qpdf-macos.py --tar-results",
-        ])
-        local_results_tar = WORK / "mac-qpdf-arm64-results.tar.gz"
-        local_results_sha = WORK / "mac-qpdf-arm64-results.tar.gz.sha256"
+        run([sys.executable, str(ssh_connect), remote_device, "/usr/bin/tar", "-xzf",
+             f"{remote_work}/qpdf-source-overlay.tar.gz", "-C", f"{remote_work}/package"])
+        run([sys.executable, str(ssh_connect), remote_device, "/usr/bin/python3",
+             f"{remote_work}/build-qpdf-macos.py", "--work-dir", remote_work,
+             "--source-archive", source_archive, "--package-dir", f"{remote_work}/package",
+             "--output-dir", f"{remote_work}/artifacts/macos-arm64", "--tar-results"])
+        local_results_tar = WORK / "mac-qpdf-arm64-resample-results.tar.gz"
+        local_results_sha = WORK / "mac-qpdf-arm64-resample-results.tar.gz.sha256"
         run([sys.executable, str(ssh_connect), "--download", remote_device, f"{remote_work}/mac-qpdf-arm64-results.tar.gz", str(local_results_tar)])
         run([sys.executable, str(ssh_connect), "--download", remote_device, f"{remote_work}/mac-qpdf-arm64-results.tar.gz.sha256", str(local_results_sha)])
         expected_sha = local_results_sha.read_text(encoding="utf-8").strip().split()[0]

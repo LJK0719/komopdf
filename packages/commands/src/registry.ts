@@ -250,11 +250,12 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
       }
       case 'form.create': {
         const choice = command.fieldType === 'combo' || command.fieldType === 'list';
-        if (choice && (!command.fontId || !command.options?.length ||
-            new Set(command.options).size !== command.options.length)) {
-          invalid('Choice fields require an embedded font and distinct options');
+        const optionField = choice || command.fieldType === 'radio';
+        if (optionField && (!command.options?.length ||
+            new Set(command.options).size !== command.options.length || (choice && !command.fontId))) {
+          invalid('Choice and radio fields require distinct options; choices also need an embedded font');
         }
-        if (!choice && command.options !== undefined) invalid('Only choice fields accept options');
+        if (!optionField && command.options !== undefined) invalid('Only choice and radio fields accept options');
         addId(command.fieldId);
         fields.set(command.fieldId, { pageId: command.pageId,
           type: command.fieldType === 'combo' || command.fieldType === 'list' ? 'choice' : command.fieldType,

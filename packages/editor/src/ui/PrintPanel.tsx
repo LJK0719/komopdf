@@ -12,7 +12,12 @@ export async function printCurrentPdf(engine: EngineAdapter, docId: string): Pro
   frame.src = url;
 
   await new Promise<void>((resolve, reject) => {
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    let cleaned = false;
     const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (cleanupTimer) clearTimeout(cleanupTimer);
       window.removeEventListener('afterprint', cleanup);
       frame.remove();
       URL.revokeObjectURL(url);
@@ -26,6 +31,7 @@ export async function printCurrentPdf(engine: EngineAdapter, docId: string): Pro
       }
       printWindow.addEventListener('afterprint', cleanup, { once: true });
       window.addEventListener('afterprint', cleanup, { once: true });
+      cleanupTimer = setTimeout(cleanup, 60_000);
       try {
         printWindow.focus();
         printWindow.print();

@@ -62,6 +62,21 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
   await cityField.getByRole('button', { name: 'Apply value', exact: true }).click();
   await expect(cityField.getByRole('combobox', { name: 'Value', exact: true })).toHaveValue('上海');
 
+  // 3c. A radio group is one real AcroForm field with two independent Widgets.
+  await page.getByLabel('X', { exact: true }).fill('36');
+  await page.getByLabel('Y', { exact: true }).fill('210');
+  await page.getByLabel('Width', { exact: true }).fill('180');
+  await page.getByLabel('Height', { exact: true }).fill('28');
+  await page.getByLabel('Field name', { exact: true }).fill('选择颜色');
+  await page.getByRole('combobox', { name: 'Field type', exact: true }).selectOption('radio');
+  await page.getByRole('textbox', { name: 'Options (one per line)' }).fill('红色\n蓝色');
+  await page.getByRole('button', { name: 'Create field', exact: true }).click();
+  const colorField = page.locator('.document-field').filter({ hasText: '选择颜色' });
+  await expect(colorField).toBeVisible();
+  await colorField.getByRole('combobox', { name: 'Value', exact: true }).selectOption('蓝色');
+  await colorField.getByRole('button', { name: 'Apply value', exact: true }).click();
+  await expect(colorField.getByRole('combobox', { name: 'Value', exact: true })).toHaveValue('蓝色');
+
   // 4. Add a Note annotation with undo/redo check
   await page.getByLabel('X', { exact: true }).fill('36');
   await page.getByLabel('Y', { exact: true }).fill('120');
@@ -122,6 +137,8 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
   await expect(reopenedCheckboxField.getByRole('checkbox', { name: 'Checked' })).toBeChecked();
   const reopenedCityField = page.locator('.document-field').filter({ hasText: '选择城市' });
   await expect(reopenedCityField.getByRole('combobox', { name: 'Value', exact: true })).toHaveValue('上海');
+  const reopenedColorField = page.locator('.document-field').filter({ hasText: '选择颜色' });
+  await expect(reopenedColorField.getByRole('combobox', { name: 'Value', exact: true })).toHaveValue('蓝色');
 
   await expect(page.locator('.document-tools-list')).toContainText('Updated note in the real PDF');
   await expect(page.locator('.document-tools-list').locator('li')).toHaveCount(1);
