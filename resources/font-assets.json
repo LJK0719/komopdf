@@ -1,0 +1,330 @@
+{
+  "schemaVersion": 1,
+  "fonts": {
+    "familyCount": 6,
+    "releaseStatus": "candidate-files-selected-not-all-downloaded",
+    "families": [
+      {
+        "id": "noto-sans-cjk-sc",
+        "uiName": "Chinese Sans",
+        "familyName": "Noto Sans CJK SC",
+        "version": "2.004",
+        "tag": "Sans2.004",
+        "commit": "523d033d6cb47f4a80c58a35753646f5c3608a78",
+        "format": "OTF",
+        "outline": "CFF",
+        "license": {
+          "spdx": "OFL-1.1",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/LICENSE",
+          "reservedFontNamesDeclared": []
+        },
+        "files": [
+          {
+            "style": "Regular",
+            "weight": 400,
+            "fileName": "NotoSansCJKsc-Regular.otf",
+            "installPath": "resources/fonts/noto-sans-cjk-sc/NotoSansCJKsc-Regular.otf",
+            "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+            "byteSize": 16437364,
+            "upstreamGitBlobSha1": "dc15562470b4f842321894787a0d066879ccff8b",
+            "sha256": null,
+            "fsType": null,
+            "integrityStatus": "pending-download-sha256-and-sfnt-inspection"
+          },
+          {
+            "style": "Bold",
+            "weight": 700,
+            "fileName": "NotoSansCJKsc-Bold.otf",
+            "installPath": "resources/fonts/noto-sans-cjk-sc/NotoSansCJKsc-Bold.otf",
+            "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf",
+            "byteSize": 17002248,
+            "upstreamGitBlobSha1": "ff4c0450e8a5bf0290fbb6013a72dc61a10e8e56",
+            "sha256": null,
+            "fsType": null,
+            "integrityStatus": "pending-download-sha256-and-sfnt-inspection"
+          }
+        ]
+      },
+      {
+        "id": "noto-serif-cjk-sc",
+        "uiName": "Chinese Serif",
+        "familyName": "Noto Serif CJK SC",
+        "version": "2.003",
+        "tag": "Serif2.003",
+        "commit": "9b0f1436e455d902de067a2501422e5dc71ad16b",
+        "format": "OTF",
+        "outline": "CFF",
+        "license": {
+          "spdx": "OFL-1.1",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/LICENSE",
+          "reservedFontNamesDeclared": []
+        },
+        "files": [
+          {
+            "style": "Regular",
+            "weight": 400,
+            "fileName": "NotoSerifCJKsc-Regular.otf",
+            "installPath": "resources/fonts/noto-serif-cjk-sc/NotoSerifCJKsc-Regular.otf",
+            "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Regular.otf",
+            "byteSize": 24543080,
+            "upstreamGitBlobSha1": "cba8a4783cc38574ac7cda52cae7d9b4241c07a5",
+            "sha256": null,
+            "fsType": null,
+            "integrityStatus": "pending-download-sha256-and-sfnt-inspection"
+          },
+          {
+            "style": "Bold",
+            "weight": 700,
+            "fileName": "NotoSerifCJKsc-Bold.otf",
+            "installPath": "resources/fonts/noto-serif-cjk-sc/NotoSerifCJKsc-Bold.otf",
+            "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Bold.otf",
+            "byteSize": 25521460,
+            "upstreamGitBlobSha1": "f1bd9c86c5765f3358815fb84b19003fd5711747",
+            "sha256": null,
+            "fsType": null,
+            "integrityStatus": "pending-download-sha256-and-sfnt-inspection"
+          }
+        ]
+      },
+      {
+        "id": "lxgw-wenkai",
+        "uiName": "Chinese Kai",
+        "familyName": "LXGW WenKai",
+        "version": "1.522",
+        "tag": "v1.522",
+        "commit": "e8b5b48b79f19f29aa68b0a178eab3472ea9f7e8",
+        "format": "TTF",
+        "outline": "TrueType glyf",
+        "license": {
+          "spdx": "OFL-1.1",
+          "url": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/e8b5b48b79f19f29aa68b0a178eab3472ea9f7e8/OFL.txt",
+          "reservedFontNamesDeclared": [
+            "霞鹜",
+            "LXGW"
+          ],
+          "reservedFontNameEvidence": "Pinned README authorization section."
+        },
+        "files": [
+          {
+            "style": "Regular",
+            "weight": 400,
+            "fileName": "LXGWWenKai-Regular.ttf",
+            "installPath": "resources/fonts/lxgw-wenkai/LXGWWenKai-Regular.ttf",
+            "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKai-Regular.ttf",
+            "byteSize": 25575676,
+            "sha256": "39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
+            "sha256Basis": "GitHub release digest matched local download",
+            "fsType": 0,
+            "integrityStatus": "verified-local-download-and-sfnt"
+          },
+          {
+            "style": "Medium",
+            "weight": 500,
+            "fileName": "LXGWWenKai-Medium.ttf",
+            "installPath": "resources/fonts/lxgw-wenkai/LXGWWenKai-Medium.ttf",
+            "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKai-Medium.ttf",
+            "byteSize": 25379848,
+            "sha256": "d4bdeb38a39151d74d084cba5090f8cb7d20bf83eedb78c35939ae70b9f4e3f6",
+            "sha256Basis": "GitHub release asset digest",
+            "fsType": null,
+            "integrityStatus": "authoritative-release-digest-not-locally-downloaded"
+          }
+        ]
+      },
+      {
+        "id": "liberation-sans",
+        "uiName": "Latin Sans",
+        "familyName": "Liberation Sans",
+        "version": "2.1.5",
+        "tag": "2.1.5",
+        "commit": "4b0192046158094654e865245832c66d2104219e",
+        "format": "TTF",
+        "outline": "TrueType glyf",
+        "sourceArchive": {
+          "fileName": "liberation-fonts-ttf-2.1.5.tar.gz",
+          "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+          "byteSize": 2385008,
+          "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0",
+          "integrityStatus": "verified-local-download"
+        },
+        "license": {
+          "spdx": "OFL-1.1",
+          "url": "https://raw.githubusercontent.com/liberationfonts/liberation-fonts/4b0192046158094654e865245832c66d2104219e/LICENSE",
+          "reservedFontNamesDeclared": [
+            "Arimo",
+            "Tinos",
+            "Cousine",
+            "Liberation"
+          ]
+        },
+        "files": [
+          {
+            "style": "Regular",
+            "weight": 400,
+            "italic": false,
+            "fileName": "LiberationSans-Regular.ttf",
+            "installPath": "resources/fonts/liberation-sans/LiberationSans-Regular.ttf",
+            "byteSize": 410712,
+            "sha256": "76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Bold",
+            "weight": 700,
+            "italic": false,
+            "fileName": "LiberationSans-Bold.ttf",
+            "installPath": "resources/fonts/liberation-sans/LiberationSans-Bold.ttf",
+            "byteSize": 414456,
+            "sha256": "788abee4c806d660e8aee46689dd8540cd4bb98da03dcc9d171ce3efd99a9173",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Italic",
+            "weight": 400,
+            "italic": true,
+            "fileName": "LiberationSans-Italic.ttf",
+            "installPath": "resources/fonts/liberation-sans/LiberationSans-Italic.ttf",
+            "byteSize": 415816,
+            "sha256": "e5bae5c4cde31f22142753855f4f8fb86da6ff39955ed3c0a11248b0d16948b0",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Bold Italic",
+            "weight": 700,
+            "italic": true,
+            "fileName": "LiberationSans-BoldItalic.ttf",
+            "installPath": "resources/fonts/liberation-sans/LiberationSans-BoldItalic.ttf",
+            "byteSize": 408996,
+            "sha256": "698da70fc191cc5f33ad4d6d3fe830fe4624b898ea2e3169955928b7c491f1ee",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          }
+        ]
+      },
+      {
+        "id": "liberation-serif",
+        "uiName": "Latin Serif",
+        "familyName": "Liberation Serif",
+        "version": "2.1.5",
+        "tag": "2.1.5",
+        "commit": "4b0192046158094654e865245832c66d2104219e",
+        "format": "TTF",
+        "outline": "TrueType glyf",
+        "sourceArchiveRef": "fonts.families[liberation-sans].sourceArchive",
+        "licenseRef": "fonts.families[liberation-sans].license",
+        "files": [
+          {
+            "style": "Regular",
+            "weight": 400,
+            "italic": false,
+            "fileName": "LiberationSerif-Regular.ttf",
+            "installPath": "resources/fonts/liberation-serif/LiberationSerif-Regular.ttf",
+            "byteSize": 393576,
+            "sha256": "058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Bold",
+            "weight": 700,
+            "italic": false,
+            "fileName": "LiberationSerif-Bold.ttf",
+            "installPath": "resources/fonts/liberation-serif/LiberationSerif-Bold.ttf",
+            "byteSize": 370096,
+            "sha256": "d754ba427cfe0bca54ae052384baa8f842da5bd6550ad4da024ac441e7a7d5ce",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Italic",
+            "weight": 400,
+            "italic": true,
+            "fileName": "LiberationSerif-Italic.ttf",
+            "installPath": "resources/fonts/liberation-serif/LiberationSerif-Italic.ttf",
+            "byteSize": 375632,
+            "sha256": "0e3dea9f8d613e006ccfa62201f33e265d19167bd0907725c3e145368b04fc2e",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Bold Italic",
+            "weight": 700,
+            "italic": true,
+            "fileName": "LiberationSerif-BoldItalic.ttf",
+            "installPath": "resources/fonts/liberation-serif/LiberationSerif-BoldItalic.ttf",
+            "byteSize": 376772,
+            "sha256": "f17db8af71e24d2066b587546021d4f0b296be389512b658dec3c09affeb11a7",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          }
+        ]
+      },
+      {
+        "id": "liberation-mono",
+        "uiName": "Latin Mono",
+        "familyName": "Liberation Mono",
+        "version": "2.1.5",
+        "tag": "2.1.5",
+        "commit": "4b0192046158094654e865245832c66d2104219e",
+        "format": "TTF",
+        "outline": "TrueType glyf",
+        "sourceArchiveRef": "fonts.families[liberation-sans].sourceArchive",
+        "licenseRef": "fonts.families[liberation-sans].license",
+        "files": [
+          {
+            "style": "Regular",
+            "weight": 400,
+            "italic": false,
+            "fileName": "LiberationMono-Regular.ttf",
+            "installPath": "resources/fonts/liberation-mono/LiberationMono-Regular.ttf",
+            "byteSize": 319508,
+            "sha256": "f2b83c763e8afd21709333370bed4774337fae82267937e2b5aea7e2fbd922c1",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Bold",
+            "weight": 700,
+            "italic": false,
+            "fileName": "LiberationMono-Bold.ttf",
+            "installPath": "resources/fonts/liberation-mono/LiberationMono-Bold.ttf",
+            "byteSize": 307996,
+            "sha256": "bd62a0672d0b9b6710b01df434c80ad54fa5f0835207eb7b17b7a761463067bb",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Italic",
+            "weight": 400,
+            "italic": true,
+            "fileName": "LiberationMono-Italic.ttf",
+            "installPath": "resources/fonts/liberation-mono/LiberationMono-Italic.ttf",
+            "byteSize": 281536,
+            "sha256": "605c01c711b44480a7508d349dfbf3264e81fa43d69e61cfa7d10b86e764c4d1",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          },
+          {
+            "style": "Bold Italic",
+            "weight": 700,
+            "italic": true,
+            "fileName": "LiberationMono-BoldItalic.ttf",
+            "installPath": "resources/fonts/liberation-mono/LiberationMono-BoldItalic.ttf",
+            "byteSize": 284068,
+            "sha256": "79451f3c09fe25116098853b7a2ca6e2436220ccc11af022979adbcf195be130",
+            "fsType": 0,
+            "integrityStatus": "verified-local-extraction-and-sfnt-inspection"
+          }
+        ]
+      }
+    ],
+    "embeddingPolicy": {
+      "builtInFonts": "Redistribute original upstream files with OFL text and copyright notices. Subset only in exported PDFs when the PDF font pipeline preserves required names/notices and the font format path is verified.",
+      "modifiedFontFiles": "Do not rename or modify upstream font binaries in the asset preparation step. Any later modified font build must obey declared Reserved Font Names.",
+      "userFonts": "Parse OS/2 fsType and apply the product policy; fsType is evidence, not a replacement for the font EULA."
+    }
+  }
+}

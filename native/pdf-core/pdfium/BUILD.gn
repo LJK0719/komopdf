@@ -1,0 +1,13 @@
+# Copied to //pdf_editor_bridge in the pinned PDFium checkout by prepare-native.py.
+# This uses the same compiler, C++ library and PDFium configuration as the core.
+executable("pdf_editor_edit_test") {
+  sources = [
+    "form_edit.cc",
+    "form_edit.h",
+    "form_fields.cc",
+    "form_fields.h",
+    "pdfium_edit_test.cc",
+  ]
+  deps = [ "//:pdfium" ]
+  configs += [ "//:pdfium_core_config" ]
+}

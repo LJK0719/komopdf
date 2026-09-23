@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "status": "built-and-runtime-validated",
+  "pdfium": {
+    "commit": "80fccd7553e5cff9cea6549bc0db2ea93ea6cb2e",
+    "sourceDirectory": "native/vendor/sources/pdfium-wasm",
+    "patches": [
+      {
+        "path": "native/vendor/patches/0001-isolated-form-stream-editing.patch",
+        "sha256": "f20b3e22504f4d16bdfd0e57d4ac8441497cb0f9b4f82454e6919b3afd0e1982"
+      },
+      {
+        "path": "native/wasm/patches/0001-pdfium-7869-emscripten.patch",
+        "sha256": "49206bd60268d67bec88ae56c9dcb78e121f4b77d653489eca97faee3b4b73f0"
+      }
+    ],
+    "excludedPatch": "native/vendor/patches/0002-windows-debugger-root.patch"
+  },
+  "emscripten": {
+    "version": "6.0.9",
+    "emsdkCommit": "5eb0bde7585670252e8ba05e9d361627bffd08b5",
+    "emscriptenVersionCommit": "4e4223852a0835923411059a3929907d7df1232e",
+    "releasesCommit": "f04ea239d533260dd1db760dd2d668d5f9a88d6b",
+    "nodeVersion": "24.19.0",
+    "pythonVersion": "3.13.3",
+    "directory": "native/vendor/tools/emsdk"
+  },
+  "configuration": {
+    "targetOs": "emscripten",
+    "targetCpu": "wasm",
+    "cxxStandard": "C++20",
+    "v8": false,
+    "xfa": false,
+    "skia": false,
+    "agg": true,
+    "partitionAlloc": false,
+    "rust": false,
+    "pthread": false,
+    "allowMemoryGrowth": true,
+    "maximumLinearMemoryBytes": 1073741824
+  },
+  "staticLibrary": {
+    "path": "native/vendor/sources/pdfium-wasm/out/wasm-release/obj/libpdfium.a",
+    "bytes": 17532386,
+    "sha256": "93c1dcb977e738aa91fffe040906cd8538027ba49d310b579186c0d829418c21"
+  },
+  "publicApiProbe": {
+    "result": "pass",
+    "output": "pdfium_wasm_probe:ok bytes=540 pages=1",
+    "javascript": {
+      "path": "tmp/m0-wasm/pdfium_wasm_probe.cjs",
+      "bytes": 97052,
+      "sha256": "a6366d7e2560bceda19c485d29cc68394f4a0452a68902794a14ffea1574a6c1"
+    },
+    "wasm": {
+      "path": "tmp/m0-wasm/pdfium_wasm_probe.wasm",
+      "bytes": 4286670,
+      "sha256": "370f8b32db6584984880097f326c170ac683b1845e53b4e4f2d51ffbcc5f22d6"
+    }
+  },
+  "editClosureProbe": {
+    "result": "pass",
+    "tests": [
+      "ActualText render/semantic update/save/reopen",
+      "shared Form single-instance isolation/save/reopen",
+      "real text and checkbox Widget fields/save/reopen",
+      "Chinese TrueType subset replacement with new glyphs/save/reopen"
+    ],
+    "fontSha256": "39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
+    "javascript": {
+      "path": "native/vendor/sources/pdfium-wasm/out/wasm-release/pdf_editor_edit_test.cjs",
+      "bytes": 188934,
+      "sha256": "5237feaa4cdf79a9af34a7e76d62220e62116509f0b441e3f18a2210a448ef2f"
+    },
+    "wasm": {
+      "path": "native/vendor/sources/pdfium-wasm/out/wasm-release/pdf_editor_edit_test.wasm",
+      "bytes": 6060334,
+      "sha256": "61574d4abd1b325e4d32e6053c6987d0ae6038b77de634728b844029878557bc"
+    }
+  }
+}

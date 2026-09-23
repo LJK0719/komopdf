@@ -1,0 +1,33 @@
+{
+  "name": "@pdf-editor/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "esbuild src/engine.worker.ts --bundle --format=esm --platform=browser --target=es2022 --define:import.meta.env=\"{}\" --outfile=public/engines/engine.worker.js && next dev --webpack",
+    "build:worker": "esbuild src/engine.worker.ts --bundle --format=esm --platform=browser --target=es2022 --define:import.meta.env=\"{}\" --outfile=public/engines/engine.worker.js",
+    "build": "esbuild src/engine.worker.ts --bundle --format=esm --platform=browser --target=es2022 --define:import.meta.env=\"{}\" --outfile=public/engines/engine.worker.js && next build --webpack",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@pdf-editor/contracts": "workspace:*",
+    "@pdf-editor/editor": "workspace:*",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "framer-motion": "11.18.2",
+    "lucide-react": "1.47.0",
+    "next": "16.3.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.6",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.5.3",
+    "tailwindcss": "3.4.17",
+    "typescript": "7.0.2"
+  }
+}

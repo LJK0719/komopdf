@@ -1,0 +1,8 @@
+--- a/build/vs_toolchain.py
++++ b/build/vs_toolchain.py
+@@ -462,3 +462,4 @@
+-  win_sdk_dir = SetEnvironmentAndGetSDKDir()
++  win_sdk_dir = (os.environ.get('PDF_EDITOR_DEBUGGERS_ROOT') or
++                 SetEnvironmentAndGetSDKDir())
+   if not win_sdk_dir:
+     return

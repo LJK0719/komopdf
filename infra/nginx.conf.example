@@ -1,0 +1,187 @@
+# komopdf production Nginx configuration for komopdf.com
+# Include this within the http {} block on the configured deployment host.
+
+upstream komopdf_gateway {
+    server 127.0.0.1:8787;
+    keepalive 16;
+}
+
+# HTTP: ACME challenge and 301 redirect to HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name komopdf.com www.komopdf.com;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://komopdf.com$request_uri;
+    }
+}
+
+# HTTPS: komopdf static web app + reverse proxy for /api/agent & /api/v1/ai
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name komopdf.com;
+
+    ssl_certificate /etc/letsencrypt/live/komopdf.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/komopdf.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    root /opt/pdf-editor/current/apps/web/dist;
+    index index.html;
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Security headers
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header X-Frame-Options SAMEORIGIN always;
+
+    # Web text AI request endpoint (512 KiB payload ceiling)
+    location = /api/v1/ai/requests {
+        client_max_body_size 512k;
+        client_body_buffer_size 512k;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_max_temp_file_size 0;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 200s;
+        proxy_send_timeout 200s;
+        access_log off;
+        proxy_pass http://komopdf_gateway;
+    }
+
+    # Web image AI request endpoint (3 MiB payload ceiling)
+    location = /api/v1/ai/image-requests {
+        client_max_body_size 3m;
+        client_body_buffer_size 3m;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_max_temp_file_size 0;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 200s;
+        proxy_send_timeout 200s;
+        access_log off;
+        proxy_pass http://komopdf_gateway;
+    }
+
+    # Desktop SDK Agent model traffic only (/api/agent/v1/messages and /count_tokens)
+    # Server only acts as stateless proxy; no Agent processes or PDF rendering on VPS.
+    location ~ ^/api/agent/v1/messages(/count_tokens)?$ {
+        client_max_body_size 3m;
+        client_body_buffer_size 3m;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_max_temp_file_size 0;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 200s;
+        proxy_send_timeout 200s;
+        access_log off;
+        proxy_pass http://komopdf_gateway;
+    }
+
+    # Gateway metadata and health check endpoints
+    location = /api/v1/capabilities {
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_cache off;
+        proxy_pass http://komopdf_gateway;
+    }
+
+    location = /healthz {
+        proxy_cache off;
+        proxy_pass http://komopdf_gateway;
+    }
+
+    location /api/ {
+        return 404;
+    }
+
+    # Next.js static chunks: content-hashed and immutable
+    location /_next/static/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    # Hashed fonts/engines/assets adhering to name.<16-64 hex>.ext convention
+    location ~ "^/(assets|engines|fonts)/.*\.[a-f0-9]{16,64}\.(js|css|wasm|woff2?|ttf|otf|png|svg)$" {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    # Non-hashed assets: revalidate
+    location /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control "no-cache";
+    }
+    location /engines/ {
+        try_files $uri =404;
+        add_header Cache-Control "no-cache";
+    }
+    location /fonts/ {
+        try_files $uri =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    location ~* \.(wasm|woff2?|ttf|otf|svg|png|jpe?g|webp|ico|css|js|map|json)$ {
+        try_files $uri =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    # Editor SPA fallback
+    location = /editor {
+        return 301 /editor/;
+    }
+    location /editor/ {
+        try_files $uri $uri/ /editor/index.html =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    # Static pages: Home, Download, Help, Privacy
+    location = /download { return 301 /download/; }
+    location /download/ {
+        try_files $uri $uri/ /download/index.html =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    location = /help { return 301 /help/; }
+    location /help/ {
+        try_files $uri $uri/ /help/index.html =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    location = /privacy { return 301 /privacy/; }
+    location /privacy/ {
+        try_files $uri $uri/ /privacy/index.html =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html =404;
+        add_header Cache-Control "no-cache";
+    }
+}

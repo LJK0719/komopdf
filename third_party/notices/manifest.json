@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "notices": {
+    "pdfium-LICENSE.txt": {
+      "source": "pdfium-wasm/LICENSE",
+      "sha256": "1fe9dea718fbd75cf149adaf4d8a22a4335604d964ddb76d1b45383dec8668c9",
+      "bytes": 12896
+    },
+    "pdfium-AUTHORS.txt": {
+      "source": "pdfium-wasm/AUTHORS",
+      "sha256": "0d0c6e7609b6cc5761e9e7d36447aa972f809bce9557dd200fe8c8fc1939126d",
+      "bytes": 2480
+    },
+    "abseil-cpp-LICENSE.txt": {
+      "source": "pdfium-wasm/third_party/abseil-cpp/LICENSE",
+      "sha256": "f54fff0b905df5b3464527c652a30e903b172d6dcab4d89b5e6f105d5e4a4603",
+      "bytes": 11564
+    },
+    "abseil-cpp-AUTHORS.txt": {
+      "source": "pdfium-wasm/third_party/abseil-cpp/AUTHORS",
+      "sha256": "0910105ebe1c54c0051fd9e9da3148ae507f9f6c9d73b4ed3c7da4df66873bb5",
+      "bytes": 301
+    },
+    "agg23-copying.txt": {
+      "source": "pdfium-wasm/third_party/agg23/copying",
+      "sha256": "f38e5ffa23343d10f46369318df1c7aeab46e0c32517cb69f72f26dad1dae5ed",
+      "bytes": 454
+    },
+    "freetype-FTL.txt": {
+      "source": "pdfium-wasm/third_party/freetype/FTL.TXT",
+      "sha256": "f4b133e25df1f86ad3ffea453aa0e613f0474f34778dbbb3e437e7b2724937d8",
+      "bytes": 6741
+    },
+    "freetype-LICENSE.txt": {
+      "source": "pdfium-wasm/third_party/freetype/src/LICENSE.TXT",
+      "sha256": "84f47dc7f0887dd56b05f2f218060581c055e443bd7af18e46677bec3dcc2473",
+      "bytes": 2196
+    },
+    "harfbuzz-COPYING.txt": {
+      "source": "pdfium-wasm/third_party/harfbuzz/src/COPYING",
+      "sha256": "bd836c0ddca8ea0bab54a03cd32b6ff7256cbb3840fca2edc1249a4ed92c5b02",
+      "bytes": 2013
+    },
+    "harfbuzz-AUTHORS.txt": {
+      "source": "pdfium-wasm/third_party/harfbuzz/src/AUTHORS",
+      "sha256": "b2e71d763c852244b83a31d39002401e39215bc100961b7a91a2702c205d1410",
+      "bytes": 215
+    },
+    "icu-LICENSE.txt": {
+      "source": "pdfium-wasm/third_party/icu/LICENSE",
+      "sha256": "93679f4389d53b6835d89843f251844fb9bc455b35bab036d3c8e7abe497a47a",
+      "bytes": 28286
+    },
+    "lcms-LICENSE.txt": {
+      "source": "pdfium-wasm/third_party/lcms/LICENSE",
+      "sha256": "6dbd60437f8ef91d8de1f08ad75882547fd4931bfcc3566a0735f28db1484d31",
+      "bytes": 1080
+    },
+    "libjpeg_turbo-LICENSE.md": {
+      "source": "pdfium-wasm/third_party/libjpeg_turbo/LICENSE.md",
+      "sha256": "be2b2b5ab168bce87bc3e31f2a5c5adba4b7f6e9e51d618e958d1d46972ebd95",
+      "bytes": 5755
+    },
+    "libjpeg_turbo-README.ijg.txt": {
+      "source": "pdfium-wasm/third_party/libjpeg_turbo/README.ijg",
+      "sha256": "db16a04128171879c60708d171b88d97345a2dd20f9bfc173680a4497c73f704",
+      "bytes": 13059
+    },
+    "libopenjpeg-LICENSE.txt": {
+      "source": "pdfium-wasm/third_party/libopenjpeg/LICENSE",
+      "sha256": "a6af136f3e15038a666b61f376612a07d9a4e48cb7c01adbf3e33b3f14ab49b6",
+      "bytes": 2112
+    },
+    "zlib-LICENSE.txt": {
+      "source": "pdfium-wasm/third_party/zlib/LICENSE",
+      "sha256": "439c75ab12b340c5362b9d4b08ff05ec3a4d0eb7667a6fff49a9b16d8795c78e",
+      "bytes": 1024
+    },
+    "emscripten-LICENSE.txt": {
+      "source": "emscripten/LICENSE",
+      "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86",
+      "bytes": 5093
+    },
+    "musl-COPYRIGHT.txt": {
+      "source": "emscripten/system/lib/libc/musl/COPYRIGHT",
+      "sha256": "b870108ec5e7790e9f9919064f1b9421d62d5f9b0e6c230c6adf7ea2da62e97b",
+      "bytes": 6196
+    },
+    "libcxx-LICENSE.txt": {
+      "source": "emscripten/system/lib/libcxx/LICENSE.TXT",
+      "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b",
+      "bytes": 16703
+    },
+    "libcxxabi-LICENSE.txt": {
+      "source": "emscripten/system/lib/libcxxabi/LICENSE.TXT",
+      "sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c",
+      "bytes": 16706
+    },
+    "compiler-rt-LICENSE.txt": {
+      "source": "emscripten/system/lib/compiler-rt/LICENSE.TXT",
+      "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d",
+      "bytes": 16708
+    },
+    "llvm-libc-LICENSE.txt": {
+      "source": "emscripten/system/lib/llvm-libc/LICENSE.TXT",
+      "sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47",
+      "bytes": 15140
+    },
+    "qpdf-LICENSE.txt": {
+      "source": "project/native/qpdf/artifacts/wasm/licenses/qpdf-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    "qpdf-libjpeg-README.txt": {
+      "source": "project/native/qpdf/artifacts/wasm/licenses/libjpeg-README.txt",
+      "sha256": "7c25493a9f64fed34d01445467341bda77bc1cdbeccbe33558659ef173fb9ff2",
+      "bytes": 18719
+    },
+    "qpdf-zlib-LICENSE.txt": {
+      "source": "project/native/qpdf/artifacts/wasm/licenses/zlib-LICENSE.txt",
+      "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2",
+      "bytes": 1002
+    },
+    "font-liberation-OFL.txt": {
+      "source": "project/apps/web/public/fonts/liberation-sans-OFL.txt",
+      "sha256": "93fed46019c38bbe566b479d22148e2e8a1e85ada614accb0211c37b2c61c19b",
+      "bytes": 4414
+    },
+    "font-lxgw-wenkai-OFL.txt": {
+      "source": "project/apps/web/public/fonts/LXGW-WenKai-OFL.txt",
+      "sha256": "c38b1994a5e48ac30ac7d1da7d0409fd8fd8127dfe28a13d6e787d5b1ef34a5e",
+      "bytes": 4448
+    },
+    "font-noto-sans-cjk-sc-OFL.txt": {
+      "source": "project/apps/web/public/fonts/noto-sans-cjk-sc-OFL.txt",
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+      "bytes": 4301
+    },
+    "font-noto-serif-cjk-sc-OFL.txt": {
+      "source": "project/apps/web/public/fonts/noto-serif-cjk-sc-OFL.txt",
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+      "bytes": 4301
+    }
+  }
+}

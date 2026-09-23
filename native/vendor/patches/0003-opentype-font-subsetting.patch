@@ -1,0 +1,22 @@
+diff --git a/core/fpdfapi/edit/cpdf_fontsubsetter.cpp b/core/fpdfapi/edit/cpdf_fontsubsetter.cpp
+--- a/core/fpdfapi/edit/cpdf_fontsubsetter.cpp
++++ b/core/fpdfapi/edit/cpdf_fontsubsetter.cpp
+@@ -278,8 +278,15 @@
+-    // Internally, all embedded font file streams are set as "FontFile" or
+-    // "FontFile2". HarfBuzz does not support subsetting Type 1 fonts, so fonts
+-    // with "FontFile" are ignored.
++    // TrueType uses FontFile2; valid OpenType/CFF programs use FontFile3.
++    // Read either representation without relabeling live font descriptors.
++    // Raw Type 1 FontFile programs remain unsupported by HarfBuzz.
+     RetainPtr<const CPDF_Stream> font_stream =
+         descriptor->GetStreamFor("FontFile2");
++    if (!font_stream) {
++      auto open_type = descriptor->GetStreamFor("FontFile3");
++      if (open_type && open_type->GetDict() &&
++          open_type->GetDict()->GetNameFor("Subtype") == "OpenType") {
++        font_stream = open_type;
++      }
++    }
+     if (!font_stream) {
+       continue;
+     }

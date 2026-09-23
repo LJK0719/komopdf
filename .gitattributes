@@ -1,0 +1,14 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh text eol=lf
+*.mjs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.py text eol=lf
+*.patch text eol=lf
+*.wasm binary
+# Preserve exact bytes covered by upstream artifact and notice hashes.
+/native/wasm/artifacts/** -text
+/native/qpdf/artifacts/wasm/** -text
+/third_party/notices/** -text

@@ -1,0 +1,137 @@
+--- a/core/fpdfapi/page/cpdf_pageobjectholder.h
++++ b/core/fpdfapi/page/cpdf_pageobjectholder.h
+@@ -148,6 +148,9 @@
+ 
+  protected:
+   void LoadTransparencyInfo();
++  void ReplaceDictionaryForEditing(RetainPtr<CPDF_Dictionary> dict) {
++    dict_ = std::move(dict);
++  }
+ 
+   RetainPtr<CPDF_Dictionary> page_resources_;
+   RetainPtr<CPDF_Dictionary> resources_;
+@@ -159,7 +162,7 @@
+  private:
+   bool background_alpha_needed_ = false;
+   ParseState parse_state_ = ParseState::kNotParsed;
+-  RetainPtr<CPDF_Dictionary> const dict_;
++  RetainPtr<CPDF_Dictionary> dict_;
+   UnownedPtr<CPDF_Document> document_;
+   std::vector<CFX_FloatRect> mask_bounding_boxes_;
+   std::unique_ptr<CPDF_ContentParser> parser_;
+--- a/core/fpdfapi/page/cpdf_form.h
++++ b/core/fpdfapi/page/cpdf_form.h
+@@ -60,6 +60,11 @@
+   // Never returns nullptr.
+   RetainPtr<const CPDF_Stream> GetStream() const;
+ 
++  // Project editing bridge: retain parsed object identity but detach the stream
++  // and mutable resource dictionaries before changing this instance.
++  void DetachStreamForEditing();
++  RetainPtr<CPDF_Stream> GetMutableStreamForEditing();
++
+  private:
+   void ParseContentInternal(const CPDF_AllStates* pGraphicStates,
+                             const CFX_Matrix* pParentMatrix,
+@@ -67,7 +72,7 @@
+                             RecursionState* recursion_state);
+ 
+   RecursionState recursion_state_;
+-  RetainPtr<CPDF_Stream> const form_stream_;
++  RetainPtr<CPDF_Stream> form_stream_;
+ };
+ 
+ #endif  // CORE_FPDFAPI_PAGE_CPDF_FORM_H_
+--- a/core/fpdfapi/page/cpdf_form.cpp
++++ b/core/fpdfapi/page/cpdf_form.cpp
+@@ -14,6 +14,7 @@
+ #include "core/fpdfapi/page/cpdf_pageobject.h"
+ #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
+ #include "core/fpdfapi/parser/cpdf_dictionary.h"
++#include "core/fpdfapi/parser/cpdf_document.h"
+ #include "core/fpdfapi/parser/cpdf_stream.h"
+ #include "core/fxcrt/check_op.h"
+ #include "core/fxge/dib/cfx_dibitmap.h"
+@@ -59,6 +60,33 @@
+ }
+ 
+ CPDF_Form::~CPDF_Form() = default;
++
++RetainPtr<CPDF_Stream> CPDF_Form::GetMutableStreamForEditing() {
++  return form_stream_;
++}
++
++void CPDF_Form::DetachStreamForEditing() {
++  auto isolated = ToStream(form_stream_->Clone());
++  CHECK(isolated);
++  auto isolated_dict = isolated->GetMutableDict();
++  if (resources_) {
++    auto resources = ToDictionary(resources_->Clone());
++    // Cloning the outer dictionary alone leaves indirect category dictionaries
++    // shared. Keep their resource values shared, but detach the name tables.
++    for (const char* key : {"Font", "XObject", "ExtGState", "Properties",
++                            "ColorSpace", "Pattern", "Shading"}) {
++      auto category = resources_->GetDictFor(key);
++      if (category) {
++        resources->SetFor(key, category->Clone());
++      }
++    }
++    isolated_dict->SetFor("Resources", resources);
++    SetResources(std::move(resources));
++  }
++  GetDocument()->AddIndirectObject(isolated);
++  ReplaceDictionaryForEditing(isolated_dict);
++  form_stream_ = std::move(isolated);
++}
+ 
+ void CPDF_Form::ParseContent() {
+   ParseContentInternal(nullptr, nullptr, nullptr, nullptr);
+--- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
++++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
+@@ -18,6 +18,7 @@
+ 
+ class CPDF_ContentMarks;
+ class CPDF_Document;
++class CPDF_Form;
+ class CPDF_FormObject;
+ class CPDF_ImageObject;
+ class CPDF_Object;
+@@ -33,6 +34,9 @@
+   ~CPDF_PageContentGenerator();
+ 
+   void GenerateContent();
++  // Must be used only after the editing bridge has detached the Form instance.
++  // Unlike page content, a Form's operators live in the Form stream itself.
++  void GenerateFormContentForEditing(CPDF_Form* form);
+   bool ProcessPageObjects(fxcrt::ostringstream* buf);
+ 
+  private:
+--- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
++++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
+@@ -329,6 +329,26 @@
+ 
+ CPDF_PageContentGenerator::~CPDF_PageContentGenerator() = default;
+ 
++void CPDF_PageContentGenerator::GenerateFormContentForEditing(CPDF_Form* form) {
++  CHECK_EQ(static_cast<CPDF_PageObjectHolder*>(obj_holder_), form);
++  // A Form has one stream. Regenerate all active objects in that stream,
++  // including unchanged objects; don't create a /Contents entry in its dict.
++  obj_holder_->TakeDirtyStreams();
++  for (auto& object : page_objects_) {
++    object->SetContentStream(0);
++    object->SetDirty(true);
++  }
++  auto streams = GenerateModifiedStreams();
++  fxcrt::ostringstream contents;
++  auto current = streams.find(0);
++  if (current != streams.end()) {
++    contents << current->second.str();
++  }
++  form->GetMutableStreamForEditing()
++      ->SetDataFromStringstreamAndRemoveFilter(&contents);
++  UpdateResourcesDict();
++}
++
+ void CPDF_PageContentGenerator::GenerateContent() {
+   std::map<int32_t, fxcrt::ostringstream> new_stream_data =
+       GenerateModifiedStreams();

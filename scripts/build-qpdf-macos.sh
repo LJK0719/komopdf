@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="${PYTHON:-python3}"
+
+exec "$PYTHON" "$SCRIPT_DIR/build-qpdf-macos.py" "$@"

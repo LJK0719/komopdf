@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  esbuild: true
+  sharp: false
+
+# 所有安装只使用项目内 store，固定版本由 pnpm-lock.yaml 记录。
+storeDir: .pnpm-store

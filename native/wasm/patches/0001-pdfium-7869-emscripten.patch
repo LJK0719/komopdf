@@ -1,0 +1,133 @@
+--- a/build/config/BUILDCONFIG.gn
++++ b/build/config/BUILDCONFIG.gn
+@@ -286,10 +286,9 @@
+ } else if (target_os == "zos") {
+   _default_toolchain = "//build/toolchain/zos:$target_cpu"
+ } else if (target_os == "emscripten") {
+-  # Because it's too hard to remove all targets from //BUILD.gn that do not work with it.
+-  assert(
+-      false,
+-      "emscripten is not a supported target_os. It is available only as secondary toolchain.")
++  # Project-local PDFium build: use Emscripten as the primary toolchain for the
++  # intentionally narrow static `pdfium` target.
++  _default_toolchain = "//build/toolchain/wasm:emscripten"
+ } else {
+   assert(false, "Unsupported target_os: $target_os")
+ }
+--- a/build/config/compiler/BUILD.gn
++++ b/build/config/compiler/BUILD.gn
+@@ -360,6 +360,8 @@
+     configs += [ "//build/config/ios:compiler" ]
+   } else if (is_fuchsia) {
+     configs += [ "//build/config/fuchsia:compiler" ]
++  } else if (is_wasm) {
++    configs += [ "//build/config/wasm:compiler" ]
+   } else if (current_os == "aix") {
+     configs += [ "//build/config/aix:compiler" ]
+   } else if (current_os == "zos") {
+@@ -1088,7 +1090,7 @@
+     }
+   }
+ 
+-  if ((is_posix && !is_apple) || is_fuchsia) {
++  if (((is_posix && !is_apple) || is_fuchsia) && !is_wasm) {
+     # Explicitly pass --build-id to ld. Compilers used to always pass this
+     # implicitly but don't any more (in particular clang when built without
+     # ENABLE_LINKER_BUILD_ID=ON).
+--- /dev/null
++++ b/build/config/wasm/BUILD.gn
+@@ -0,0 +1,10 @@
++# Project-local Emscripten target configuration.
++
++config("compiler") {
++  defines = [
++    # PDFium's Linux font fallback is also its existing ASM.js/WASM fallback.
++    "OS_ASMJS",
++    # Required by libopenjpeg for fseeko()/ftello().
++    "_POSIX_C_SOURCE=200112",
++  ]
++}
+--- a/build/toolchain/wasm/BUILD.gn
++++ b/build/toolchain/wasm/BUILD.gn
+@@ -1,54 +1,28 @@
+-# Copyright 2025 The Chromium Authors
+-# Use of this source code is governed by a BSD-style license that can be
+-# found in the LICENSE file.
+-
+ import("//build/toolchain/gcc_toolchain.gni")
+ 
+-declare_args() {
+-  # Path to emsdk directory.
+-  emscripten_path = "//third_party/emsdk/upstream/emscripten/"
+-}
++gcc_toolchain("emscripten") {
++  cc = "emcc.exe"
++  cxx = "em++.exe"
++  ld = cxx
++  ar = "emar.exe"
++  nm = "emnm.exe"
++  readelf = "llvm-readobj.exe"
+ 
+-# This WASM toolchain is NOT to be used to build any Chromium code,
+-# i.e. tests and samples are currently fine.
+-# Usage of this toolchain requires getting explicit approval from
+-# build/OWNERS.
+-gcc_toolchain("wasm") {
+-  _suffix = ""
+-  if (host_os == "win") {
+-    _suffix = ".bat"
+-  }
+-
+-  cc = rebase_path("$emscripten_path/emcc$_suffix")
+-  cxx = rebase_path("$emscripten_path/em++$_suffix")
+-  ar = rebase_path("$emscripten_path/emar$_suffix")
+-  nm = cc
+-  ld = cxx
++  extra_cflags = "-Wno-unknown-warning-option"
++  extra_cxxflags = "-Wno-unknown-warning-option"
+ 
+   toolchain_args = {
+     current_cpu = "wasm"
+     current_os = "emscripten"
+-
+     is_clang = true
++    clang_use_chrome_plugins = false
++    use_lld = false
+     use_remoteexec = false
+-    use_debug_fission = false
+-    clang_use_chrome_plugins = false
+-    use_allocator_shim = false
+-    is_component_build = false
+-
+-    # We do not support clang profiling in the WASM toolchains.
+-    use_clang_profiling = false
+-    use_clang_coverage = false
+-
+-    # WASM builds cannot currently use the custom libc++ because
+-    # there are custom entry points and defines in the one that is
+-    # shipped with emsdk.
++    use_reclient = false
++    use_sysroot = false
+     use_custom_libcxx = false
+-    use_custom_libcxx_for_host = false
++    use_custom_libunwind = false
++    use_thin_lto = false
++    enable_rust = false
+   }
+-  executable_extension = ".html"
+-  link_outputs = [
+-    "{{output_dir}}/{{target_output_name}}.wasm",
+-    "{{output_dir}}/{{target_output_name}}.wasm.debug.wasm",
+-  ]
+ }
+--- a/core/fxge/BUILD.gn
++++ b/core/fxge/BUILD.gn
+@@ -177,7 +177,7 @@
+     ]
+   }
+ 
+-  if (is_linux || is_chromeos) {
++  if (is_linux || is_chromeos || is_wasm) {
+     sources += [ "linux/fx_linux_impl.cpp" ]
+   }
+ 

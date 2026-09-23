@@ -1,0 +1,261 @@
+// Candidate-level document tools. Included after the core object helpers.
+
+std::string FormFieldId(const Document& document, const CPDF_FormField& field) {
+  const ByteString stored = field.GetFieldDict()->GetUnicodeTextFor("KomoFieldId").ToUTF8();
+  if (!stored.IsEmpty() && stored.GetLength() <= 160)
+    return {stored.c_str(), stored.GetLength()};
+  const ByteString name = field.GetFullName().ToUTF8();
+  return "f:" + std::to_string(document.session_id) + ":" +
+      std::to_string(StableIdHash({name.c_str(), name.GetLength()}));
+}
+
+std::string FormUtf8(const WideString& text) {
+  const ByteString value = text.ToUTF8();
+  return {value.c_str(), value.GetLength()};
+}
+
+CPDF_FormField* FindFormField(const Document& document,
+                             CPDF_InteractiveForm* form,
+                             const std::string& id) {
+  const size_t count = form->CountFields(WideString());
+  for (size_t index = 0; index < count; ++index) {
+    CPDF_FormField* field = form->GetField(index, WideString());
+    if (field && FormFieldId(document, *field) == id) return field;
+  }
+  SetError("INVALID_REQUEST", "The requested form field does not exist.");
+  return nullptr;
+}
+
+std::optional<size_t> FormWidgetPage(FPDF_DOCUMENT pdf,
+                                    const CandidateMetadata& metadata,
+                                    const CPDF_Dictionary* widget) {
+  CPDF_Document* native = CPDFDocumentFromFPDFDocument(pdf);
+  for (size_t index = 0; index < metadata.pages.size(); ++index) {
+    const auto page = native->GetPageDictionary(static_cast<int>(index));
+    const auto annots = page ? page->GetArrayFor("Annots") : nullptr;
+    if (!annots) continue;
+    for (size_t offset = 0; offset < annots->size(); ++offset) {
+      if (annots->GetDictAt(offset).Get() == widget) return index;
+    }
+  }
+  return std::nullopt;
+}
+
+std::string SerializeForms(const Document& document) {
+  CPDF_InteractiveForm form(CPDFDocumentFromFPDFDocument(document.pdf));
+  std::string result = "[";
+  bool first = true;
+  for (size_t index = 0; index < form.CountFields(WideString()); ++index) {
+    CPDF_FormField* field = form.GetField(index, WideString());
+    if (!field) continue;
+    const auto type = field->GetFieldType();
+    const char* kind = type == FormFieldType::kTextField ? "text" :
+        type == FormFieldType::kCheckBox ? "checkbox" :
+        type == FormFieldType::kRadioButton ? "radio" :
+        (type == FormFieldType::kComboBox || type == FormFieldType::kListBox) ? "choice" : nullptr;
+    if (!kind) continue;
+    if (!first) result += ',';
+    first = false;
+    result += "{\"id\":"; AppendJsonString(&result, FormFieldId(document, *field));
+    result += ",\"name\":"; AppendJsonString(&result, FormUtf8(field->GetFullName()));
+    result += ",\"type\":"; AppendJsonString(&result, kind);
+    result += ",\"readOnly\":"; result += (field->GetFieldFlags() & 1U) ? "true" : "false";
+    result += ",\"required\":"; result += field->IsRequired() ? "true" : "false";
+    result += ",\"value\":";
+    if (type == FormFieldType::kCheckBox) {
+      bool checked = false;
+      for (int control = 0; control < field->CountControls(); ++control)
+        checked |= field->GetControl(control)->IsChecked();
+      result += checked ? "true" : "false";
+    } else if (type == FormFieldType::kListBox && (field->GetFieldFlags() & (1U << 21))) {
+      result += '[';
+      for (int selection = 0; selection < field->CountSelectedItems(); ++selection) {
+        if (selection) result += ',';
+        AppendJsonString(&result, FormUtf8(field->GetOptionValue(field->GetSelectedIndex(selection))));
+      }
+      result += ']';
+    } else {
+      AppendJsonString(&result, FormUtf8(field->GetValue()));
+    }
+    result += ",\"options\":[";
+    if (type == FormFieldType::kRadioButton) {
+      for (int control = 0; control < field->CountControls(); ++control) {
+        if (control) result += ',';
+        AppendJsonString(&result, FormUtf8(field->GetControl(control)->GetExportValue()));
+      }
+    } else if (type == FormFieldType::kComboBox || type == FormFieldType::kListBox) {
+      for (int option = 0; option < field->CountOptions(); ++option) {
+        if (option) result += ',';
+        AppendJsonString(&result, FormUtf8(field->GetOptionValue(option)));
+      }
+    }
+    result += "],\"widgets\":[";
+    bool first_widget = true;
+    for (int control_index = 0; control_index < field->CountControls(); ++control_index) {
+      const CPDF_FormControl* control = field->GetControl(control_index);
+      const auto page_index = FormWidgetPage(document.pdf, document.metadata, control->GetWidgetDict().Get());
+      if (!page_index) continue;
+      ScopedPage page(FPDF_LoadPage(document.pdf, static_cast<int>(*page_index)));
+      Matrix to_page, to_pdf;
+      if (!page.get() || !GetPageMatrices(page.get(), &to_page, &to_pdf)) continue;
+      const auto rect = control->GetRect();
+      if (!first_widget) result += ',';
+      first_widget = false;
+      result += "{\"pageId\":"; AppendJsonString(&result, document.metadata.pages[*page_index].id);
+      result += ",\"bounds\":";
+      AppendRect(&result, TransformBounds(rect.left, rect.bottom, rect.right, rect.top, to_page));
+      result += '}';
+    }
+    result += "]}";
+  }
+  result += ']';
+  return result;
+}
+
+std::string SerializeAnnotations(const Document& document, size_t page_index) {
+  ScopedPage page(FPDF_LoadPage(document.pdf, static_cast<int>(page_index)));
+  Matrix to_page, to_pdf;
+  if (!page.get() || !GetPageMatrices(page.get(), &to_page, &to_pdf)) return {};
+  const auto annots = CPDFPageFromFPDFPage(page.get())->GetDict()->GetArrayFor("Annots");
+  std::string result = "[";
+  bool first = true;
+  if (annots) for (size_t index = 0; index < annots->size(); ++index) {
+    const auto annot = annots->GetDictAt(index);
+    if (!annot || annot->GetNameFor("Subtype") == "Widget") continue;
+    const ByteString subtype = annot->GetNameFor("Subtype");
+    const char* kind = subtype == "Highlight" ? "highlight" : subtype == "Text" ? "text" :
+        subtype == "Square" ? "rectangle" : subtype == "Ink" ? "ink" : "other";
+    const ByteString stored = annot->GetUnicodeTextFor("NM").ToUTF8();
+    const std::string id = stored.IsEmpty() ?
+        "a:" + std::to_string(document.session_id) + ":" + std::to_string(annot->GetObjNum()) + ":" +
+            document.metadata.pages[page_index].id + ":" + std::to_string(index) :
+        std::string(stored.c_str(), stored.GetLength());
+    if (!first) result += ',';
+    first = false;
+    result += "{\"id\":"; AppendJsonString(&result, id);
+    result += ",\"pageId\":"; AppendJsonString(&result, document.metadata.pages[page_index].id);
+    result += ",\"subtype\":"; AppendJsonString(&result, kind);
+    const auto rect = annot->GetRectFor("Rect");
+    result += ",\"bounds\":";
+    AppendRect(&result, TransformBounds(rect.left, rect.bottom, rect.right, rect.top, to_page));
+    result += ",\"text\":"; AppendJsonString(&result, FormUtf8(annot->GetUnicodeTextFor("Contents")));
+    result += ",\"color\":[";
+    const auto color = annot->GetArrayFor("C");
+    for (size_t component = 0; component < 3; ++component) {
+      if (component) result += ',';
+      double value = 0;
+      if (color && color->size() == 3) value = color->GetFloatAt(component);
+      else if (color && color->size() == 1) value = color->GetFloatAt(0);
+      else if (color && color->size() == 4)
+        value = 1 - std::min(1.0, static_cast<double>(color->GetFloatAt(component) + color->GetFloatAt(3)));
+      AppendJsonNumber(&result, value);
+    }
+    result += "],\"opacity\":";
+    AppendJsonNumber(&result, annot->KeyExist("CA") ? annot->GetFloatFor("CA") : 1);
+    result += '}';
+  }
+  result += ']';
+  return result;
+}
+
+void CollectDocumentToolIds(const Document& document, std::set<std::string>* ids) {
+  CPDF_Document* native = CPDFDocumentFromFPDFDocument(document.pdf);
+  CPDF_InteractiveForm form(native);
+  for (size_t index = 0; index < form.CountFields(WideString()); ++index) {
+    const CPDF_FormField* field = form.GetField(index, WideString());
+    if (field) ids->insert(FormFieldId(document, *field));
+  }
+  for (size_t index = 0; index < document.metadata.pages.size(); ++index) {
+    const auto page = native->GetPageDictionary(static_cast<int>(index));
+    const auto annots = page ? page->GetArrayFor("Annots") : nullptr;
+    if (!annots) continue;
+    for (size_t offset = 0; offset < annots->size(); ++offset) {
+      const auto annotation = annots->GetDictAt(offset);
+      if (!annotation) continue;
+      const ByteString id = annotation->GetUnicodeTextFor("NM").ToUTF8();
+      if (!id.IsEmpty()) ids->insert({id.c_str(), id.GetLength()});
+    }
+  }
+}
+
+bool ApplyDocumentTool(
+    const Document& document, FPDF_DOCUMENT pdf, CandidateMetadata* metadata,
+    const EditCommand& command,
+    const std::map<std::string, std::shared_ptr<const FontResource>>& fonts,
+    CandidateFontCache* font_cache) {
+  std::string error;
+  if (command.type == EditType::kFormFill) {
+    CPDF_InteractiveForm form(CPDFDocumentFromFPDFDocument(pdf));
+    CPDF_FormField* field = FindFormField(document, &form, command.target_id);
+    if (!field) return false;
+    pdf_editor::FormValue value;
+    if (command.flags & 1U) value.checked = command.values[0] != 0;
+    else if (command.flags & 2U) value.selected_values = command.ids;
+    else value.text_utf8 = command.text;
+    if (!pdf_editor::FillFormField(pdf, FormUtf8(field->GetFullName()), value, &error)) {
+      SetError("UNSUPPORTED_CAPABILITY", std::move(error)); return false;
+    }
+    return true;
+  }
+  size_t page_index = 0;
+  ScopedPage page(nullptr);
+  if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) return false;
+  Matrix to_page, to_pdf;
+  if (!GetPageMatrices(page.get(), &to_page, &to_pdf)) return false;
+  const Rect rect = TransformBounds(command.values[0], command.values[1],
+      command.values[0] + command.values[2], command.values[1] + command.values[3], to_pdf);
+  const pdf_editor::PdfRect pdf_rect{rect.x, rect.y, rect.x + rect.width, rect.y + rect.height};
+  if (command.type == EditType::kFormCreate) {
+    pdf_editor::FormFieldSpec spec;
+    spec.type = command.resource_id == "checkbox" ? pdf_editor::FormFieldType::kCheckbox : pdf_editor::FormFieldType::kText;
+    spec.persistent_id = command.target_id;
+    spec.name_utf8 = command.text;
+    spec.rect = pdf_rect;
+    spec.font_size = command.values[4];
+    spec.rotation = FPDFPage_GetRotation(page.get()) * 90;
+    if (!command.font_id.empty()) {
+      const auto font = fonts.find(command.font_id);
+      if (font == fonts.end()) { SetError("INVALID_REQUEST", "The form font is not registered."); return false; }
+      spec.font = font_cache->LoadHandle(font->second);
+      if (!spec.font) return false;
+    }
+    if (!pdf_editor::CreateFormField(pdf, page.get(), spec, &error)) {
+      SetError("UNSUPPORTED_CAPABILITY", std::move(error)); return false;
+    }
+    return true;
+  }
+  pdf_editor::AnnotationSpec spec;
+  spec.type = command.resource_id == "highlight" ? pdf_editor::AnnotationType::kHighlight :
+      command.resource_id == "rectangle" ? pdf_editor::AnnotationType::kRectangle :
+      command.resource_id == "ink" ? pdf_editor::AnnotationType::kInk : pdf_editor::AnnotationType::kText;
+  spec.persistent_id = command.target_id; spec.contents_utf8 = command.text; spec.rect = pdf_rect;
+  spec.color = (command.flags & 1U) ? pdf_editor::RgbColor{command.values[4], command.values[5], command.values[6]} :
+      (command.resource_id == "highlight" ? pdf_editor::RgbColor{1, 1, 0} : pdf_editor::RgbColor{0, 0, 0});
+  spec.opacity = (command.flags & 2U) ? command.values[7] : 1;
+  spec.stroke_width = (command.flags & 4U) ? command.values[8] : 1;
+  if (command.resource_id == "highlight") {
+    const auto point = [&](double x, double y) {
+      const auto position = to_pdf.Apply(x, y);
+      return pdf_editor::PdfPoint{position[0], position[1]};
+    };
+    spec.quad_points.push_back({
+      point(command.values[0], command.values[1]), point(command.values[0] + command.values[2], command.values[1]),
+      point(command.values[0], command.values[1] + command.values[3]),
+      point(command.values[0] + command.values[2], command.values[1] + command.values[3])});
+  }
+  if (command.resource_id == "ink") {
+    std::vector<pdf_editor::PdfPoint> stroke;
+    for (size_t index = 0; index < command.ids.size(); index += 2) {
+      double x = 0, y = 0;
+      std::from_chars(command.ids[index].data(), command.ids[index].data() + command.ids[index].size(), x);
+      std::from_chars(command.ids[index + 1].data(), command.ids[index + 1].data() + command.ids[index + 1].size(), y);
+      const auto point = to_pdf.Apply(x, y);
+      stroke.push_back({point[0], point[1]});
+    }
+    spec.ink_strokes.push_back(std::move(stroke));
+  }
+  if (!pdf_editor::AddAnnotation(pdf, page.get(), spec, &error)) {
+    SetError("UNSUPPORTED_CAPABILITY", std::move(error)); return false;
+  }
+  return true;
+}

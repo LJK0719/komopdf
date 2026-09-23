@@ -1,0 +1,26 @@
+# WASM-only overlay for the existing native/pdf-core PDFium edit test.
+executable("pdf_editor_edit_test") {
+  sources = [
+    "form_edit.cc",
+    "form_edit.h",
+    "form_fields.cc",
+    "form_fields.h",
+    "pdfium_edit_test.cc",
+  ]
+  deps = [ "//:pdfium" ]
+  configs += [ "//:pdfium_core_config" ]
+
+  if (is_wasm) {
+    output_extension = "cjs"
+    font = "testdata/LXGWWenKai-Regular.ttf"
+    inputs = [ font ]
+    ldflags = [
+      "--preload-file",
+      rebase_path(font, root_build_dir) + "@/fonts/LXGWWenKai-Regular.ttf",
+      "-sENVIRONMENT=node",
+      "-sEXIT_RUNTIME=1",
+      "-sINITIAL_MEMORY=67108864",
+      "-sMAXIMUM_MEMORY=1073741824",
+    ]
+  }
+}

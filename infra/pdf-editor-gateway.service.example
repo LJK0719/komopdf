@@ -1,0 +1,26 @@
+[Unit]
+Description=komopdf AI Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=pdf-editor
+Group=pdf-editor
+WorkingDirectory=/opt/pdf-editor/current
+# 宿主凭证文件只允许 root 读取；systemd 为服务提供受限的凭证副本。
+LoadCredential=gemini:/etc/pdf-editor/credentials/gemini
+ExecStart=/usr/bin/node --max-old-space-size=256 apps/gateway/dist/cli.mjs --host 127.0.0.1 --port 8787 --config /etc/pdf-editor/gateway.config.json --credential-file %d/gemini
+MemoryMax=512M
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=komopdf-gateway
+
+[Install]
+WantedBy=multi-user.target

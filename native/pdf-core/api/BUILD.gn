@@ -1,0 +1,44 @@
+# Copy this directory into the pinned PDFium checkout (for example as
+# //pdf_editor_api) so the adapter uses the same compiler, C++ library and
+# PDFium configuration as //:pdfium.
+source_set("pdf_editor_api") {
+  sources = [
+    "font_runtime.cc",
+    "font_runtime.h",
+    "text_shaping.cc",
+    "text_shaping.h",
+    "shaped_font.cc",
+    "shaped_font.h",
+    "text_paragraph.cc",
+    "text_paragraph.h",
+    "pdf_editor_api.cc",
+    "pdf_editor_api.h",
+    "//pdf_editor_bridge/form_edit.cc",
+    "//pdf_editor_bridge/form_edit.h",
+    "//pdf_editor_bridge/document_tools.cc",
+    "//pdf_editor_bridge/document_tools.h",
+  ]
+  deps = [
+    "//:pdfium",
+    "//third_party/icu:icuuc",
+    "//third_party/harfbuzz",
+  ]
+  configs -= [ "//build/config/compiler:no_exceptions" ]
+  configs += [
+    "//:pdfium_core_config",
+    "//build/config/compiler:exceptions",
+  ]
+  if (is_clang) {
+    cflags_cc = [ "-Wno-exit-time-destructors" ]
+  }
+}
+
+executable("pdf_editor_api_test") {
+  testonly = true
+  sources = [ "pdf_editor_api_test.cc" ]
+  deps = [
+    ":pdf_editor_api",
+    "//:pdfium",
+  ]
+  configs += [ "//:pdfium_core_config" ]
+}

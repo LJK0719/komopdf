@@ -1,0 +1,26 @@
+# Desktop-specific source belongs in the private repository.
+/apps/desktop/
+/packages/desktop-agent/
+/native/pdf-worker/
+/native/ocr/
+node_modules/
+.pnpm-store/
+dist/
+build/
+target/
+tmp/
+.next/
+__pycache__/
+*.pyc
+*.tsbuildinfo
+.env*
+!*.env.example
+resources/downloads/
+native/vendor/sources/
+native/vendor/tools/
+native/vendor/artifacts/
+apps/web/public/engines/
+apps/web/public/fonts/
+apps/web/next-env.d.ts
+test-results/
+playwright-report/

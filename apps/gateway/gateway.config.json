@@ -1,0 +1,27 @@
+{
+  "provider": {
+    "baseUrl": "https://gemini.openjk.space",
+    "model": "gemini-3.8-flash-high",
+    "displayName": "Gemini 3.8 Flash High"
+  },
+  "credentialName": "gemini-api-key",
+  "limits": {
+    "inFlight": 12,
+    "imageInFlight": 2,
+    "perIpInFlight": 2,
+    "perIpPerMinute": 60,
+    "textBodyBytes": 524288,
+    "imageBodyBytes": 3145728,
+    "agentBodyBytes": 3145728,
+    "imageCount": 2,
+    "imageFileBytes": 2097152,
+    "imageLongestEdge": 1536,
+    "connectTimeoutMs": 10000,
+    "requestTimeoutMs": 180000,
+    "upstreamFrameBytes": 1048576,
+    "upstreamStreamBytes": 4194304,
+    "visibleResultBytes": 524288,
+    "maxOutputTokens": 8192,
+    "agentMaxOutputTokens": 32768
+  }
+}

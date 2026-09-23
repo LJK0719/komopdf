@@ -1,0 +1,25 @@
+diff --git a/core/fpdfapi/edit/cpdf_fontsubsetter.cpp b/core/fpdfapi/edit/cpdf_fontsubsetter.cpp
+--- a/core/fpdfapi/edit/cpdf_fontsubsetter.cpp
++++ b/core/fpdfapi/edit/cpdf_fontsubsetter.cpp
+@@ -17,6 +17,7 @@
+ #include <vector>
+
+ #include "core/fpdfapi/edit/cpdf_font_util.h"
++#include "core/fpdfapi/font/cpdf_cidfont.h"
+ #include "core/fpdfapi/font/cpdf_font.h"
+ #include "core/fpdfapi/page/cpdf_page.h"
+ #include "core/fpdfapi/page/cpdf_textobject.h"
+@@ -320,9 +321,12 @@ void CPDF_FontSubsetter::AddUsedText(const CPDF_TextObject* text,
+     }
+
+     if (subset_widths) {
++      const uint32_t width_code =
++          font->IsCIDFont() ? font->AsCIDFont()->CIDFromCharCode(char_code)
++                            : char_code;
+       int width = font->GetCharWidth(char_code);
+       if (width >= 0) {
+-        candidate.char_code_to_width[char_code] = static_cast<uint32_t>(width);
++        candidate.char_code_to_width[width_code] = static_cast<uint32_t>(width);
+       }
+     }
+

@@ -1,0 +1,13 @@
+diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
+--- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
++++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
+@@ -1017,6 +1017,9 @@
+   *buf << "/" << PDF_NameEncode(dict_name) << " ";
+   WriteFloat(*buf, pTextObj->GetFontSize()) << " Tf ";
+   *buf << static_cast<int>(pTextObj->GetTextRenderMode()) << " Tr ";
++  // Preserve spacing when regenerating or splitting a text object.
++  WriteFloat(*buf, pTextObj->text_state().GetCharSpace()) << " Tc ";
++  WriteFloat(*buf, pTextObj->text_state().GetWordSpace()) << " Tw ";
+
+   *buf << "[";
+   ByteString text;
