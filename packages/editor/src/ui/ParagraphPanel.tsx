@@ -41,6 +41,7 @@ export function ParagraphPanel({
   const [alignment, setAlignment] = useState<'left' | 'center' | 'right'>('left');
   const [color, setColor] = useState('#000000');
   const [characterSpacing, setCharacterSpacing] = useState('');
+  const [underline, setUnderline] = useState(false);
 
   const [x, setX] = useState('36');
   const [y, setY] = useState('36');
@@ -123,13 +124,14 @@ export function ParagraphPanel({
       alignment,
       color,
       characterSpacing,
+      underline,
       Number(x),
       Number(y),
       Number(width),
       Number(height),
       selectedTextObjects.map(o => o.textBlock!.id),
     ]);
-  }, [scope, text, chosenFontId, fontSize, lineHeight, alignment, color, characterSpacing, x, y, width, height, selectedTextObjects]);
+  }, [scope, text, chosenFontId, fontSize, lineHeight, alignment, color, characterSpacing, underline, x, y, width, height, selectedTextObjects]);
 
   const draftDirty = Boolean(text.trim() || preview !== null);
   useEffect(() => {
@@ -177,6 +179,7 @@ export function ParagraphPanel({
     ...(color && /^#[0-9a-f]{6}$/i.test(color) ? { color: parseRgb(color) } : {}),
     lineHeight: numLineHeight,
     alignment,
+    underline,
     ...(characterSpacing.trim() && Number.isFinite(parseFloat(characterSpacing))
       ? { characterSpacing: parseFloat(characterSpacing) }
       : {}),
@@ -545,6 +548,8 @@ export function ParagraphPanel({
           disabled={locked}
         />
       </label>
+      <label><input type="checkbox" checked={underline} disabled={locked}
+        onChange={event => { setUnderline(event.target.checked); clearPreview(); }} />Underline paragraph</label>
 
       <div className="text-edit-actions">
         <button

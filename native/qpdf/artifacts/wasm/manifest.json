@@ -60,18 +60,18 @@
     },
     {
       "path": "pdf-editor-qpdf.js",
-      "bytes": 77282,
-      "sha256": "d9a0a62879f21a308807549fe856604ec19080d3e2db6c872131053737d7217f"
+      "bytes": 77388,
+      "sha256": "ec296a140916f2212220ae70cd7f527a8a6f355bd34819f60c8eb986ba122806"
     },
     {
       "path": "pdf-editor-qpdf.wasm",
-      "bytes": 1165091,
-      "sha256": "392d5807c5d86af9234cda4c312fbd9d76ac5293c60330f652b8285d98f4fc46"
+      "bytes": 1167746,
+      "sha256": "91d2cfc4b329c359cc9d19a695d2b7bc531d0ea4a9142d3620bb17f3dec0d584"
     },
     {
       "path": "pdf_editor_qpdf.h",
-      "bytes": 2716,
-      "sha256": "eeb6a0b149ab94b6f943512dd86df315c135a3539dd14509aaae3d7af48c122b"
+      "bytes": 3343,
+      "sha256": "d06a3789a2e566cc1707bf40050e3b9ec8909b19c324e5e2c8fcf3c39d19b7a2"
     }
   ]
 }

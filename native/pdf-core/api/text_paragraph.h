@@ -46,6 +46,8 @@ struct ParagraphRequest {
   float line_height = 1.2f;
   float letter_spacing = 0;
   ParagraphColor color;
+  // Paint a vector underline along each non-empty visual line inside the Form.
+  bool underline = false;
   ParagraphAlignment alignment = ParagraphAlignment::kLeft;
   TextDirection direction = TextDirection::kAuto;
   std::string language;

@@ -34,6 +34,7 @@ test('real WASM reflows adjacent text lines into a single paragraph, undoes, red
   await paragraphSection.getByRole('combobox', { name: 'Font' }).selectOption('noto-sans-cjk-sc-regular');
   await paragraphSection.getByRole('spinbutton', { name: 'Box Width (pt)' }).fill('240');
   await paragraphSection.getByRole('spinbutton', { name: 'Box Height (pt)' }).fill('160');
+  await paragraphSection.getByRole('checkbox', { name: 'Underline paragraph' }).check();
 
   // 5. Preview paragraph, confirm fit, and reflow selected text
   await paragraphSection.getByRole('button', { name: 'Preview paragraph', exact: true }).click();
@@ -73,6 +74,7 @@ test('real WASM reflows adjacent text lines into a single paragraph, undoes, red
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.equals(original)).toBe(false);
+  expect(saved.includes(Buffer.from('/Underline true'))).toBe(true);
 
   page.once('dialog', async dialog => {
     page.once('dialog', discard => discard.accept());

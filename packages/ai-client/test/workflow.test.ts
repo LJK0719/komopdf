@@ -63,6 +63,36 @@ it('delta 只展示，完整 result 生成预览且明确接受后才 apply', as
 });
 
 describe('请求与冻结证据绑定', () => {
+  it('构建证据后文档版本变化，不发送旧版次请求', async () => {
+    const request: AiRequest = {
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: 'request-stale',
+      feature: 'document.ask',
+      document: { id: 'doc-1', revision: 2 },
+      context: { scope: 'page', evidence: [{
+        id: 'e-1', docId: 'doc-1', revision: 2, pageId: 'page-1', pageNumber: 1,
+        blockId: 'block-1', text: '旧版原文',
+      }] },
+      instruction: '问题',
+      options: {},
+    };
+    const snapshot = createEvidenceSnapshot(request, [{
+      evidenceId: 'e-1', sourceId: 'source-1', blockText: '旧版原文',
+    }]);
+    const authorization = new DocumentAiAuthorization('doc-1');
+    authorization.enable(['source-1']);
+    const fetch = vi.fn(async () => sseResponse([]));
+    const workflow = new AiWorkflow({
+      endpoint: 'https://gateway.invalid/api/v1/ai/requests', authorization,
+      getCurrentDocument: () => ({ id: 'doc-1', revision: 3 }),
+      apply: async () => ({ revision: 4 }), nextTransactionId: () => 'tx-stale', fetch,
+    });
+
+    await expect(workflow.run({ request, snapshot, sourceIds: ['source-1'] }))
+      .rejects.toThrow('Document changed before AI request');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each(['changed-text', 'added-evidence'] as const)('%s 无法绕过冻结快照', async mutation => {
     const request: AiRequest = {
       protocolVersion: PROTOCOL_VERSION,

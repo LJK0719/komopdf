@@ -167,12 +167,13 @@ pde_qpdf_transform(
     }
 }
 
-extern "C" int
-pde_qpdf_optimize_images(
+static int
+export_images(
     unsigned char const* input_data,
     size_t input_size,
     char const* input_password,
     int quality,
+    int max_edge,
     unsigned char** output_data,
     size_t* output_size)
 {
@@ -180,8 +181,9 @@ pde_qpdf_optimize_images(
     if (output_data != nullptr) *output_data = nullptr;
     if (output_size != nullptr) *output_size = 0;
     if ((input_data == nullptr) || (input_size == 0) || (output_data == nullptr) ||
-        (output_size == nullptr) || (quality < 1) || (quality > 95)) {
-        last_error = "input PDF, output pointers and JPEG quality 1..95 are required";
+        (output_size == nullptr) || (quality < 1) || (quality > 95) || (max_edge < 0)) {
+        last_error = max_edge < 0 ? "maximum image edge must be a positive number of pixels" :
+            "input PDF, output pointers and JPEG quality 1..95 are required";
         return PDE_QPDF_INVALID_ARGUMENT;
     }
     try {
@@ -189,7 +191,11 @@ pde_qpdf_optimize_images(
         pdf.setSuppressWarnings(true);
         pdf.processMemoryFile(
             "export copy", reinterpret_cast<char const*>(input_data), input_size, input_password);
-        optimize_export_images(pdf, quality);
+        if (max_edge == 0) {
+            optimize_export_images(pdf, quality);
+        } else {
+            resample_export_images(pdf, quality, max_edge);
+        }
         QPDFWriter writer(pdf);
         writer.setPreserveEncryption(true);
         writer.setOutputMemory();
@@ -218,6 +224,32 @@ pde_qpdf_optimize_images(
         last_error = "unknown QPDF failure";
         return PDE_QPDF_INTERNAL_ERROR;
     }
+}
+
+extern "C" int
+pde_qpdf_optimize_images(
+    unsigned char const* input_data,
+    size_t input_size,
+    char const* input_password,
+    int quality,
+    unsigned char** output_data,
+    size_t* output_size)
+{
+    return export_images(input_data, input_size, input_password, quality, 0, output_data, output_size);
+}
+
+extern "C" int
+pde_qpdf_resample_images(
+    unsigned char const* input_data,
+    size_t input_size,
+    char const* input_password,
+    int quality,
+    int max_edge,
+    unsigned char** output_data,
+    size_t* output_size)
+{
+    return export_images(input_data, input_size, input_password, quality,
+                         max_edge > 0 ? max_edge : -1, output_data, output_size);
 }
 
 extern "C" char const*

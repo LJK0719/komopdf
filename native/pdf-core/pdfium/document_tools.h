@@ -55,6 +55,8 @@ struct AnnotationSpec {
 enum class FormFieldType {
   kText,
   kCheckbox,
+  kComboBox,
+  kListBox,
 };
 
 struct FormFieldSpec {
@@ -64,6 +66,7 @@ struct FormFieldSpec {
   PdfRect rect;
   int rotation = 0;
   std::string initial_value_utf8;
+  std::vector<std::string> options_utf8;
   bool checked = false;
   // Must be a font already loaded into `document`. Text fields without a font
   // reuse an existing valid AcroForm /DA and /DR; they never silently fall back

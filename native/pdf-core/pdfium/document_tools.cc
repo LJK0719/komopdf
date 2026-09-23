@@ -868,9 +868,15 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
   if (!ValidRect(spec.rect)) {
     return Fail(error, "The form field rectangle must have positive area.");
   }
+  const bool choice = spec.type == FormFieldType::kComboBox ||
+                      spec.type == FormFieldType::kListBox;
   if (spec.type != FormFieldType::kText &&
-      spec.type != FormFieldType::kCheckbox) {
-    return Fail(error, "Only text and checkbox field creation is supported.");
+      spec.type != FormFieldType::kCheckbox && !choice) {
+    return Fail(error, "Unsupported form field type.");
+  }
+  if ((choice && (spec.options_utf8.empty() || !spec.font)) ||
+      (!choice && !spec.options_utf8.empty())) {
+    return Fail(error, "Choice fields require options and an embedded font.");
   }
   if (spec.rotation != 0 && spec.rotation != 90 && spec.rotation != 180 &&
       spec.rotation != 270) {
@@ -892,6 +898,25 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
     return Fail(error,
                 "New top-level field names cannot contain hierarchy dots.");
   }
+  std::vector<WideString> choices;
+  int selected_index = 0;
+  if (choice) {
+    choices.reserve(spec.options_utf8.size());
+    for (const auto& value : spec.options_utf8) {
+      WideString option;
+      if (!DecodeUtf8(value, false, &option, error, "Choice option") ||
+          std::find(choices.begin(), choices.end(), option) != choices.end()) {
+        if (error && error->empty()) *error = "Choice options must be distinct.";
+        return false;
+      }
+      choices.push_back(std::move(option));
+    }
+    if (!initial_value.IsEmpty()) {
+      const auto selected = std::find(choices.begin(), choices.end(), initial_value);
+      if (selected == choices.end()) return Fail(error, "The initial choice must be an option.");
+      selected_index = static_cast<int>(selected - choices.begin());
+    }
+  }
 
   CPDF_InteractiveForm existing_fields(document);
   size_t name_matches = 0;
@@ -904,12 +929,12 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
     return Fail(error, "Form field persistent_id already exists.");
   }
 
-  if (spec.type == FormFieldType::kText &&
+  if ((spec.type == FormFieldType::kText || choice) &&
       (!ValidColor(spec.text_color) || !std::isfinite(spec.font_size) ||
        spec.font_size <= 0 ||
        spec.font_size > std::numeric_limits<float>::max())) {
     return Fail(error,
-                "Text field color must be within [0, 1] and font_size positive.");
+                "Field color must be within [0, 1] and font_size positive.");
   }
 
   RetainPtr<CPDF_Dictionary> acroform =
@@ -938,17 +963,20 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
   if (!acroform) {
     return Fail(error, "PDFium could not create the AcroForm dictionary.");
   }
-  if (spec.type == FormFieldType::kText && spec.font) {
+  if ((spec.type == FormFieldType::kText || choice) && spec.font) {
     if (!AddFontToDefaultResources(document, acroform.Get(), spec.font,
                                    &font_alias, &field_font, error) ||
         !FontCovers(field_font.Get(), initial_value, error)) {
       return false;
     }
+    for (const auto& option : choices) {
+      if (!FontCovers(field_font.Get(), option, error)) return false;
+    }
   }
   acroform->GetOrCreateDictFor("DR");
   if (acroform->GetByteStringFor("DA").IsEmpty()) {
     acroform->SetNewFor<CPDF_String>(
-        "DA", spec.type == FormFieldType::kText
+        "DA", spec.type == FormFieldType::kText || choice
                   ? MakeDefaultAppearance(font_alias, spec.font_size,
                                           spec.text_color)
                   : ByteString("0 g"));
@@ -956,7 +984,7 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
 
   RetainPtr<CPDF_Dictionary> widget = NewWidget(
       document, page, name, persistent_id, ToCfxRect(spec.rect), spec.rotation,
-      spec.type == FormFieldType::kText ? "Tx" : "Btn");
+      choice ? "Ch" : spec.type == FormFieldType::kText ? "Tx" : "Btn");
   if (!widget) {
     return Fail(error, "PDFium could not create an indirect Widget field.");
   }
@@ -965,6 +993,16 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
     widget->SetNewFor<CPDF_String>(
         "DA", MakeDefaultAppearance(font_alias, spec.font_size, spec.text_color));
     widget->SetNewFor<CPDF_String>("V", initial_value.AsStringView());
+  } else if (choice) {
+    widget->SetNewFor<CPDF_Number>("Ff", spec.type == FormFieldType::kComboBox
+        ? static_cast<int>(pdfium::form_flags::kChoiceCombo) : 0);
+    widget->SetNewFor<CPDF_String>(
+        "DA", MakeDefaultAppearance(font_alias, spec.font_size, spec.text_color));
+    auto options = widget->SetNewFor<CPDF_Array>("Opt");
+    for (const auto& option : choices)
+      options->AppendNew<CPDF_String>(option.AsStringView());
+    widget->SetNewFor<CPDF_String>("V", choices[selected_index].AsStringView());
+    widget->SetNewFor<CPDF_Array>("I")->AppendNew<CPDF_Number>(selected_index);
   } else {
     widget->SetNewFor<CPDF_String>("DA", "0 g");
     widget->SetNewFor<CPDF_Name>("V", spec.checked ? "Yes" : "Off");
@@ -977,12 +1015,9 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
   if (!created) {
     return Fail(error, "PDFium could not index the newly created form field.");
   }
-  if (spec.type == FormFieldType::kText) {
-    std::vector<WideString> texts{initial_value};
-    if (!ValidateAppearanceFonts(document, created, texts,
-                                 error)) {
-      return false;
-    }
+  if (spec.type == FormFieldType::kText || choice) {
+    const std::vector<WideString> texts = choice ? choices : std::vector<WideString>{initial_value};
+    if (!ValidateAppearanceFonts(document, created, texts, error)) return false;
   }
   return ResetFieldAppearances(document, name, error);
 }

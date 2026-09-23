@@ -17,9 +17,18 @@ export type BatchPayload = {
   pageId: string;
   pageNumber: number;
   blockId: string;
+  sourceId: string;
   range: [number, number];
   originalText: string;
 };
+
+export function batchSourceId(sourceIds: readonly string[], blockSourceId?: string): string {
+  const sourceId = blockSourceId ?? (sourceIds.length === 1 ? sourceIds[0] : undefined);
+  if (!sourceId || !sourceIds.includes(sourceId)) {
+    throw new Error('Text block missing source mapping; cannot authorize batch translation');
+  }
+  return sourceId;
+}
 
 export type BatchResult = {
   translatedText: string;
@@ -78,7 +87,11 @@ export function AiPanelBatch({
           const restored = await runner.restore(existing.id);
           if (isMountedRef.current && currentDocRef.current.id === document.id) {
             setTask(restored);
-            if (restored.status === 'completed') {
+            if (restored.baseRevision !== currentDocRef.current.revision) {
+              setStatusText('Previous translation belongs to an older revision and is read-only. Reset to start a new task.');
+            } else if (restored.sourceIds.length !== 1 && restored.batches.some(batch => !batch.payload.sourceId)) {
+              setStatusText('Previous task has no per-block source mapping. Reset to start a new task.');
+            } else if (restored.status === 'completed') {
               setStatusText('All batches completed');
             } else {
               setStatusText('Previous task restored in paused state. Re-authorize and click Resume to continue.');
@@ -133,11 +146,16 @@ export function AiPanelBatch({
             pageId: item.pageId,
             pageNumber: item.pageNumber,
             blockId: item.block.id,
+            sourceId: batchSourceId(document.sourceIds, item.block.sourceId),
             range: [0, text.length] as [number, number],
             originalText: text,
           },
         };
       });
+
+      if (currentDocRef.current.id !== document.id || currentDocRef.current.revision !== document.revision) {
+        throw new Error('Document changed while collecting text; start translation again from the current revision');
+      }
 
       const newTask = await createLongTask<BatchPayload, BatchResult>({
         id: `translate-${document.id}-${Date.now()}`,
@@ -174,10 +192,24 @@ export function AiPanelBatch({
     setStatusText('Processing batch requests…');
 
     try {
+      const savedTask = await storeRef.current.loadTask(taskId);
+      if (!savedTask) throw new Error('Saved translation task not found');
+      if (currentDocRef.current.id !== savedTask.docId || currentDocRef.current.revision !== savedTask.baseRevision) {
+        throw new Error('Document revision has changed; previous translation is read-only. Start a new task.');
+      }
+      for (const batch of savedTask.batches) {
+        if (batch.status === 'pending' || batch.status === 'paused') {
+          batchSourceId(savedTask.sourceIds, batch.payload.sourceId);
+        }
+      }
       const finished = await runnerRef.current.continueTask(
         taskId,
         authorization,
         async (_task, batch: Readonly<LongTaskBatch<BatchPayload, BatchResult>>, signal: AbortSignal) => {
+          if (currentDocRef.current.id !== _task.docId || currentDocRef.current.revision !== _task.baseRevision) {
+            await runnerRef.current?.pauseTask(taskId);
+            throw new Error('Document changed during translation');
+          }
           // 严格绑定 _task 的真实元数据与设置
           const taskSettings = (_task.settings ?? {}) as { targetLanguage?: string };
           const effectiveLang = taskSettings.targetLanguage ?? targetLanguage;
@@ -196,7 +228,7 @@ export function AiPanelBatch({
           const localSources: LocalEvidenceSource[] = [
             {
               evidenceId: 'e1',
-              sourceId: _task.sourceIds[0] ?? document.sourceIds[0] ?? 'src-1',
+              sourceId: batchSourceId(_task.sourceIds, batch.payload.sourceId),
               blockText: batch.content,
             },
           ];
@@ -216,6 +248,10 @@ export function AiPanelBatch({
             request,
             signal,
           });
+          if (currentDocRef.current.id !== _task.docId || currentDocRef.current.revision !== _task.baseRevision) {
+            await runnerRef.current?.pauseTask(taskId);
+            throw new Error('Document changed during translation');
+          }
 
           // 必须通过 snapshot 严格复核 response
           assertResponseMatchesSnapshot(outcome.response, snapshot);
@@ -331,6 +367,9 @@ export function AiPanelBatch({
       }
 
       // 3. 执行应用
+      if (currentDocRef.current.id !== task.docId || currentDocRef.current.revision !== task.baseRevision) {
+        throw new Error('Document changed while measuring translation; regenerate from the current revision');
+      }
       await onApplyBlock(
         batch.payload.pageId,
         batch.payload.blockId,
@@ -350,6 +389,8 @@ export function AiPanelBatch({
   const totalCount = task?.batches.length ?? 0;
   const percent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
   const isRunning = busy || task?.status === 'running';
+  const staleTask = Boolean(task && (task.docId !== document.id || task.baseRevision !== document.revision));
+  const missingBatchSource = Boolean(task && task.sourceIds.length !== 1 && task.batches.some(batch => !batch.payload.sourceId));
 
   return (
     <div className="ai-batch-panel" style={{ display: 'grid', gap: '8px', marginTop: '8px' }}>
@@ -422,7 +463,7 @@ export function AiPanelBatch({
               </button>
             )}
             {!isRunning && task.status !== 'completed' && task.status !== 'cancelled' && (
-              <button type="button" onClick={() => void resumeTask()} disabled={disabled} style={{ flex: 1 }}>
+              <button type="button" onClick={() => void resumeTask()} disabled={disabled || staleTask || missingBatchSource} style={{ flex: 1 }}>
                 Resume
               </button>
             )}
@@ -439,6 +480,8 @@ export function AiPanelBatch({
       )}
 
       {error && <p role="alert" style={{ color: '#ff623d' }}>{error}</p>}
+      {staleTask && <p role="alert">Previous translation belongs to an older revision; reset to start a new task.</p>}
+      {missingBatchSource && <p role="alert">Per-block source mapping is missing; reset to start a new task.</p>}
       {statusText && <p style={{ fontSize: '10px', color: '#666' }}>{statusText}</p>}
 
       {task && task.batches.some(b => b.status === 'completed') && (

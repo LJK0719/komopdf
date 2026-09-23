@@ -154,7 +154,6 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         if (command.objectIds.length !== command.newObjectIds.length) invalid('Copied object count mismatch');
         const page = requirePage(context, command.pageId);
         const originals = command.objectIds.map(id => page.objects.find(object => object.id === id)!);
-        if (originals.some(object => object.type === 'group')) invalid('Copying a persistent group is not supported yet');
         command.newObjectIds.forEach((id, index) => {
           addId(id);
           const source = originals[index]!;
@@ -249,10 +248,19 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         annotations.delete(command.annotationId);
         break;
       }
-      case 'form.create':
+      case 'form.create': {
+        const choice = command.fieldType === 'combo' || command.fieldType === 'list';
+        if (choice && (!command.fontId || !command.options?.length ||
+            new Set(command.options).size !== command.options.length)) {
+          invalid('Choice fields require an embedded font and distinct options');
+        }
+        if (!choice && command.options !== undefined) invalid('Only choice fields accept options');
         addId(command.fieldId);
-        fields.set(command.fieldId, { pageId: command.pageId, type: command.fieldType, options: [], readOnly: false });
+        fields.set(command.fieldId, { pageId: command.pageId,
+          type: command.fieldType === 'combo' || command.fieldType === 'list' ? 'choice' : command.fieldType,
+          options: command.options ?? [], readOnly: false });
         break;
+      }
       case 'form.fill': {
         const field = fields.get(command.fieldId);
         if (!field || !pageIds.has(field.pageId)) invalid('Form field does not exist or page was deleted');

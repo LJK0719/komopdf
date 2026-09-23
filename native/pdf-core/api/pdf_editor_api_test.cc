@@ -596,6 +596,78 @@ void TestObjectDistribution() {
           "close distribution fixtures");
 }
 
+void TestNestedObjectTransform() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] "
+      "/Resources << /XObject << /Fm 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("q 1 0 0 1 30 50 cm /Fm Do Q q 1 0 0 1 130 50 cm /Fm Do Q"),
+      Stream("0 0 20 10 re f", "/Type /XObject /Subtype /Form /BBox [0 0 50 20]"),
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "nested-transform", "shared-form", nullptr);
+  Require(doc != 0, "open two instances of a shared Form stream");
+  const std::string before = RequireResult(pde_describe_page(doc, 0), "describe shared Form instances");
+  Require(Count(before, "\"type\":\"path\"") == 2, "both nested paths are described");
+  const std::string page_id = PageIdFromDescription(before);
+  const std::string child_id = JsonStringAfter(before, "{\"id\":\"", before.find("\"type\":\"form\""));
+  const char* selected[] = {child_id.c_str()};
+  PdeEditCommand move{};
+  move.type = 4; move.page_id = page_id.c_str(); move.ids = selected; move.id_count = 1;
+  move.values[0] = 1; move.values[3] = 1; move.values[4] = 20;
+  const auto original = RenderPixels(doc, 0, 240, 240);
+  Require(pde_preview_commands(doc, 0, &move, 1) != nullptr &&
+          std::string(pde_describe_page(doc, 0)) == before,
+          "nested transform preview does not mutate either Form instance");
+  Require(pde_apply_commands(doc, 0, "move-one-form-child", &move, 1) != nullptr,
+          "move a nested path in normalized page coordinates");
+  const std::string after = RequireResult(pde_describe_page(doc, 0), "describe isolated nested edit");
+  Require(std::abs(JsonNumberAfter(after, "\"bounds\":{\"x\":", 1) -
+                   JsonNumberAfter(before, "\"bounds\":{\"x\":", 1) - 20) < 0.01 &&
+          std::abs(JsonNumberAfter(after, "\"bounds\":{\"x\":", 3) -
+                   JsonNumberAfter(before, "\"bounds\":{\"x\":", 3)) < 0.01,
+          "moving one Form child leaves the other shared instance unchanged");
+  const auto changed = RenderPixels(doc, 0, 240, 240);
+  Require(changed != original && pde_undo(doc) != nullptr &&
+          RenderPixels(doc, 0, 240, 240) == original,
+          "nested movement is visible and undo restores both instances");
+  Require(pde_redo(doc) != nullptr && pde_save_memory(doc) != nullptr,
+          "redo nested Form edit and save");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "nested-reopen", "nested-saved", nullptr);
+  Require(reopened != 0 && RenderPixels(reopened, 0, 240, 240) == changed,
+          "isolated Form child transformation survives save and reopen");
+  const std::string reopened_page = RequireResult(pde_describe_page(reopened, 0), "describe reopened Form");
+  const std::string child_to_delete = JsonStringAfter(reopened_page, "{\"id\":\"",
+      reopened_page.find("\"type\":\"form\""));
+  const std::string reopened_page_id = PageIdFromDescription(reopened_page);
+  const char* removed[] = {child_to_delete.c_str()};
+  PdeEditCommand clipped_move{};
+  clipped_move.type = 4; clipped_move.page_id = reopened_page_id.c_str();
+  clipped_move.ids = removed; clipped_move.id_count = 1;
+  clipped_move.values[0] = 1; clipped_move.values[3] = 1; clipped_move.values[4] = 80;
+  Require(pde_apply_commands(reopened, 0, "clipped-form-move", &clipped_move, 1) == nullptr &&
+          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+          RenderPixels(reopened, 0, 240, 240) == changed,
+          "nested move outside the Form BBox fails without hiding PDF content");
+  PdeEditCommand deletion{};
+  deletion.type = 5; deletion.page_id = reopened_page_id.c_str();
+  deletion.ids = removed; deletion.id_count = 1;
+  Require(pde_apply_commands(reopened, 0, "delete-one-form-child", &deletion, 1) != nullptr,
+          "delete a nested child from only one shared Form instance");
+  const std::string deleted = RequireResult(pde_describe_page(reopened, 0), "describe nested deletion");
+  Require(Count(deleted, "\"type\":\"path\"") == 1,
+          "other shared Form instance survives nested deletion");
+  Require(RenderPixels(reopened, 0, 240, 240) != changed,
+          "nested child deletion changes PDF appearance");
+  Require(pde_undo(reopened) != nullptr && RenderPixels(reopened, 0, 240, 240) == changed,
+          "nested deletion undo restores the original instance");
+  Require(pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close nested Form instances");
+}
+
 void TestObjectGroup() {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -679,7 +751,58 @@ void TestObjectGroup() {
   Require(pde_undo(reopened) != nullptr &&
           std::string(pde_describe_page(reopened, 0)).find("\"type\":\"group\"") != std::string::npos,
           "ungroup undo restores persistent Form group");
-  Require(pde_close(ungrouped_doc) == 1 && pde_close(reopened) == 1 && pde_close(doc) == 1,
+
+  const uint32_t copies = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "group-copies", "group-copy-source", nullptr);
+  Require(copies != 0, "open persistent group for copy and page duplication");
+  const std::string copy_page_id = PageIdFromDescription(
+      RequireResult(pde_describe_page(copies, 0), "describe copy source"));
+  const char* object_pair[] = {"group-alpha", "group-copy"};
+  PdeEditCommand copy{};
+  copy.type = 16; copy.page_id = copy_page_id.c_str();
+  copy.ids = object_pair; copy.id_count = 2; copy.values[0] = 80;
+  Require(pde_apply_commands(copies, 0, "copy-persistent-group", &copy, 1) != nullptr,
+          "copy Form group with new root and child identities");
+  const auto copied_pixels = RenderPixels(copies, 0, 240, 240);
+  Require(copied_pixels != moved_pixels && pde_save_memory(copies) != nullptr,
+          "group copy visibly moves while the original remains");
+  const std::vector<uint8_t> copied_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t copied_reopen = pde_open_memory(copied_bytes.data(),
+      static_cast<uint32_t>(copied_bytes.size()), "copied-reopen", "copied-source", nullptr);
+  const std::string copied_desc = RequireResult(pde_describe_page(copied_reopen, 0), "describe copied group");
+  const std::string copy_members = copied_desc.substr(copied_desc.find("\"id\":\"group-copy\""));
+  Require(copied_reopen != 0 && copied_desc.find("\"id\":\"group-alpha\"") != std::string::npos &&
+          copied_desc.find("\"id\":\"group-copy\"") != std::string::npos &&
+          copy_members.find("\"id\":\"" + first + "\"") == std::string::npos &&
+          copy_members.find("\"id\":\"" + second + "\"") == std::string::npos &&
+          RenderPixels(copied_reopen, 0, 240, 240) == copied_pixels,
+          "original and cloned groups retain distinct child IDs after PDF roundtrip");
+
+  const char* page_pair[] = {copy_page_id.c_str(), "group-page-copy"};
+  PdeEditCommand duplicate{};
+  duplicate.type = 12; duplicate.ids = page_pair; duplicate.id_count = 2;
+  duplicate.target_id = copy_page_id.c_str();
+  Require(pde_apply_commands(copies, 1, "duplicate-group-page", &duplicate, 1) != nullptr,
+          "duplicate page containing two persistent groups");
+  const std::string page_copy = RequireResult(pde_describe_page(copies, 1), "describe duplicated group page");
+  Require(page_copy.find("\"type\":\"group\"") != std::string::npos &&
+          page_copy.find("\"id\":\"group-alpha\"") == std::string::npos &&
+          page_copy.find("\"id\":\"group-copy\"") == std::string::npos &&
+          RenderPixels(copies, 1, 240, 240) == copied_pixels && pde_save_memory(copies) != nullptr,
+          "page copy has independent group identities and equal visible PDF content");
+  const std::vector<uint8_t> duplicated_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t duplicated_reopen = pde_open_memory(duplicated_bytes.data(),
+      static_cast<uint32_t>(duplicated_bytes.size()), "duplicated-reopen", "duplicated-source", nullptr);
+  const std::string duplicated_desc = RequireResult(
+      pde_describe_page(duplicated_reopen, 1), "describe reopened group page");
+  Require(duplicated_reopen != 0 &&
+          duplicated_desc.find("\"id\":\"" + FirstObjectId(page_copy) + "\"") != std::string::npos &&
+          duplicated_desc.find("\"type\":\"group\"") != std::string::npos &&
+          RenderPixels(duplicated_reopen, 1, 240, 240) == copied_pixels,
+          "duplicated page group identities and appearance survive save/reopen");
+  Require(pde_close(duplicated_reopen) == 1 && pde_close(copied_reopen) == 1 &&
+          pde_close(copies) == 1 && pde_close(ungrouped_doc) == 1 &&
+          pde_close(reopened) == 1 && pde_close(doc) == 1,
           "close native group fixtures");
 }
 
@@ -1327,6 +1450,77 @@ void TestDocumentTools(const std::string& font_id,
   Require(pde_close(doc) == 1, "close document tools fixture");
 }
 
+void TestChoiceFields(const std::string& font_id) {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] "
+      "/Resources << >> /Contents 4 0 R >>",
+      Stream(""),
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "choice-doc", "choice-source", nullptr);
+  Require(doc != 0, "open Choice field fixture");
+  const std::string page_id = PageIdFromDescription(pde_describe_page(doc, 0));
+  const char* options[] = {"\xE4\xB8\xAD\xE6\x96\x87 A", "\xE4\xB8\xAD\xE6\x96\x87 B"};
+  PdeEditCommand choices[2]{};
+  for (size_t index = 0; index < 2; ++index) {
+    auto& command = choices[index];
+    command.type = 19; command.page_id = page_id.c_str();
+    command.target_id = index == 0 ? "choice-combo" : "choice-list";
+    command.resource_id = index == 0 ? "combo" : "list";
+    command.text_utf8 = index == 0 ? "Dropdown" : "List";
+    command.font_id = font_id.c_str(); command.flags = 1;
+    command.ids = options; command.id_count = 2;
+    command.values[0] = 20; command.values[1] = 20 + 80 * index;
+    command.values[2] = 180; command.values[3] = 50; command.values[4] = 14;
+  }
+  const auto blank = RenderPixels(doc, 0, 400, 300);
+  Require(pde_preview_commands(doc, 0, choices, 2) != nullptr &&
+          std::string(pde_describe_forms(doc)) == "[]",
+          "Choice preview does not mutate the active PDF");
+  Require(pde_apply_commands(doc, 0, "create-choice-fields", choices, 2) != nullptr,
+          "create real single-choice ComboBox and ListBox widgets");
+  const std::string initial = RequireResult(pde_describe_forms(doc), "describe Choice fields");
+  Require(Count(initial, "\"type\":\"choice\"") == 2 &&
+          Count(initial, "\"widgets\"") == 2 &&
+          Count(initial, options[0]) >= 2 && Count(initial, options[1]) >= 2 &&
+          RenderPixels(doc, 0, 400, 300) != blank,
+          "Unicode options and the initial selection have real widget appearances");
+  Require(pde_save_memory(doc) != nullptr, "save Choice field PDF");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "choice-reopen", "choice-saved", nullptr);
+  const std::string reopened_fields = RequireResult(pde_describe_forms(reopened), "describe saved Choice fields");
+  Require(reopened != 0 &&
+          reopened_fields.find("\"id\":\"choice-combo\"") != std::string::npos &&
+          reopened_fields.find("\"id\":\"choice-list\"") != std::string::npos &&
+          Count(reopened_fields, "\"type\":\"choice\"") == 2 &&
+          Count(reopened_fields, options[0]) >= 2,
+          "Choice fields and persistent IDs survive save and reopen");
+  PdeEditCommand fill{};
+  fill.type = 18; fill.target_id = "choice-combo"; fill.text_utf8 = options[1];
+  Require(pde_apply_commands(reopened, 0, "fill-combo-choice", &fill, 1) != nullptr,
+          "existing form.fill selects a different ComboBox option");
+  fill.target_id = "choice-list";
+  Require(pde_apply_commands(reopened, 1, "fill-list-choice", &fill, 1) != nullptr,
+          "existing form.fill selects a different ListBox option");
+  const std::string filled = RequireResult(pde_describe_forms(reopened), "describe filled Choice fields");
+  Require(Count(filled, std::string("\"value\":\"") + options[1] + "\"") == 2 &&
+          pde_save_memory(reopened) != nullptr,
+          "both Choice values update and save");
+  const std::vector<uint8_t> filled_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t filled_reopen = pde_open_memory(filled_bytes.data(),
+      static_cast<uint32_t>(filled_bytes.size()), "choice-filled", "choice-filled-source", nullptr);
+  const std::string filled_again = RequireResult(pde_describe_forms(filled_reopen), "describe reopened selections");
+  Require(filled_reopen != 0 &&
+          Count(filled_again, std::string("\"value\":\"") + options[1] + "\"") == 2 &&
+          Count(filled_again, "\"type\":\"choice\"") == 2,
+          "filled Unicode Choice options persist in the PDF");
+  Require(pde_close(filled_reopen) == 1 && pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close Choice field fixtures");
+}
+
 void TestAnnotationPageDuplicate() {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -1385,7 +1579,7 @@ void TestParagraphEditing(const std::string& font_id) {
   PdeEditCommand reflow{};
   reflow.type = 20; reflow.page_id = page.c_str(); reflow.target_id = "logical-paragraph";
   reflow.ids = block_ids; reflow.id_count = 2;
-  reflow.font_id = font_id.c_str(); reflow.flags = 3 | 16 | 1024;
+  reflow.font_id = font_id.c_str(); reflow.flags = 3 | 16 | 1024 | 2048;
   reflow.values[0] = 20; reflow.values[1] = 20; reflow.values[2] = 280;
   reflow.values[3] = 180; reflow.values[4] = 18; reflow.values[9] = 1.4;
   reflow.text_utf8 = "\xE4\xB8\xAD\xE6\x96\x87 paragraph\nSecond line with more words to wrap naturally.";
@@ -1395,8 +1589,9 @@ void TestParagraphEditing(const std::string& font_id) {
   Require(std::string(pde_describe_page(doc, 0)) == before, "paragraph preview does not replace source objects");
   Require(pde_apply_commands(doc, 0, "paragraph-reflow", &reflow, 1) != nullptr, "replace adjacent original objects with real paragraph");
   const std::string paragraph = RequireResult(pde_describe_page(doc, 0), "describe logical paragraph");
-  Require(TextBlockIds(paragraph).size() == 1 && paragraph.find("\"isParagraph\":true") != std::string::npos,
-          "paragraph is one logical block backed by real glyphs");
+  Require(TextBlockIds(paragraph).size() == 1 && paragraph.find("\"isParagraph\":true") != std::string::npos &&
+          paragraph.find("\"underline\":true") != std::string::npos,
+          "underlined paragraph is one logical block backed by real glyphs");
   Require(paragraph.find("First line") == std::string::npos && paragraph.find("Second line with more") != std::string::npos,
           "original text really replaced, not covered");
   const std::string id = TextBlockIds(paragraph)[0];
@@ -1404,15 +1599,17 @@ void TestParagraphEditing(const std::string& font_id) {
   Require(pde_preview_text(doc, &edit) != nullptr && pde_apply_text(doc, 1, "paragraph-replace", &edit, 1) != nullptr,
           "existing logical paragraph supports multiline replacement");
   const std::string edited = pde_describe_page(doc, 0);
-  Require(TextBlockIds(edited)[0] == id && edited.find("Edited paragraph") != std::string::npos,
-          "paragraph reflow preserves logical identity");
+  Require(TextBlockIds(edited)[0] == id && edited.find("Edited paragraph") != std::string::npos &&
+          edited.find("\"underline\":true") != std::string::npos,
+          "paragraph replacement preserves logical identity and vector underline");
   Require(pde_save_memory(doc) != nullptr, "save shaped paragraph");
   const std::vector<uint8_t> bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
   const uint32_t reopened = pde_open_memory(bytes.data(), static_cast<uint32_t>(bytes.size()), "paragraph-reopened", "paragraph-saved", nullptr);
   Require(reopened != 0, "reopen shaped paragraph");
   const std::string reloaded = pde_describe_page(reopened, 0);
-  Require(TextBlockIds(reloaded).size() == 1 && reloaded.find("\"isParagraph\":true") != std::string::npos,
-          "saved Form retains logical paragraph metadata");
+  Require(TextBlockIds(reloaded).size() == 1 && reloaded.find("\"isParagraph\":true") != std::string::npos &&
+          reloaded.find("\"underline\":true") != std::string::npos,
+          "saved Form retains logical paragraph and underline metadata");
   Require(RenderPixels(reopened, 0, 400, 300) == RenderPixels(doc, 0, 400, 300), "shaped glyphs survive save and reload");
   const std::string saved_block = TextBlockIds(reloaded)[0];
   PdeTextEdit saved_edit{0, saved_block.c_str(), 0, 2,
@@ -1816,6 +2013,7 @@ void TestFontRuntime(const FontTestOptions& options) {
   TestOcrSearchLayer("runtime-otf");
   TestOcrSearchLayer("runtime-otf", true);
   TestDocumentTools("runtime-otf");
+  TestChoiceFields("runtime-otf");
   TestDocumentTools("runtime-otf", "/MediaBox [-10 -20 300 500] /CropBox [10 20 160 220] /Rotate 90 /UserUnit 2");
   TestMultilineTextInsert("runtime-otf");
   const std::string chinese =
@@ -2035,6 +2233,7 @@ int main(int argc, char** argv) {
   TestAbi3Transactions();
   TestObjectAlignment();
   TestObjectDistribution();
+  TestNestedObjectTransform();
   TestObjectGroup();
   TestPageCrop();
   TestOutlineNavigation();

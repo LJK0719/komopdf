@@ -12,6 +12,7 @@ const OPERATION_CODES = {
   'encrypt-aes256': 2,
   'optimize-lossless': 3,
   'optimize-images': 4,
+  'resample-images': 5,
 } as const;
 
 export type QpdfExportOptions = {
@@ -19,6 +20,7 @@ export type QpdfExportOptions = {
   inputPassword?: string;
   password?: string;
   imageQuality?: number;
+  imageMaxEdge?: number;
 };
 
 type QpdfModuleFactoryOptions = {
@@ -58,6 +60,15 @@ interface QpdfEmscriptenModule {
     outputData: number,
     outputSize: number,
   ): number;
+  _pde_qpdf_resample_images?(
+    inputData: number,
+    inputSize: number,
+    inputPassword: number,
+    imageQuality: number,
+    maxEdge: number,
+    outputData: number,
+    outputSize: number,
+  ): number;
   _pde_qpdf_last_error(): number;
   _pde_qpdf_free(pointer: number): void;
 }
@@ -85,18 +96,26 @@ export async function transformPdfExport(
       const outputPointerAddress = allocations.zeroed(POINTER_BYTES);
       const outputSizeAddress = allocations.zeroed(POINTER_BYTES);
 
+      if (options.operation === 'resample-images' && typeof module._pde_qpdf_resample_images !== 'function') {
+        throw new EngineError('CORE_UNAVAILABLE', 'QPDF runtime does not support image downsampling');
+      }
       let status: number;
       try {
-        status = options.operation === 'optimize-images'
-          ? module._pde_qpdf_optimize_images(
-            inputPointer, bytes.byteLength, inputPasswordPointer, options.imageQuality!,
+        status = options.operation === 'resample-images'
+          ? module._pde_qpdf_resample_images!(
+            inputPointer, bytes.byteLength, inputPasswordPointer, options.imageQuality!, options.imageMaxEdge!,
             outputPointerAddress, outputSizeAddress,
           )
-          : module._pde_qpdf_transform(
-            operation, inputPointer, bytes.byteLength, inputPasswordPointer,
-            passwordPointer, passwordPointer, PDE_QPDF_ALLOW_ALL, 1,
-            outputPointerAddress, outputSizeAddress,
-          );
+          : options.operation === 'optimize-images'
+            ? module._pde_qpdf_optimize_images(
+              inputPointer, bytes.byteLength, inputPasswordPointer, options.imageQuality!,
+              outputPointerAddress, outputSizeAddress,
+            )
+            : module._pde_qpdf_transform(
+              operation, inputPointer, bytes.byteLength, inputPasswordPointer,
+              passwordPointer, passwordPointer, PDE_QPDF_ALLOW_ALL, 1,
+              outputPointerAddress, outputSizeAddress,
+            );
       } catch {
         throw new EngineError('SAVE_FAILED', 'QPDF export transform failed');
       }
@@ -145,12 +164,19 @@ function validateRequest(bytes: ArrayBuffer, options: QpdfExportOptions): number
   if (options.operation === 'encrypt-aes256' && options.password === undefined) {
     throw new EngineError('INVALID_REQUEST', 'AES-256 export requires an explicit password');
   }
-  if (options.operation === 'optimize-images') {
+  if (options.operation === 'optimize-images' || options.operation === 'resample-images') {
     if (!Number.isInteger(options.imageQuality) || options.imageQuality! < 1 || options.imageQuality! > 95) {
       throw new EngineError('INVALID_REQUEST', 'JPEG quality must be an integer from 1 to 95');
     }
   } else if (options.imageQuality !== undefined) {
     throw new EngineError('INVALID_REQUEST', 'JPEG quality is only used for image optimization');
+  }
+  if (options.operation === 'resample-images') {
+    if (!Number.isInteger(options.imageMaxEdge) || options.imageMaxEdge! < 1 || options.imageMaxEdge! > 0x7fffffff) {
+      throw new EngineError('INVALID_REQUEST', 'Maximum image edge must be a positive number of pixels');
+    }
+  } else if (options.imageMaxEdge !== undefined) {
+    throw new EngineError('INVALID_REQUEST', 'Maximum image edge is only used for downsampling');
   }
   return OPERATION_CODES[options.operation];
 }

@@ -294,9 +294,13 @@ bool ApplyDocumentTool(
   const pdf_editor::PdfRect pdf_rect{rect.x, rect.y, rect.x + rect.width, rect.y + rect.height};
   if (command.type == EditType::kFormCreate) {
     pdf_editor::FormFieldSpec spec;
-    spec.type = command.resource_id == "checkbox" ? pdf_editor::FormFieldType::kCheckbox : pdf_editor::FormFieldType::kText;
+    spec.type = command.resource_id == "checkbox" ? pdf_editor::FormFieldType::kCheckbox :
+        command.resource_id == "combo" ? pdf_editor::FormFieldType::kComboBox :
+        command.resource_id == "list" ? pdf_editor::FormFieldType::kListBox :
+        pdf_editor::FormFieldType::kText;
     spec.persistent_id = command.target_id;
     spec.name_utf8 = command.text;
+    spec.options_utf8 = command.ids;
     spec.rect = pdf_rect;
     spec.font_size = command.values[4];
     spec.rotation = FPDFPage_GetRotation(page.get()) * 90;

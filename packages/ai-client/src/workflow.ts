@@ -64,6 +64,10 @@ export class AiWorkflow<ApplyResult> {
     const request = deepFreeze(aiRequestSchema.parse(input.request));
     assertRequestMatchesSnapshot(request, input.snapshot);
     assertSnapshotSourcesDeclared(input.snapshot, input.sourceIds);
+    const currentDocument = await this.#options.getCurrentDocument();
+    if (currentDocument.id !== request.document.id || currentDocument.revision !== request.document.revision) {
+      throw new Error('Document changed before AI request; regenerate evidence from the current revision');
+    }
     const handle = this.#options.authorization.beginRequest(
       request.document.id,
       input.sourceIds,

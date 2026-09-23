@@ -46,6 +46,22 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
   await checkboxField.getByRole('button', { name: 'Apply value', exact: true }).click();
   await expect(checkboxField.getByRole('checkbox', { name: 'Checked' })).toBeChecked();
 
+  // 3b. Create and fill a real Unicode Choice field.
+  await page.getByLabel('X', { exact: true }).fill('36');
+  await page.getByLabel('Y', { exact: true }).fill('160');
+  await page.getByLabel('Width', { exact: true }).fill('180');
+  await page.getByLabel('Height', { exact: true }).fill('32');
+  await page.getByLabel('Field name', { exact: true }).fill('选择城市');
+  await page.getByRole('combobox', { name: 'Field type', exact: true }).selectOption('combo');
+  await page.getByRole('textbox', { name: 'Options (one per line)' }).fill('北京\n上海');
+  await page.getByRole('combobox', { name: 'Field font', exact: true }).selectOption('noto-sans-cjk-sc-regular');
+  await page.getByRole('button', { name: 'Create field', exact: true }).click();
+  const cityField = page.locator('.document-field').filter({ hasText: '选择城市' });
+  await expect(cityField).toBeVisible();
+  await cityField.getByRole('combobox', { name: 'Value', exact: true }).selectOption('上海');
+  await cityField.getByRole('button', { name: 'Apply value', exact: true }).click();
+  await expect(cityField.getByRole('combobox', { name: 'Value', exact: true })).toHaveValue('上海');
+
   // 4. Add a Note annotation with undo/redo check
   await page.getByLabel('X', { exact: true }).fill('36');
   await page.getByLabel('Y', { exact: true }).fill('120');
@@ -104,6 +120,8 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
   const reopenedCheckboxField = page.locator('.document-field').filter({ hasText: '同意条款' });
   await expect(reopenedCheckboxField).toBeVisible({ timeout: 30_000 });
   await expect(reopenedCheckboxField.getByRole('checkbox', { name: 'Checked' })).toBeChecked();
+  const reopenedCityField = page.locator('.document-field').filter({ hasText: '选择城市' });
+  await expect(reopenedCityField.getByRole('combobox', { name: 'Value', exact: true })).toHaveValue('上海');
 
   await expect(page.locator('.document-tools-list')).toContainText('Updated note in the real PDF');
   await expect(page.locator('.document-tools-list').locator('li')).toHaveCount(1);
@@ -145,6 +163,20 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   await expect(objects).toHaveCount(2);
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
   await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(1);
+  await page.locator('.selection-layer > [data-object-type="group"]').click();
+  await page.getByRole('button', { name: 'Duplicate selected objects' }).click();
+  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(2);
+  const copiedDownload = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const copied = await readFile((await (await copiedDownload).path())!);
+  page.once('dialog', async dialog => {
+    page.once('dialog', discard => discard.accept());
+    await dialog.dismiss();
+  });
+  const copiedChooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await copiedChooser).setFiles({ name: 'group-copied.pdf', mimeType: 'application/pdf', buffer: copied });
+  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(2);
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });
 
