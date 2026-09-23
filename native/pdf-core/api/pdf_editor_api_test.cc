@@ -596,6 +596,93 @@ void TestObjectDistribution() {
           "close distribution fixtures");
 }
 
+void TestObjectGroup() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] "
+      "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("q 0 0 1 rg 10 40 50 20 re f Q BT /F1 18 Tf 10 180 Td (Grouped text) Tj ET"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "group-doc", "group-source", nullptr);
+  Require(doc != 0, "open real object group fixture");
+  const std::string before = RequireResult(pde_describe_page(doc, 0), "describe group source");
+  const std::string page_id = PageIdFromDescription(before);
+  const std::string first = FirstObjectId(before);
+  const size_t first_pos = before.find("\"id\":\"", before.find("\"objects\":["));
+  const size_t next_pos = before.find("\"id\":\"", first_pos + 1);
+  Require(first_pos != std::string::npos && next_pos != std::string::npos,
+          "text and vector path have separate object identities");
+  const std::string second = before.substr(next_pos + 6,
+      before.find('"', next_pos + 6) - next_pos - 6);
+  const char* selected[] = {first.c_str(), second.c_str()};
+  PdeEditCommand group{};
+  group.type = 26; group.page_id = page_id.c_str(); group.target_id = "group-alpha";
+  group.ids = selected; group.id_count = 2;
+  const auto pixels = RenderPixels(doc, 0, 240, 240);
+  Require(pde_preview_commands(doc, 0, &group, 1) != nullptr &&
+          std::string(pde_describe_page(doc, 0)) == before,
+          "Form grouping preview is non-mutating");
+  Require(pde_apply_commands(doc, 0, "group-originals", &group, 1) != nullptr,
+          "group real text and vector objects as one Form transaction");
+  const std::string grouped = RequireResult(pde_describe_page(doc, 0), "describe persisted Form group");
+  Require(grouped.find("\"id\":\"group-alpha\"") != std::string::npos &&
+          grouped.find("\"type\":\"group\"") != std::string::npos &&
+          grouped.find("\"id\":\"" + first + "\"") != std::string::npos &&
+          grouped.find("\"id\":\"" + second + "\"") != std::string::npos,
+          "group root and original child IDs remain accessible as real objects");
+  Require(RenderPixels(doc, 0, 240, 240) == pixels,
+          "grouping preserves visible text and vector pixels");
+  Require(pde_undo(doc) != nullptr && std::string(pde_describe_page(doc, 0)) == before,
+          "group undo restores original top-level objects");
+  Require(pde_redo(doc) != nullptr, "redo persistent group");
+  const char* group_ids[] = {"group-alpha"};
+  PdeEditCommand move{};
+  move.type = 4; move.page_id = page_id.c_str(); move.ids = group_ids; move.id_count = 1;
+  move.values[0] = 1; move.values[3] = 1; move.values[4] = 12;
+  Require(pde_apply_commands(doc, 3, "move-group", &move, 1) != nullptr,
+          "transform persistent Form as one object");
+  const auto moved_pixels = RenderPixels(doc, 0, 240, 240);
+  Require(moved_pixels != pixels && pde_save_memory(doc) != nullptr,
+          "transformed group saves with changed visible position");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "group-reopen", "group-saved", nullptr);
+  Require(reopened != 0, "reopen saved group form");
+  const std::string reopened_desc = RequireResult(pde_describe_page(reopened, 0), "describe reopened group");
+  Require(reopened_desc.find("\"id\":\"group-alpha\"") != std::string::npos &&
+          reopened_desc.find("\"id\":\"" + first + "\"") != std::string::npos &&
+          RenderPixels(reopened, 0, 240, 240) == moved_pixels,
+          "group metadata and transformed glyphs survive PDF roundtrip");
+  const std::string reopened_page = PageIdFromDescription(reopened_desc);
+  PdeEditCommand ungroup{};
+  ungroup.type = 27; ungroup.page_id = reopened_page.c_str();
+  ungroup.target_id = "group-alpha";
+  Require(pde_apply_commands(reopened, 0, "ungroup-reopened", &ungroup, 1) != nullptr,
+          "ungroup saved Form into native text and vector objects");
+  const std::string separated = RequireResult(pde_describe_page(reopened, 0), "describe ungrouped objects");
+  Require(separated.find("\"type\":\"group\"") == std::string::npos &&
+          separated.find("\"id\":\"" + first + "\"") != std::string::npos &&
+          separated.find("\"id\":\"" + second + "\"") != std::string::npos &&
+          RenderPixels(reopened, 0, 240, 240) == moved_pixels,
+          "ungroup preserves original IDs and transformed PDF content");
+  Require(pde_save_memory(reopened) != nullptr, "save ungrouped PDF");
+  const std::vector<uint8_t> ungrouped(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t ungrouped_doc = pde_open_memory(ungrouped.data(), static_cast<uint32_t>(ungrouped.size()),
+      "ungroup-reopen", "ungroup-saved", nullptr);
+  Require(ungrouped_doc != 0 &&
+          std::string(pde_describe_page(ungrouped_doc, 0)).find("\"type\":\"group\"") == std::string::npos &&
+          RenderPixels(ungrouped_doc, 0, 240, 240) == moved_pixels,
+          "ungrouped PDF survives save and reopen without losing appearance");
+  Require(pde_undo(reopened) != nullptr &&
+          std::string(pde_describe_page(reopened, 0)).find("\"type\":\"group\"") != std::string::npos,
+          "ungroup undo restores persistent Form group");
+  Require(pde_close(ungrouped_doc) == 1 && pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close native group fixtures");
+}
+
 void TestPageCrop() {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -1812,7 +1899,7 @@ int main(int argc, char** argv) {
                     "\"pages.rotate\",\"pages.delete\",\"pages.reorder\","
                     "\"pages.insert\",\"image.insert\",\"content.insert\","
                     "\"pages.duplicate\",\"pages.import\",\"image.replace\","
-                    "\"image.crop\",\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\"]") != std::string::npos,
+                    "\"image.crop\",\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\"]") != std::string::npos,
           "real ABI3 editing capabilities");
   Require(std::string(pde_capabilities()).find("\"objects.copy\"") !=
               std::string::npos,
@@ -1948,6 +2035,7 @@ int main(int argc, char** argv) {
   TestAbi3Transactions();
   TestObjectAlignment();
   TestObjectDistribution();
+  TestObjectGroup();
   TestPageCrop();
   TestOutlineNavigation();
   TestAnnotationPageDuplicate();

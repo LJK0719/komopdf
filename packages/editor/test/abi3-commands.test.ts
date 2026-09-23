@@ -109,6 +109,21 @@ describe('ABI 3 command encoding', () => {
     expect(record(1).ids).toEqual([]);
   });
 
+  it('encodes grouping and ungrouping with persistent group identity', () => {
+    const { bytes, record } = packed([
+      { type: 'objects.group', pageId: 'page-1', objectIds: ['text-a', 'path-b'], groupId: 'group-1' },
+      { type: 'objects.ungroup', pageId: 'page-1', groupId: 'group-1' },
+    ]);
+    expect(bytes.byteLength).toBe(2 * EDIT_COMMAND_STRIDE);
+    expect(record(0).fields[0]).toBe(26);
+    expect(record(0).string(1)).toBe('page-1');
+    expect(record(0).string(2)).toBe('group-1');
+    expect(record(0).ids).toEqual(['text-a', 'path-b']);
+    expect(record(1).fields[0]).toBe(27);
+    expect(record(1).string(2)).toBe('group-1');
+    expect(record(1).ids).toEqual([]);
+  });
+
   it('encodes all form.fill value variants including empty string and empty option list', () => {
     const { bytes, record } = packed([
       { type: 'form.fill', fieldId: 'text-field', value: '' },

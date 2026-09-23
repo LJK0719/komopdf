@@ -733,7 +733,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           <PdfSearchPanel document={document?.info ?? null} engine={engine} disabled={isBusy} onLocate={locateTextBlock} />
 
           {document && <ObjectEditPanel document={document.info} page={document.page} selectedIds={selectedIds}
-            engine={engine} host={host} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
+            engine={engine} host={host} disabled={isBusy} onBusyChange={setEditPending}
+            onSelectionChange={setSelectedIds} onCommitted={handleCommitted} />}
 
           {document && <DocumentToolsPanel document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} />}

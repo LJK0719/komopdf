@@ -12,6 +12,8 @@ export function ObjectSelectionLayer({ page, render, selectedIds, disabled, canT
   const moved = useRef(false);
   const [preview, setPreview] = useState<{ x: number; y: number; dx: number; dy: number; ids: string[] | null } | null>(null);
   const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group' };
+  const groups = new Set(page.objects.filter(object => object.type === 'group' && object.locator.containerPath.length === 0)
+    .map(object => object.locator.objectIndex));
   return <div className="selection-layer" style={{ width: render.width, height: render.height, pointerEvents: 'auto', touchAction: 'none' }}
     onClick={event => event.stopPropagation()}
     onPointerDown={event => {
@@ -53,7 +55,8 @@ export function ObjectSelectionLayer({ page, render, selectedIds, disabled, canT
       }
     }}
     onPointerCancel={() => { gesture.current = null; setPreview(null); moved.current = false; }}>
-    {page.objects.map(object => {
+    {page.objects.filter(object => !object.locator.containerPath.length ||
+      !groups.has(object.locator.containerPath[0]!)).map(object => {
       const selected = selectedIds.includes(object.id);
       const moving = preview?.ids?.includes(object.id);
       return <button type="button" key={object.id} data-object-id={object.id} data-object-type={object.type}

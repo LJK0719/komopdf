@@ -111,6 +111,43 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
   expect(posts).toEqual([]);
 });
 
+test('real WASM groups adjacent objects, saves the Form, and ungroups after reopening', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'group-source.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
+  await expect(page.getByText('group-source.pdf', { exact: true })).toBeVisible({ timeout: 60_000 });
+
+  const objects = page.locator('.selection-layer > [data-object-id]');
+  await expect(objects).toHaveCount(2);
+  await objects.nth(0).click();
+  await objects.nth(1).click({ modifiers: ['Control'] });
+  await expect(page.getByRole('button', { name: 'Group selected objects', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Group selected objects', exact: true }).click();
+  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(1);
+  await expect(objects).toHaveCount(1);
+
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const saved = await readFile((await (await download).path())!);
+  page.once('dialog', async dialog => {
+    page.once('dialog', discard => discard.accept());
+    await dialog.dismiss();
+  });
+  const reopen = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await reopen).setFiles({ name: 'group-saved.pdf', mimeType: 'application/pdf', buffer: saved });
+  await expect(page.getByText('group-saved.pdf', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(1);
+
+  await page.locator('.selection-layer > [data-object-type="group"]').click();
+  await page.getByRole('button', { name: 'Ungroup selected objects' }).click();
+  await expect(objects).toHaveCount(2);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(1);
+  await expect(page.locator('.status-dot-error')).toHaveCount(0);
+});
+
 function syntheticPdf(pageAttributes = '/MediaBox [0 0 300 300]'): Buffer {
   const stream = 'q 1 0 0 rg 20 20 50 50 re f Q\nBT /F1 18 Tf 20 240 Td (Hello PDF Editor) Tj ET';
   const objects = [

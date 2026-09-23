@@ -113,6 +113,10 @@ const char* pde_apply_text(uint32_t document,
 // selected outer centers; values[0] 0=horizontal, 1=vertical.
 // Type 25 crops each page in ids to a top-left normalized rectangle in
 // values[0..3]. Pixels outside CropBox remain in the PDF; this is not redaction.
+// Type 26 groups two or more adjacent top-level objects in ids as a persistent
+// Form XObject with target_id=groupId; type 27 ungroups target_id=groupId.
+// Nested Form children, MCIDs and cross-stream members need fuller structural
+// rewriting and are rejected rather than silently changing drawing order.
 typedef struct PdeEditCommand {
   uint32_t type;
   const char* page_id;

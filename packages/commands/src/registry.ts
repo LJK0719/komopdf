@@ -154,6 +154,7 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         if (command.objectIds.length !== command.newObjectIds.length) invalid('Copied object count mismatch');
         const page = requirePage(context, command.pageId);
         const originals = command.objectIds.map(id => page.objects.find(object => object.id === id)!);
+        if (originals.some(object => object.type === 'group')) invalid('Copying a persistent group is not supported yet');
         command.newObjectIds.forEach((id, index) => {
           addId(id);
           const source = originals[index]!;
@@ -216,7 +217,16 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         });
         break;
       }
-      case 'objects.group': addId(command.groupId); break;
+      case 'objects.group':
+        if (command.objectIds.length < 2) invalid('Select at least two objects to group');
+        for (const id of command.objectIds) {
+          const object = requirePage(context, command.pageId).objects.find(item => item.id === id);
+          if (!object || object.locator.containerPath.length || object.type === 'form' || object.type === 'group') {
+            invalid('Only top-level text, path, and image objects can be grouped');
+          }
+        }
+        addId(command.groupId);
+        break;
       case 'objects.ungroup': {
         if (!requirePage(context, command.pageId).objects.some(object => object.id === command.groupId && object.type === 'group')) invalid('Group does not exist');
         break;
