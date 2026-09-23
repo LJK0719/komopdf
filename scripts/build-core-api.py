@@ -30,7 +30,7 @@ EXPORTS = [
     'pde_edit_command_stride', 'pde_register_rgba_image', 'pde_register_pdf_resource',
     'pde_preview_commands', 'pde_apply_commands', 'pde_confirm_save', 'pde_preview_text_insert',
     'pde_export_recovery', 'pde_export_recovery_file_utf8', 'pde_recovery_resources', 'pde_restore_recovery',
-    'pde_restore_recovery_file_utf8', 'pde_describe_forms', 'pde_describe_annotations',
+    'pde_restore_recovery_file_utf8', 'pde_describe_forms', 'pde_describe_annotations', 'pde_describe_outline',
     'malloc', 'free',
 ]
 

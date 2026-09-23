@@ -1,3 +1,5 @@
+#include "image_optimizer.h"
+
 #include <qpdf/JSON.hh>
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFWriter.hh>
@@ -37,6 +39,7 @@ struct Job
     bool has_user_password{false};
     bool has_owner_password{false};
     bool encrypt_metadata{true};
+    int image_quality{0};
     Permissions permissions;
 };
 
@@ -83,6 +86,25 @@ bool optional_string(Dict const& values, std::string const& key, std::string& re
         throw std::runtime_error(key + " must be a string");
     }
     return true;
+}
+
+int require_quality(Dict const& values)
+{
+    auto item = values.find("imageQuality");
+    std::string number;
+    if (item == values.end() || !item->second.getNumber(number)) {
+        throw std::runtime_error("imageQuality must be an integer from 1 to 95");
+    }
+    int quality = 0;
+    try {
+        quality = std::stoi(number);
+    } catch (std::exception const&) {
+        throw std::runtime_error("imageQuality must be an integer from 1 to 95");
+    }
+    if (quality < 1 || quality > 95 || std::to_string(quality) != number) {
+        throw std::runtime_error("imageQuality must be an integer from 1 to 95");
+    }
+    return quality;
 }
 
 bool optional_bool(Dict const& values, std::string const& key, bool fallback)
@@ -140,7 +162,7 @@ Job parse_job(std::string const& text)
     reject_unknown(
         values,
         {"operation", "inputFile", "outputFile", "inputPassword", "userPassword",
-         "ownerPassword", "encryptMetadata", "permissions"},
+         "ownerPassword", "encryptMetadata", "permissions", "imageQuality"},
         "job");
 
     Job job;
@@ -157,9 +179,13 @@ Job parse_job(std::string const& text)
     }
 
     if ((job.operation != "decrypt") && (job.operation != "encrypt-aes256") &&
-        (job.operation != "optimize-lossless")) {
-        throw std::runtime_error(
-            "operation must be decrypt, encrypt-aes256, or optimize-lossless");
+        (job.operation != "optimize-lossless") && (job.operation != "optimize-images")) {
+        throw std::runtime_error("unsupported QPDF export operation");
+    }
+    if (job.operation == "optimize-images") {
+        job.image_quality = require_quality(values);
+    } else if (values.count("imageQuality") != 0) {
+        throw std::runtime_error("imageQuality is only used for optimize-images");
     }
     if (job.input_file.empty() || job.output_file.empty()) {
         throw std::runtime_error("inputFile and outputFile must not be empty");
@@ -178,6 +204,9 @@ void execute_job(Job const& job)
     pdf.processFile(
         job.input_file.c_str(), job.has_input_password ? job.input_password.c_str() : nullptr);
 
+    if (job.operation == "optimize-images") {
+        optimize_export_images(pdf, job.image_quality);
+    }
     QPDFWriter writer(pdf, job.output_file.c_str());
     if (job.operation == "decrypt") {
         writer.setPreserveEncryption(false);
@@ -193,6 +222,8 @@ void execute_job(Job const& job)
             job.permissions.modify_other,
             job.permissions.print,
             job.encrypt_metadata);
+    } else if (job.operation == "optimize-images") {
+        writer.setPreserveEncryption(true);
     } else {
         writer.setObjectStreamMode(qpdf_o_generate);
         writer.setCompressStreams(true);
@@ -207,7 +238,7 @@ void execute_job(Job const& job)
 int main(int argc, char* argv[])
 {
     if ((argc == 2) && (std::string(argv[1]) == "--version")) {
-        std::cout << "pdf-editor-qpdf abi=1 qpdf=" << QPDF::QPDFVersion() << '\n';
+        std::cout << "pdf-editor-qpdf abi=2 qpdf=" << QPDF::QPDFVersion() << '\n';
         return 0;
     }
     if (argc != 1) {
@@ -225,6 +256,11 @@ int main(int argc, char* argv[])
         std::fill(job_text.begin(), job_text.end(), '\0');
         execute_job(job);
         return 0;
+    } catch (NoImagesOptimized const& error) {
+        // Fixed error code lets the desktop host show an actionable message
+        // without exposing input file paths or password data from stderr.
+        std::cerr << "pdf-editor-qpdf: " << error.what() << '\n';
+        return 3;
     } catch (std::exception const& error) {
         std::cerr << "pdf-editor-qpdf: " << error.what() << '\n';
         return 2;

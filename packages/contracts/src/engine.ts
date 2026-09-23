@@ -16,6 +16,7 @@ export type FormFieldInfo = {
   value: string | boolean | string[]; readOnly: boolean; required: boolean; options: string[];
   widgets: { pageId: string; bounds: Rect }[];
 };
+export type OutlineEntry = { title: string; pageId: string | null; level: number };
 export type PdfAnnotationInfo = {
   id: string; pageId: string; subtype: 'highlight' | 'text' | 'rectangle' | 'ink' | 'other';
   bounds: Rect; text: string; color: [number, number, number]; opacity: number;
@@ -44,7 +45,8 @@ export type TextLayoutRequest = { docId: string; pageId: string; blockId: string
 export type TextLayoutResult = { bounds: Rect; overflow: boolean; lines: { bounds: Rect; range: TextRange }[]; replacementFontId?: string };
 export type TextInsertLayoutRequest = { docId: string; baseRevision: number; command: Extract<EditCommand, { type: 'text.insert' | 'text.reflow' }> };
 export type CommitResult = { docId: string; revision: number; changedPageIds: string[]; pageOrder: string[]; canUndo: boolean; canRedo: boolean };
-export type SaveRequest = { docId: string; target?: string; protection: 'preserve' | 'remove' | 'set'; password?: string; optimize?: boolean };
+export type SaveRequest = { docId: string; target?: string; protection: 'preserve' | 'remove' | 'set'; password?: string;
+  optimize?: boolean; imageOptimization?: { quality: number } };
 export type SaveResult = { docId: string; savedRevision: number } & (
   | { kind: 'bytes'; bytes: ArrayBuffer }
   | { kind: 'native-file'; handle: string }
@@ -88,6 +90,7 @@ export interface EngineAdapter {
   describePage(docId: string, pageId: string): Promise<PageModel>;
   describeForms?(docId: string): Promise<FormFieldInfo[]>;
   describeAnnotations?(docId: string, pageId: string): Promise<PdfAnnotationInfo[]>;
+  describeOutline?(docId: string): Promise<OutlineEntry[]>;
   describeFonts?(docId: string): Promise<RegisteredFontInfo[]>;
   render(request: RenderRequest): Promise<RenderResult>;
   extract(request: ExtractionRequest): Promise<TextBlock[]>;

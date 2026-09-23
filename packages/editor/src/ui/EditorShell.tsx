@@ -8,6 +8,7 @@ import {
   type EditableObject,
   type EngineAdapter,
   type HostAdapter,
+  type OutlineEntry,
   type PageModel,
   type RenderResult,
   type SaveConfirmation,
@@ -22,6 +23,8 @@ import { ObjectEditPanel } from './ObjectEditPanel.js';
 import { DocumentToolsPanel } from './DocumentToolsPanel.js';
 import { OcrPanel } from './OcrPanel.js';
 import { PdfSearchPanel } from './PdfSearchPanel.js';
+import { PageThumbnail } from './PageThumbnail.js';
+import { drawRender } from './draw-render.js';
 import { ObjectSelectionLayer as SelectionLayer } from './ObjectSelectionLayer.js';
 import { addImportedFont } from './font-resources.js';
 import {
@@ -42,7 +45,9 @@ type EditorShellProps = {
   aiPanel?: ReactNode;
   renderAiPanel?: (context: EditorAiContext) => ReactNode;
   source?: DocumentSource | null;
-  onSourceConsumed?: () => void;
+  onSourceConsumed?: (opened: boolean) => void;
+  onDocumentChange?: (state: { document: DocumentInfo | null; busy: boolean; draftDirty: boolean }) => void;
+  closeDocumentRef?: { current: (() => Promise<boolean>) | null };
   externalBusy?: boolean;
   onActivityChange?: (busy: boolean) => void;
 };
@@ -73,7 +78,7 @@ export function mergeSavedRevision(current: LoadedDocument, savedRevision: numbe
 type Activity = 'idle' | 'opening' | 'rendering' | 'saving' | 'editing';
 
 export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, renderAiPanel,
-  source: externalSource, onSourceConsumed, externalBusy = false, onActivityChange }: EditorShellProps) {
+  source: externalSource, onSourceConsumed, onDocumentChange, closeDocumentRef, externalBusy = false, onActivityChange }: EditorShellProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const documentRef = useRef<LoadedDocument | null>(null);
   const [document, setDocument] = useState<LoadedDocument | null>(null);
@@ -82,6 +87,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
+  const [outline, setOutline] = useState<OutlineEntry[]>([]);
+  const [outlineError, setOutlineError] = useState(false);
   const [editPending, setEditPending] = useState(false);
   const [textDraftDirty, setTextDraftDirty] = useState(false);
   const [paragraphDraftDirty, setParagraphDraftDirty] = useState(false);
@@ -123,6 +130,18 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     if (!document) return;
     drawRender(canvasRef.current, document.render);
   }, [document]);
+
+  useEffect(() => {
+    const info = document?.info;
+    setOutline([]);
+    setOutlineError(false);
+    if (!info || !engine.describeOutline) return;
+    let cancelled = false;
+    void engine.describeOutline(info.id).then(entries => {
+      if (!cancelled) setOutline(entries);
+    }).catch(() => { if (!cancelled) setOutlineError(true); });
+    return () => { cancelled = true; };
+  }, [engine, document?.info.id, document?.info.revision]);
 
   useEffect(() => () => {
     const current = documentRef.current;
@@ -442,19 +461,28 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     finally { setActivity('idle'); }
   };
 
-  const closeDocument = async (): Promise<void> => {
+  const closeDocument = async (): Promise<boolean> => {
     const current = documentRef.current;
-    if (!current || !await closeHandler.current()) return;
+    if (!current || !await closeHandler.current()) return false;
     setActivity('opening'); setError(null);
     try {
       await engine.close(current.info.id);
-    }
-    catch (caught) { setError(formatError(caught)); }
-    finally {
       documentRef.current = null; setDocument(null); setSelectedIds([]); setTextDraftDirty(false); setParagraphDraftDirty(false);
-      setHistory({ canUndo: false, canRedo: false }); setNotice('Document closed'); setActivity('idle');
-    }
+      setHistory({ canUndo: false, canRedo: false }); setNotice('Document closed');
+      return true;
+    } catch (caught) {
+      setError(formatError(caught));
+      return false;
+    } finally { setActivity('idle'); }
   };
+  const requestCloseDocument = useRef<() => Promise<boolean>>(async () => false);
+  requestCloseDocument.current = closeDocument;
+  useEffect(() => {
+    if (!closeDocumentRef) return;
+    const request = () => requestCloseDocument.current();
+    closeDocumentRef.current = request;
+    return () => { if (closeDocumentRef.current === request) closeDocumentRef.current = null; };
+  }, [closeDocumentRef]);
 
   const moveObjects = async (objectIds: string[], dx: number, dy: number): Promise<void> => {
     const current = documentRef.current;
@@ -476,6 +504,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const operationBusy = activity !== 'idle' || editPending || externalBusy;
   const isBusy = operationBusy || isDraftDirty;
   useEffect(() => { onActivityChange?.(activity !== 'idle' || editPending || isDraftDirty); }, [activity, editPending, isDraftDirty, onActivityChange]);
+  useEffect(() => { onDocumentChange?.({ document: document?.info ?? null, busy: operationBusy, draftDirty: isDraftDirty }); },
+    [document?.info, operationBusy, isDraftDirty, onDocumentChange]);
   const closeHandler = useRef<() => Promise<boolean>>(async () => true);
   closeHandler.current = async () => {
     if (isDraftDirty) { setError('Apply or discard the current text draft before closing'); return false; }
@@ -542,7 +572,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   useEffect(() => {
     if (!externalSource || externalSource === lastExternalSource.current) return;
     lastExternalSource.current = externalSource;
-    void openDocument(externalSource).finally(() => onSourceConsumed?.());
+    void openDocument(externalSource).then(opened => onSourceConsumed?.(opened !== null), () => onSourceConsumed?.(false));
   }, [externalSource]);
 
   return (
@@ -617,12 +647,23 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                 aria-label={`Open page ${index + 1}`}
               >
                 <span>{String(index + 1).padStart(2, '0')}</span>
-                <i aria-hidden="true" />
+                <PageThumbnail engine={engine} docId={document.info.id} pageId={pageId} revision={document.info.revision} />
               </button>
             )) : (
               <div className="rail-empty">—</div>
             )}
           </div>
+          {(outline.length > 0 || outlineError) && <nav className="bookmark-list" aria-label="PDF bookmarks">
+            <strong>Bookmarks</strong>
+            {outlineError ? <span role="status">Bookmarks could not be read</span> : outline.map((entry, index) =>
+              <button type="button" key={`${index}-${entry.title}`} disabled={!entry.pageId || isBusy}
+                style={{ paddingLeft: `${6 + Math.min(entry.level, 5) * 8}px` }}
+                aria-label={`Go to bookmark ${entry.title || 'Untitled'}`}
+                title={entry.title || 'Untitled'}
+                onClick={() => { if (entry.pageId) void switchPage(entry.pageId); }}>
+                {entry.title || 'Untitled'}
+              </button>)}
+          </nav>}
         </aside>
 
         <section className="canvas-stage" aria-label="PDF Canvas">
@@ -848,27 +889,6 @@ async function saveCurrentDocument(
   } finally {
     setActivity('idle');
   }
-}
-
-function drawRender(canvas: HTMLCanvasElement | null, render: RenderResult): void {
-  if (!canvas) return;
-  canvas.width = render.width;
-  canvas.height = render.height;
-  const context = canvas.getContext('2d');
-  if (!context) return;
-
-  const rowBytes = render.width * 4;
-  let pixels: Uint8ClampedArray<ArrayBuffer>;
-  if (render.stride === rowBytes) {
-    pixels = new Uint8ClampedArray(render.pixels);
-  } else {
-    pixels = new Uint8ClampedArray(rowBytes * render.height);
-    const source = new Uint8Array(render.pixels);
-    for (let row = 0; row < render.height; row += 1) {
-      pixels.set(source.subarray(row * render.stride, row * render.stride + rowBytes), row * rowBytes);
-    }
-  }
-  context.putImageData(new ImageData(pixels, render.width, render.height), 0, 0);
 }
 
 function formatError(error: unknown): string {

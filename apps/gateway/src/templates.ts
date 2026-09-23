@@ -114,9 +114,22 @@ const commandSchemas: Record<string, JsonSchema> = {
       axis: { type: 'STRING', enum: ['left', 'center', 'right', 'top', 'middle', 'bottom'] },
     }, required: ['type', 'pageId', 'objectIds', 'axis'],
   },
+  'objects.distribute': {
+    type: 'OBJECT', properties: {
+      type: { type: 'STRING', enum: ['objects.distribute'] }, pageId: id, objectIds: idArray,
+      axis: { type: 'STRING', enum: ['horizontal', 'vertical'] },
+    }, required: ['type', 'pageId', 'objectIds', 'axis'],
+  },
   'pages.rotate': {
     type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['pages.rotate'] }, pageIds: idArray, degrees: { type: 'INTEGER', enum: [90, 180, 270] } },
     required: ['type', 'pageIds', 'degrees'],
+  },
+  'pages.crop': {
+    type: 'OBJECT', properties: {
+      type: { type: 'STRING', enum: ['pages.crop'] }, pageIds: idArray,
+      bounds: { type: 'OBJECT', properties: { x: { type: 'NUMBER' }, y: { type: 'NUMBER' },
+        width: { type: 'NUMBER' }, height: { type: 'NUMBER' } }, required: ['x', 'y', 'width', 'height'] },
+    }, required: ['type', 'pageIds', 'bounds'],
   },
   'pages.delete': {
     type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['pages.delete'] }, pageIds: idArray }, required: ['type', 'pageIds'],
@@ -137,7 +150,7 @@ export const SERVER_COMMAND_TYPES = Object.freeze(Object.keys(commandSchemas));
 const featureCommands: Partial<Record<AiFeature, ReadonlySet<string>>> = {
   'commands.plan': new Set(SERVER_COMMAND_TYPES),
   'form.suggest': new Set(['form.fill']),
-  'blocks.organize': new Set(['text.style', 'objects.transform', 'objects.delete', 'objects.align']),
+  'blocks.organize': new Set(['text.style', 'objects.transform', 'objects.delete', 'objects.align', 'objects.distribute']),
 };
 
 const featureInstructions: Record<AiFeature, string> = {

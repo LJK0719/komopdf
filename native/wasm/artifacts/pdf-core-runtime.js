@@ -5075,6 +5075,7 @@ var _pde_shutdown = Module['_pde_shutdown'] = makeInvalidEarlyAccess('_pde_shutd
 var _pde_open_memory = Module['_pde_open_memory'] = makeInvalidEarlyAccess('_pde_open_memory');
 var _pde_open_file_utf8 = Module['_pde_open_file_utf8'] = makeInvalidEarlyAccess('_pde_open_file_utf8');
 var _pde_describe_forms = Module['_pde_describe_forms'] = makeInvalidEarlyAccess('_pde_describe_forms');
+var _pde_describe_outline = Module['_pde_describe_outline'] = makeInvalidEarlyAccess('_pde_describe_outline');
 var _pde_describe_annotations = Module['_pde_describe_annotations'] = makeInvalidEarlyAccess('_pde_describe_annotations');
 var _pde_recovery_resources = Module['_pde_recovery_resources'] = makeInvalidEarlyAccess('_pde_recovery_resources');
 var _pde_export_recovery = Module['_pde_export_recovery'] = makeInvalidEarlyAccess('_pde_export_recovery');
@@ -5139,6 +5140,7 @@ function assignWasmExports(wasmExports) {
   assert(typeof wasmExports['pde_open_memory'] != 'undefined', 'missing Wasm export: pde_open_memory');
   assert(typeof wasmExports['pde_open_file_utf8'] != 'undefined', 'missing Wasm export: pde_open_file_utf8');
   assert(typeof wasmExports['pde_describe_forms'] != 'undefined', 'missing Wasm export: pde_describe_forms');
+  assert(typeof wasmExports['pde_describe_outline'] != 'undefined', 'missing Wasm export: pde_describe_outline');
   assert(typeof wasmExports['pde_describe_annotations'] != 'undefined', 'missing Wasm export: pde_describe_annotations');
   assert(typeof wasmExports['pde_recovery_resources'] != 'undefined', 'missing Wasm export: pde_recovery_resources');
   assert(typeof wasmExports['pde_export_recovery'] != 'undefined', 'missing Wasm export: pde_export_recovery');
@@ -5199,6 +5201,7 @@ function assignWasmExports(wasmExports) {
   _pde_open_memory = Module['_pde_open_memory'] = createExportWrapper('pde_open_memory', wasmExports['pde_open_memory'], 5);
   _pde_open_file_utf8 = Module['_pde_open_file_utf8'] = createExportWrapper('pde_open_file_utf8', wasmExports['pde_open_file_utf8'], 4);
   _pde_describe_forms = Module['_pde_describe_forms'] = createExportWrapper('pde_describe_forms', wasmExports['pde_describe_forms'], 1);
+  _pde_describe_outline = Module['_pde_describe_outline'] = createExportWrapper('pde_describe_outline', wasmExports['pde_describe_outline'], 1);
   _pde_describe_annotations = Module['_pde_describe_annotations'] = createExportWrapper('pde_describe_annotations', wasmExports['pde_describe_annotations'], 2);
   _pde_recovery_resources = Module['_pde_recovery_resources'] = createExportWrapper('pde_recovery_resources', wasmExports['pde_recovery_resources'], 1);
   _pde_export_recovery = Module['_pde_export_recovery'] = createExportWrapper('pde_export_recovery', wasmExports['pde_export_recovery'], 1);
@@ -5376,6 +5379,8 @@ var wasmImports = {
   /** @export */
   invoke_iiiiiiii,
   /** @export */
+  invoke_iiiiiiiii,
+  /** @export */
   invoke_iiiiiiiiii,
   /** @export */
   invoke_iiiiiiiiiii,
@@ -5399,6 +5404,8 @@ var wasmImports = {
   invoke_vid,
   /** @export */
   invoke_vif,
+  /** @export */
+  invoke_viffff,
   /** @export */
   invoke_vii,
   /** @export */
@@ -5806,10 +5813,10 @@ function invoke_viiij(index,a1,a2,a3,a4) {
   }
 }
 
-function invoke_iiiiiiii(index,a1,a2,a3,a4,a5,a6,a7) {
+function invoke_iiiiiiiii(index,a1,a2,a3,a4,a5,a6,a7,a8) {
   var sp = stackSave();
   try {
-    return getWasmTableEntry(index)(a1,a2,a3,a4,a5,a6,a7);
+    return getWasmTableEntry(index)(a1,a2,a3,a4,a5,a6,a7,a8);
   } catch(e) {
     stackRestore(sp);
     if (!(e instanceof EmscriptenEH)) throw e;
@@ -5832,6 +5839,17 @@ function invoke_di(index,a1) {
   var sp = stackSave();
   try {
     return getWasmTableEntry(index)(a1);
+  } catch(e) {
+    stackRestore(sp);
+    if (!(e instanceof EmscriptenEH)) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_viffff(index,a1,a2,a3,a4,a5) {
+  var sp = stackSave();
+  try {
+    getWasmTableEntry(index)(a1,a2,a3,a4,a5);
   } catch(e) {
     stackRestore(sp);
     if (!(e instanceof EmscriptenEH)) throw e;
@@ -5876,6 +5894,17 @@ function invoke_iidi(index,a1,a2,a3) {
   var sp = stackSave();
   try {
     return getWasmTableEntry(index)(a1,a2,a3);
+  } catch(e) {
+    stackRestore(sp);
+    if (!(e instanceof EmscriptenEH)) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_iiiiiiii(index,a1,a2,a3,a4,a5,a6,a7) {
+  var sp = stackSave();
+  try {
+    return getWasmTableEntry(index)(a1,a2,a3,a4,a5,a6,a7);
   } catch(e) {
     stackRestore(sp);
     if (!(e instanceof EmscriptenEH)) throw e;
@@ -6086,4 +6115,4 @@ for (const prop of Object.keys(Module)) {
 export default Module;
 
 
-export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi3-7b6d4077731d253c3a74";
+export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi3-8da6fd7b0d5419aaaca8";

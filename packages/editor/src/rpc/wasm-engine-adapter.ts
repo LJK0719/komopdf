@@ -18,7 +18,7 @@ import {
   type WorkerHandshake,
   type RegisterResourceRequest, type ResourceInfo, type TransactionPreviewResult, type SaveConfirmation,
   type FontSource, type FontFaceInfo, type RegisterFontRequest, type RegisteredFontInfo,
-  type FormFieldInfo, type PdfAnnotationInfo,
+  type FormFieldInfo, type PdfAnnotationInfo, type OutlineEntry,
   type RecoverySnapshot, type RestoreRecoveryRequest,
 } from '@pdf-editor/contracts';
 import { WorkerRpcClient } from './client.js';
@@ -73,6 +73,10 @@ export class WasmEngineAdapter implements EngineAdapter {
 
   describeAnnotations(docId: string, pageId: string): Promise<PdfAnnotationInfo[]> {
     return this.rpc.call<PdfAnnotationInfo[]>('describeAnnotations', [docId, pageId]);
+  }
+
+  describeOutline(docId: string): Promise<OutlineEntry[]> {
+    return this.rpc.call<OutlineEntry[]>('describeOutline', [docId]);
   }
 
   describeFonts(docId: string): Promise<RegisteredFontInfo[]> {

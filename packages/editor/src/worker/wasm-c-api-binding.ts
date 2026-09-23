@@ -19,7 +19,7 @@ import {
   type TextStyle, type CommandType,
   type RegisterResourceRequest, type ResourceInfo, type TransactionPreviewResult, type SaveConfirmation,
   type FontSource, type FontFaceInfo, type RegisterFontRequest, type RegisteredFontInfo,
-  type FormFieldInfo, type PdfAnnotationInfo,
+  type FormFieldInfo, type PdfAnnotationInfo, type OutlineEntry,
   type RecoverySnapshot, type RestoreRecoveryRequest,
   editTransactionSchema, assertTextRange,
 } from '@pdf-editor/contracts';
@@ -67,6 +67,7 @@ export interface PdfCoreEmscriptenModule {
   _pde_describe_page(document: number, pageIndex: number): number;
   _pde_describe_forms?(document: number): number;
   _pde_describe_annotations?(document: number, pageIndex: number): number;
+  _pde_describe_outline?(document: number): number;
   _pde_extract_page(document: number, pageIndex: number): number;
   _pde_render(
     document: number,
@@ -294,6 +295,20 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     ), pageId);
   }
 
+  async describeOutline(docId: string): Promise<OutlineEntry[]> {
+    const session = this.document(docId);
+    if (!this.module._pde_describe_outline) throw unsupported('PDF outline inspection is unavailable in this core');
+    const entries: unknown = this.readJson(
+      () => this.module._pde_describe_outline!(session.handle), 'Unable to read PDF bookmarks');
+    if (!Array.isArray(entries) || entries.some(entry =>
+      !entry || typeof entry !== 'object' || typeof entry.title !== 'string' ||
+      !Number.isSafeInteger(entry.level) || entry.level < 0 ||
+      (entry.pageId !== null && !session.info.pageOrder.includes(entry.pageId)))) {
+      throw new EngineError('CORE_UNAVAILABLE', 'PDF outline contains invalid page references');
+    }
+    return entries as OutlineEntry[];
+  }
+
   async describeFonts(docId: string): Promise<RegisteredFontInfo[]> {
     return this.readRecoveryResources(this.document(docId).handle).fontFaces;
   }
@@ -471,6 +486,14 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     if (!['preserve', 'remove', 'set'].includes(request.protection)) throw new EngineError('INVALID_REQUEST', 'Unknown PDF protection option');
     if (request.target !== undefined) throw new EngineError('INVALID_REQUEST', 'Choose export destinations through the application');
     if (request.optimize !== undefined && typeof request.optimize !== 'boolean') throw new EngineError('INVALID_REQUEST', 'Optimization must be a boolean');
+    const imageOptimization = request.imageOptimization;
+    if (imageOptimization !== undefined &&
+        (!imageOptimization || typeof imageOptimization !== 'object' ||
+         Object.keys(imageOptimization).some(key => key !== 'quality') ||
+         !Number.isInteger(imageOptimization.quality) || imageOptimization.quality < 1 || imageOptimization.quality > 95)) {
+      throw new EngineError('INVALID_REQUEST', 'Image quality must be an integer between 1 and 95');
+    }
+    const imageQuality = imageOptimization?.quality;
     if (request.protection === 'set' && (typeof request.password !== 'string' || !request.password || request.password.includes('\0'))) throw new EngineError('INVALID_REQUEST', 'A nonempty PDF password without null characters is required');
     if (request.protection !== 'set' && request.password !== undefined) throw new EngineError('INVALID_REQUEST', 'A new password is only used when setting protection');
     const session = this.document(request.docId);
@@ -490,6 +513,10 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     }
     if (request.optimize) bytes = await transformPdfExport(bytes, { operation: 'optimize-lossless',
       ...(inputPassword === undefined ? {} : { inputPassword }) });
+    if (imageQuality !== undefined) bytes = await transformPdfExport(bytes, {
+      operation: 'optimize-images', imageQuality,
+      ...(inputPassword === undefined ? {} : { inputPassword }),
+    });
     return { kind: 'bytes', docId: request.docId, savedRevision: metadata.savedRevision, bytes };
   }
 

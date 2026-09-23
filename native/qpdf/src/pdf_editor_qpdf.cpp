@@ -1,4 +1,5 @@
 #include "pdf_editor_qpdf.h"
+#include "image_optimizer.h"
 
 #include <qpdf/Buffer.hh>
 #include <qpdf/QPDF.hh>
@@ -145,6 +146,59 @@ pde_qpdf_transform(
             return PDE_QPDF_WRITE_FAILED;
         }
 
+        auto* result = static_cast<unsigned char*>(std::malloc(buffer->getSize()));
+        if (result == nullptr) {
+            last_error = "unable to allocate QPDF output buffer";
+            return PDE_QPDF_OUT_OF_MEMORY;
+        }
+        std::memcpy(result, buffer->getBuffer(), buffer->getSize());
+        *output_data = result;
+        *output_size = buffer->getSize();
+        return PDE_QPDF_OK;
+    } catch (std::invalid_argument const& error) {
+        last_error = error.what();
+        return PDE_QPDF_INVALID_ARGUMENT;
+    } catch (std::exception const& error) {
+        last_error = error.what();
+        return PDE_QPDF_OPEN_FAILED;
+    } catch (...) {
+        last_error = "unknown QPDF failure";
+        return PDE_QPDF_INTERNAL_ERROR;
+    }
+}
+
+extern "C" int
+pde_qpdf_optimize_images(
+    unsigned char const* input_data,
+    size_t input_size,
+    char const* input_password,
+    int quality,
+    unsigned char** output_data,
+    size_t* output_size)
+{
+    last_error.clear();
+    if (output_data != nullptr) *output_data = nullptr;
+    if (output_size != nullptr) *output_size = 0;
+    if ((input_data == nullptr) || (input_size == 0) || (output_data == nullptr) ||
+        (output_size == nullptr) || (quality < 1) || (quality > 95)) {
+        last_error = "input PDF, output pointers and JPEG quality 1..95 are required";
+        return PDE_QPDF_INVALID_ARGUMENT;
+    }
+    try {
+        QPDF pdf;
+        pdf.setSuppressWarnings(true);
+        pdf.processMemoryFile(
+            "export copy", reinterpret_cast<char const*>(input_data), input_size, input_password);
+        optimize_export_images(pdf, quality);
+        QPDFWriter writer(pdf);
+        writer.setPreserveEncryption(true);
+        writer.setOutputMemory();
+        writer.write();
+        auto buffer = writer.getBufferSharedPointer();
+        if (!buffer || buffer->getSize() == 0) {
+            last_error = "QPDF produced an empty output";
+            return PDE_QPDF_WRITE_FAILED;
+        }
         auto* result = static_cast<unsigned char*>(std::malloc(buffer->getSize()));
         if (result == nullptr) {
             last_error = "unable to allocate QPDF output buffer";

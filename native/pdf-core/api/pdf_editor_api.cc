@@ -65,12 +65,15 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "pdf_editor_bridge/form_edit.h"
 #include "pdf_editor_bridge/document_tools.h"
+#include "public/fpdf_annot.h"
+#include "public/fpdf_doc.h"
 #include "public/fpdf_formfill.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_ppo.h"
 #include "public/fpdf_save.h"
 #include "public/fpdf_signature.h"
 #include "public/fpdf_text.h"
+#include "public/fpdf_transformpage.h"
 #include "public/fpdfview.h"
 #include "unicode/ubrk.h"
 
@@ -104,7 +107,7 @@ constexpr std::string_view kCapabilitiesJson =
     "\"pages.delete\",\"pages.reorder\",\"pages.insert\","
     "\"image.insert\",\"content.insert\",\"pages.duplicate\","
     "\"pages.import\",\"image.replace\",\"image.crop\","
-    "\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\"]";
+    "\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\"]";
 
 struct Matrix {
   double a = 1;
@@ -253,6 +256,11 @@ enum class EditType : uint32_t {
   kFormFill = 18,
   kFormCreate = 19,
   kTextReflow = 20,
+  kObjectsAlign = 21,
+  kAnnotationUpdate = 22,
+  kAnnotationDelete = 23,
+  kObjectsDistribute = 24,
+  kPagesCrop = 25,
 };
 
 struct EditCommand {
@@ -1809,7 +1817,7 @@ std::string SerializeDocumentInfo(const Document& document) {
     if (!HasSignedSignature(document.pdf)) {
       const bool annotate = allowed(1UL << 5);
       const bool fill = allowed(1UL << 8);
-      if (annotate) output.append("\"annotation.add\"");
+      if (annotate) output.append("\"annotation.add\",\"annotation.update\",\"annotation.delete\"");
       if (annotate && fill) output.push_back(',');
       if (fill) output.append("\"form.fill\"");
     }
@@ -3578,6 +3586,113 @@ bool ApplyObjectsTransform(FPDF_DOCUMENT pdf,
   return true;
 }
 
+bool ApplyObjectsAlign(FPDF_DOCUMENT pdf,
+                       CandidateMetadata* metadata,
+                       const EditCommand& command) {
+  size_t page_index = 0;
+  ScopedPage page(nullptr);
+  if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page))
+    return false;
+
+  std::vector<Rect> bounds;
+  Rect selection{};
+  bool initialized = false;
+  for (const auto& id : command.ids) {
+    ObjectTarget target;
+    if (!FindObjectTarget(page.get(), &metadata->pages[page_index], id,
+                          false, &target)) return false;
+    if (target.path.size() != 1) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "Nested Form XObject children cannot be aligned independently.");
+      return false;
+    }
+    Rect box;
+    if (!GetNormalizedObjectBounds(page.get(), target.object, &box))
+      return false;
+    IncludeRect(box, &initialized, &selection);
+    bounds.push_back(box);
+  }
+  const int axis = static_cast<int>(command.values[0]);
+  const double anchor = axis == 0 ? selection.x :
+      axis == 1 ? selection.x + selection.width / 2 :
+      axis == 2 ? selection.x + selection.width :
+      axis == 3 ? selection.y :
+      axis == 4 ? selection.y + selection.height / 2 :
+                  selection.y + selection.height;
+  for (size_t index = 0; index < command.ids.size(); ++index) {
+    ObjectTarget target;
+    if (!FindObjectTarget(page.get(), &metadata->pages[page_index],
+                          command.ids[index], false, &target)) return false;
+    const Rect& box = bounds[index];
+    const double current = axis == 0 ? box.x :
+        axis == 1 ? box.x + box.width / 2 :
+        axis == 2 ? box.x + box.width :
+        axis == 3 ? box.y :
+        axis == 4 ? box.y + box.height / 2 : box.y + box.height;
+    const double distance = anchor - current;
+    const Matrix move{1, 0, 0, 1,
+                      axis < 3 ? distance : 0,
+                      axis >= 3 ? distance : 0};
+    if (!ApplyNormalizedTransform(page.get(), target.object, move)) return false;
+  }
+  if (!FPDFPage_GenerateContent(page.get())) {
+    SetError("CORE_UNAVAILABLE", "The aligned page could not be generated.");
+    return false;
+  }
+  return true;
+}
+
+bool ApplyObjectsDistribute(FPDF_DOCUMENT pdf,
+                            CandidateMetadata* metadata,
+                            const EditCommand& command) {
+  size_t page_index = 0;
+  ScopedPage page(nullptr);
+  if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page))
+    return false;
+  struct Positioned {
+    std::string id;
+    double center = 0;
+  };
+  std::vector<Positioned> positions;
+  const bool horizontal = command.values[0] == 0;
+  for (const auto& id : command.ids) {
+    ObjectTarget target;
+    if (!FindObjectTarget(page.get(), &metadata->pages[page_index], id,
+                          false, &target)) return false;
+    if (target.path.size() != 1) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "Nested Form XObject children cannot be distributed independently.");
+      return false;
+    }
+    Rect box;
+    if (!GetNormalizedObjectBounds(page.get(), target.object, &box))
+      return false;
+    positions.push_back({id, horizontal ? box.x + box.width / 2
+                                         : box.y + box.height / 2});
+  }
+  std::stable_sort(positions.begin(), positions.end(),
+                   [](const Positioned& a, const Positioned& b) {
+                     return a.center < b.center;
+                   });
+  const double gap = (positions.back().center - positions.front().center) /
+                     (positions.size() - 1);
+  for (size_t index = 1; index + 1 < positions.size(); ++index) {
+    ObjectTarget target;
+    if (!FindObjectTarget(page.get(), &metadata->pages[page_index],
+                          positions[index].id, false, &target)) return false;
+    const double delta = positions.front().center + gap * index -
+                         positions[index].center;
+    const Matrix move{1, 0, 0, 1, horizontal ? delta : 0,
+                      horizontal ? 0 : delta};
+    if (!ApplyNormalizedTransform(page.get(), target.object, move)) return false;
+  }
+  if (!FPDFPage_GenerateContent(page.get())) {
+    SetError("CORE_UNAVAILABLE", "The distributed page could not be generated.");
+    return false;
+  }
+  return true;
+}
+
 bool ApplyObjectsDelete(FPDF_DOCUMENT pdf,
                         CandidateMetadata* metadata,
                         const EditCommand& command) {
@@ -3642,6 +3757,48 @@ bool ApplyPagesRotate(FPDF_DOCUMENT pdf,
       return false;
     }
     FPDFPage_SetRotation(page.get(), (current + quarter_turns) % 4);
+  }
+  return true;
+}
+
+bool ApplyPagesCrop(FPDF_DOCUMENT pdf,
+                    CandidateMetadata* metadata,
+                    const EditCommand& command) {
+  const Rect requested{command.values[0], command.values[1],
+                       command.values[2], command.values[3]};
+  for (const auto& page_id : command.ids) {
+    const auto index = FindPageIndex(*metadata, page_id);
+    if (!index || *index > static_cast<size_t>(std::numeric_limits<int>::max())) {
+      SetError("INVALID_REQUEST", "The page crop target does not exist.");
+      return false;
+    }
+    ScopedPage page(FPDF_LoadPage(pdf, static_cast<int>(*index)));
+    CPDF_Page* native = page.get() ? CPDFPageFromFPDFPage(page.get()) : nullptr;
+    if (!native) {
+      SetError("CORE_UNAVAILABLE", "The page crop target could not be loaded.");
+      return false;
+    }
+    const double user_unit = GetUserUnit(native);
+    if (!RectFitsInside(requested, {0, 0, native->GetPageWidth() * user_unit,
+                                     native->GetPageHeight() * user_unit})) {
+      SetError("INVALID_REQUEST", "The crop rectangle must fit within every selected page.");
+      return false;
+    }
+    Matrix to_page, to_pdf;
+    if (!GetPageMatrices(page.get(), &to_page, &to_pdf)) return false;
+    const Rect bounds = TransformBounds(requested.x, requested.y,
+        requested.x + requested.width, requested.y + requested.height, to_pdf);
+    if (bounds.width <= 0 || bounds.height <= 0 ||
+        !std::isfinite(bounds.x + bounds.width + bounds.y + bounds.height) ||
+        std::max({std::abs(bounds.x), std::abs(bounds.y), bounds.width, bounds.height}) >
+            std::numeric_limits<float>::max()) {
+      SetError("INVALID_REQUEST", "The PDF crop rectangle is invalid.");
+      return false;
+    }
+    FPDFPage_SetCropBox(page.get(), static_cast<float>(bounds.x),
+                        static_cast<float>(bounds.y),
+                        static_cast<float>(bounds.x + bounds.width),
+                        static_cast<float>(bounds.y + bounds.height));
   }
   return true;
 }
@@ -3833,13 +3990,59 @@ bool ValidateImportedPageFeatures(FPDF_DOCUMENT source, int page_index) {
   return true;
 }
 
+bool AssignImportedAnnotationIds(const Document& document,
+                                 FPDF_DOCUMENT pdf,
+                                 size_t insertion_index,
+                                 const std::vector<std::string>& new_page_ids) {
+  CPDF_Document* native = CPDFDocumentFromFPDFDocument(pdf);
+  if (!native) { SetUnexpectedError(); return false; }
+  std::set<std::string> used;
+  for (int page_index = 0; page_index < native->GetPageCount(); ++page_index) {
+    const size_t index = static_cast<size_t>(page_index);
+    if (index >= insertion_index && index < insertion_index + new_page_ids.size()) continue;
+    const auto page = native->GetPageDictionary(page_index);
+    const auto annots = page ? page->GetArrayFor("Annots") : nullptr;
+    if (!annots) continue;
+    for (size_t offset = 0; offset < annots->size(); ++offset) {
+      const auto annot = annots->GetDictAt(offset);
+      if (!annot) continue;
+      const ByteString name = annot->GetUnicodeTextFor("NM").ToUTF8();
+      if (!name.IsEmpty()) used.emplace(name.c_str(), name.GetLength());
+    }
+  }
+  for (size_t offset = 0; offset < new_page_ids.size(); ++offset) {
+    auto page = native->GetMutablePageDictionary(static_cast<int>(insertion_index + offset));
+    auto annots = page ? page->GetMutableArrayFor("Annots") : nullptr;
+    if (!annots) continue;
+    for (size_t index = 0; index < annots->size(); ++index) {
+      auto annot = annots->GetMutableDictAt(index);
+      if (!annot) continue;
+      if (annot->GetNameFor("Subtype") == "Widget" || annot->KeyExist("StructParent")) {
+        SetError("UNSUPPORTED_CAPABILITY", "Widget or tagged annotation imports need structure remapping.");
+        return false;
+      }
+      const std::string id = "a:" + std::to_string(document.session_id) +
+          ":g:" + std::to_string(StableIdHash(new_page_ids[offset])) + ":" +
+          std::to_string(index);
+      if (!used.insert(id).second) {
+        SetError("INVALID_REQUEST", "An imported annotation ID collides with an existing annotation.");
+        return false;
+      }
+      const WideString wide = WideString::FromUTF8(ByteStringView(id));
+      annot->SetNewFor<CPDF_String>("NM", wide.AsStringView());
+    }
+  }
+  return true;
+}
+
 bool ApplyImportedPages(const Document& document,
                         FPDF_DOCUMENT pdf,
                         CandidateMetadata* metadata,
                         FPDF_DOCUMENT source,
                         const std::vector<int>& source_indices,
                         const std::vector<std::string>& new_page_ids,
-                        const std::string& after_page_id) {
+                        const std::string& after_page_id,
+                        bool duplicate_within_document) {
   if (source_indices.empty() || source_indices.size() != new_page_ids.size()) {
     SetError("INVALID_REQUEST",
              "A non-empty page import pair list is required.");
@@ -3866,9 +4069,9 @@ bool ApplyImportedPages(const Document& document,
     SetError("CORE_UNAVAILABLE", "The source PDF catalog is unavailable.");
     return false;
   }
-  if (source_root->KeyExist("Outlines")) {
+  if (!duplicate_within_document && source_root->KeyExist("Outlines")) {
     SetError("UNSUPPORTED_CAPABILITY",
-             "PDF bookmarks are not duplicated or imported yet.");
+             "Importing bookmarks from another PDF is not supported yet.");
     return false;
   }
   const int source_page_count = FPDF_GetPageCount(source);
@@ -3895,6 +4098,8 @@ bool ApplyImportedPages(const Document& document,
     SetError("CORE_UNAVAILABLE", "The PDF pages could not be imported.");
     return false;
   }
+  if (!AssignImportedAnnotationIds(document, pdf, insertion_index, new_page_ids))
+    return false;
   for (size_t offset = 0; offset < new_page_ids.size(); ++offset) {
     PageIdentity identity;
     if (!BuildGeneratedPageIdentity(document, pdf, insertion_index + offset,
@@ -3943,7 +4148,7 @@ bool ApplyPagesDuplicate(const Document& document,
     return false;
   }
   return ApplyImportedPages(document, pdf, metadata, source.get(),
-                            source_indices, new_page_ids, command.target_id);
+                            source_indices, new_page_ids, command.target_id, true);
 }
 
 bool ParseSourcePageIndex(std::string_view value, uint32_t* result) {
@@ -3997,7 +4202,7 @@ bool ApplyPagesImport(const Document& document,
     new_page_ids.push_back(command.ids[index + 1]);
   }
   return ApplyImportedPages(document, pdf, metadata, source.get(),
-                            source_indices, new_page_ids, command.target_id);
+                            source_indices, new_page_ids, command.target_id, false);
 }
 
 std::unique_ptr<CPDF_PageObject> CreateImagePageObject(
@@ -4644,10 +4849,16 @@ bool ApplyCommand(
                              allow_text_insert_overflow);
     case EditType::kObjectsTransform:
       return ApplyObjectsTransform(pdf, metadata, command);
+    case EditType::kObjectsAlign:
+      return ApplyObjectsAlign(pdf, metadata, command);
+    case EditType::kObjectsDistribute:
+      return ApplyObjectsDistribute(pdf, metadata, command);
     case EditType::kObjectsDelete:
       return ApplyObjectsDelete(pdf, metadata, command);
     case EditType::kPagesRotate:
       return ApplyPagesRotate(pdf, metadata, command);
+    case EditType::kPagesCrop:
+      return ApplyPagesCrop(pdf, metadata, command);
     case EditType::kPagesDelete:
       return ApplyPagesDelete(pdf, metadata, command);
     case EditType::kPagesReorder:
@@ -4669,6 +4880,8 @@ bool ApplyCommand(
     case EditType::kObjectsCopy:
       return ApplyObjectsCopy(document, pdf, metadata, command);
     case EditType::kAnnotationAdd:
+    case EditType::kAnnotationUpdate:
+    case EditType::kAnnotationDelete:
     case EditType::kFormFill:
     case EditType::kFormCreate:
       return ApplyDocumentTool(document, pdf, metadata, command, resources, font_cache);
@@ -4812,7 +5025,8 @@ bool CopyIdVector(const PdeEditCommand& source,
                            source_half ? "Source ID" : "Target ID")) {
       return false;
     }
-    if (type != EditType::kAnnotationAdd && (!paired || !source_half) &&
+    if (type != EditType::kAnnotationAdd &&
+        type != EditType::kAnnotationUpdate && (!paired || !source_half) &&
         !unique.emplace(source.ids[index]).second) {
       SetError("INVALID_REQUEST", paired
                                       ? "A new pair ID is duplicated."
@@ -4846,7 +5060,7 @@ bool ValidateRectValues(const EditCommand& command) {
 
 bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
   if (source.type < static_cast<uint32_t>(EditType::kTextReplace) ||
-      source.type > static_cast<uint32_t>(EditType::kTextReflow)) {
+      source.type > static_cast<uint32_t>(EditType::kPagesCrop)) {
     SetError("UNSUPPORTED_CAPABILITY",
              "The edit command type is not supported.");
     return false;
@@ -4966,6 +5180,23 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
       return !(target->flags & 4U) || ValidateColor(*target, 5);
     case EditType::kObjectsTransform:
       return require_page() && require_ids() && target->flags == 0;
+    case EditType::kObjectsAlign:
+      if (!require_page() || target->ids.size() < 2 || target->flags != 0 ||
+          target->values[0] < 0 || target->values[0] > 5 ||
+          std::floor(target->values[0]) != target->values[0]) {
+        if (g_error_code.empty())
+          SetError("INVALID_REQUEST", "Alignment requires two objects and a valid axis.");
+        return false;
+      }
+      return true;
+    case EditType::kObjectsDistribute:
+      if (!require_page() || target->ids.size() < 3 || target->flags != 0 ||
+          (target->values[0] != 0 && target->values[0] != 1)) {
+        if (g_error_code.empty())
+          SetError("INVALID_REQUEST", "Distribution requires three objects and horizontal or vertical axis.");
+        return false;
+      }
+      return true;
     case EditType::kObjectsDelete:
       return require_page() && require_ids() && target->flags == 0;
     case EditType::kPagesRotate:
@@ -4974,6 +5205,12 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
            target->values[0] != 270)) {
         SetError("INVALID_REQUEST",
                  "Page rotation must be 90, 180, or 270 degrees.");
+        return false;
+      }
+      return true;
+    case EditType::kPagesCrop:
+      if (!require_ids() || target->flags != 0 || !ValidateRectValues(*target)) {
+        if (g_error_code.empty()) SetError("INVALID_REQUEST", "Page crop requires a positive page rectangle.");
         return false;
       }
       return true;
@@ -5046,6 +5283,15 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
         return false;
       }
       return true;
+    case EditType::kAnnotationDelete:
+      if (!require_page() || !require_target() || !target->ids.empty() ||
+          target->flags || !target->resource_id.empty() || !target->text.empty() ||
+          !target->font_id.empty()) {
+        if (g_error_code.empty()) SetError("INVALID_REQUEST", "Annotation deletion requires a page and annotation ID.");
+        return false;
+      }
+      return true;
+    case EditType::kAnnotationUpdate:
     case EditType::kAnnotationAdd:
       if (!require_page() || !require_target() || !ValidateRectValues(*target) ||
           (target->flags & ~7U) || !target->font_id.empty() ||
@@ -5272,6 +5518,7 @@ std::set<std::string> ChangedPageSet(const EditTransaction& transaction) {
       pages.insert(command.page_id);
     }
     if (command.type == EditType::kPagesRotate ||
+        command.type == EditType::kPagesCrop ||
         command.type == EditType::kPagesDelete ||
         command.type == EditType::kPagesReorder) {
       pages.insert(command.ids.begin(), command.ids.end());
@@ -5566,7 +5813,9 @@ bool RequireTransactionAllowed(const Document& document, const EditTransaction& 
   const unsigned long permissions = FPDF_GetDocPermissions(document.pdf);
   for (const auto& command : transaction.commands) {
     const unsigned long bit = command.type == EditType::kFormFill ? (1UL << 8) :
-        command.type == EditType::kAnnotationAdd ? (1UL << 5) : (1UL << 3);
+        (command.type == EditType::kAnnotationAdd ||
+         command.type == EditType::kAnnotationUpdate ||
+         command.type == EditType::kAnnotationDelete) ? (1UL << 5) : (1UL << 3);
     if (permissions != 0xffffffffUL && !(permissions & bit)) {
       SetError("UNSUPPORTED_CAPABILITY", "The PDF permissions do not allow this operation.");
       return false;
@@ -5824,6 +6073,16 @@ const char* pde_describe_forms(uint32_t document) {
     const Document* value = FindDocument(document);
     if (!value) return nullptr;
     g_result = SerializeForms(*value);
+    return g_result.c_str();
+  });
+}
+
+const char* pde_describe_outline(uint32_t document) {
+  return Guard<const char*>(nullptr, [&]() -> const char* {
+    BeginOperation();
+    const Document* value = FindDocument(document);
+    if (!value) return nullptr;
+    g_result = SerializeOutline(*value);
     return g_result.c_str();
   });
 }

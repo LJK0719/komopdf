@@ -19,6 +19,9 @@ resources/downloads/
 native/vendor/sources/
 native/vendor/tools/
 native/vendor/artifacts/
+native/qpdf/artifacts/windows-x64/
+native/qpdf/artifacts/macos-arm64/
+native/qpdf/build-manifest.json
 apps/web/public/engines/
 apps/web/public/fonts/
 apps/web/public/licenses/

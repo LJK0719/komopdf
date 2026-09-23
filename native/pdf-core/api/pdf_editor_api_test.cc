@@ -489,6 +489,190 @@ void TestAbi3Transactions() {
   Require(pde_close(document) == 1, "close ABI3 transaction PDF");
 }
 
+void TestObjectAlignment() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+      "/Resources << >> /Contents 4 0 R >>",
+      Stream("10 10 20 20 re f\n60 50 10 30 re f"),
+  });
+  const uint32_t document = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "doc-align", "source-align", nullptr);
+  Require(document != 0, "open alignment fixture");
+  const std::string before = RequireResult(pde_describe_page(document, 0), "describe alignment fixture");
+  const std::string page_id = PageIdFromDescription(before);
+  const std::string first = FirstObjectId(before);
+  const size_t first_start = before.find("\"id\":\"", before.find("\"objects\":["));
+  const size_t second_start = before.find("\"id\":\"", first_start + 1);
+  Require(first_start != std::string::npos && second_start != std::string::npos,
+          "alignment fixture has two objects");
+  const std::string second = before.substr(second_start + 6, before.find('"', second_start + 6) - (second_start + 6));
+  const char* ids[] = {first.c_str(), second.c_str()};
+  Require(std::abs(JsonNumberAfter(before, "\"bounds\":{\"x\":", 0) - 10) < 0.01 &&
+          std::abs(JsonNumberAfter(before, "\"bounds\":{\"x\":", 1) - 60) < 0.01,
+          "source objects have distinct positions");
+  PdeEditCommand command{};
+  command.type = 21;
+  command.page_id = page_id.c_str();
+  command.ids = ids;
+  command.id_count = 2;
+  command.values[0] = 0;
+  Require(pde_preview_commands(document, 0, &command, 1) != nullptr,
+          "preview object alignment");
+  Require(JsonNumberAfter(RequireResult(pde_describe_page(document, 0), "alignment preview unchanged"),
+                          "\"bounds\":{\"x\":", 1) > 59,
+          "alignment preview does not commit");
+  Require(pde_apply_commands(document, 0, "align-left", &command, 1) != nullptr,
+          "align two real PDF objects");
+  const std::string aligned = RequireResult(pde_describe_page(document, 0), "describe aligned page");
+  Require(std::abs(JsonNumberAfter(aligned, "\"bounds\":{\"x\":", 0) -
+                   JsonNumberAfter(aligned, "\"bounds\":{\"x\":", 1)) < 0.01,
+          "two native objects share left edge");
+  Require(pde_undo(document) != nullptr, "undo alignment");
+  const std::string undone = RequireResult(pde_describe_page(document, 0), "describe undo alignment");
+  Require(JsonNumberAfter(undone, "\"bounds\":{\"x\":", 1) > 59,
+          "undo restores original object position");
+  Require(pde_redo(document) != nullptr, "redo alignment");
+  Require(pde_save_memory(document) != nullptr, "save aligned PDF");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+                                             "doc-align-reopen", "source-align-reopen", nullptr);
+  Require(reopened != 0, "reopen aligned PDF");
+  const std::string reopen_page = RequireResult(pde_describe_page(reopened, 0), "describe reopened aligned PDF");
+  Require(std::abs(JsonNumberAfter(reopen_page, "\"bounds\":{\"x\":", 0) -
+                   JsonNumberAfter(reopen_page, "\"bounds\":{\"x\":", 1)) < 0.01,
+          "aligned native geometry survives save and reopen");
+  Require(pde_close(reopened) == 1 && pde_close(document) == 1,
+          "close alignment fixtures");
+}
+
+void TestObjectDistribution() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 100] "
+      "/Resources << >> /Contents 4 0 R >>",
+      Stream("10 10 10 10 re f\n60 10 10 10 re f\n200 10 10 10 re f"),
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "doc-distribute", "source-distribute", nullptr);
+  Require(doc != 0, "open distribution fixture");
+  const std::string before = RequireResult(pde_describe_page(doc, 0), "describe distribution fixture");
+  const std::string page_id = PageIdFromDescription(before);
+  std::vector<std::string> ids;
+  size_t position = before.find("\"objects\":[");
+  for (int index = 0; index < 3; ++index) {
+    position = before.find("\"id\":\"", position + 1);
+    Require(position != std::string::npos, "distribution fixture object IDs");
+    ids.push_back(before.substr(position + 6, before.find('"', position + 6) - position - 6));
+  }
+  const char* targets[] = {ids[0].c_str(), ids[1].c_str(), ids[2].c_str()};
+  PdeEditCommand distribute{};
+  distribute.type = 24; distribute.page_id = page_id.c_str();
+  distribute.ids = targets; distribute.id_count = 3;
+  Require(pde_apply_commands(doc, 0, "distribute-three", &distribute, 1) != nullptr,
+          "distribute three PDF objects in one real transaction");
+  const std::string after = RequireResult(pde_describe_page(doc, 0), "describe distributed objects");
+  Require(std::abs(JsonNumberAfter(after, "\"bounds\":{\"x\":", 0) - 10) < 0.01 &&
+          std::abs(JsonNumberAfter(after, "\"bounds\":{\"x\":", 1) - 105) < 0.01 &&
+          std::abs(JsonNumberAfter(after, "\"bounds\":{\"x\":", 2) - 200) < 0.01,
+          "middle object center is evenly spaced; endpoints remain stable");
+  Require(pde_undo(doc) != nullptr &&
+          std::abs(JsonNumberAfter(RequireResult(pde_describe_page(doc, 0), "undo distribution"),
+                                   "\"bounds\":{\"x\":", 1) - 60) < 0.01,
+          "distribution undo restores middle geometry");
+  Require(pde_redo(doc) != nullptr && pde_save_memory(doc) != nullptr,
+          "redo distribution and save native PDF");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+                                             "dist-reopened", "dist-saved", nullptr);
+  Require(reopened != 0 &&
+          std::abs(JsonNumberAfter(RequireResult(pde_describe_page(reopened, 0), "reopened distribution"),
+                                   "\"bounds\":{\"x\":", 1) - 105) < 0.01,
+          "real distributed geometry survives save and reopen");
+  Require(pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close distribution fixtures");
+}
+
+void TestPageCrop() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [-10 -20 300 500] "
+      "/CropBox [10 20 160 220] /Rotate 90 /UserUnit 2 "
+      "/Resources << >> /Contents 4 0 R >>",
+      Stream("30 40 50 30 re f"),
+  });
+  const uint32_t document = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "crop-doc", "crop-source", nullptr);
+  Require(document != 0, "open rotated CropBox fixture");
+  const std::string before = RequireResult(pde_describe_page(document, 0), "describe original crop");
+  const std::string page_id = PageIdFromDescription(before);
+  const std::string object_id = FirstObjectId(before);
+  const double width = JsonNumberAfter(before, "\"widthPt\":");
+  const double height = JsonNumberAfter(before, "\"heightPt\":");
+  Require(width > 40 && height > 40, "rotated UserUnit page has usable dimensions");
+  const char* pages[] = {page_id.c_str()};
+  PdeEditCommand crop{};
+  crop.type = 25; crop.ids = pages; crop.id_count = 1;
+  crop.values[0] = 10; crop.values[1] = 10;
+  crop.values[2] = width - 20; crop.values[3] = height - 20;
+  Require(pde_preview_commands(document, 0, &crop, 1) != nullptr &&
+          std::string(pde_describe_page(document, 0)) == before,
+          "page crop preview does not change original geometry");
+  Require(pde_apply_commands(document, 0, "crop-real-page", &crop, 1) != nullptr,
+          "crop a rotated PDF page through its native CropBox");
+  const std::string cropped = RequireResult(pde_describe_page(document, 0), "describe cropped page");
+  Require(std::abs(JsonNumberAfter(cropped, "\"widthPt\":") - (width - 20)) < 0.1 &&
+          std::abs(JsonNumberAfter(cropped, "\"heightPt\":") - (height - 20)) < 0.1 &&
+          cropped.find("\"id\":\"" + object_id + "\"") != std::string::npos,
+          "crop changes real dimensions while retaining the original object ID");
+  Require(pde_undo(document) != nullptr && std::string(pde_describe_page(document, 0)) == before,
+          "crop undo restores original page bounds");
+  Require(pde_redo(document) != nullptr && pde_save_memory(document) != nullptr,
+          "redo crop and save to PDF bytes");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "crop-reopened", "crop-saved", nullptr);
+  Require(reopened != 0 &&
+          std::abs(JsonNumberAfter(RequireResult(pde_describe_page(reopened, 0), "reopened crop"),
+                                   "\"widthPt\":") - (width - 20)) < 0.1,
+          "native CropBox persists after save and reopen");
+  Require(pde_close(reopened) == 1 && pde_close(document) == 1,
+          "close crop fixtures");
+}
+
+void TestOutlineNavigation() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 4 0 R >>",
+      Stream("10 10 20 20 re f"),
+      "<< /Type /Outlines /First 6 0 R /Last 6 0 R /Count 1 >>",
+      "<< /Title (Chapter One) /Parent 5 0 R /Dest [3 0 R /Fit] >>",
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "outline-doc", "outline-source", nullptr);
+  Require(doc != 0, "open PDF with real outline destination");
+  const std::string page = PageIdFromDescription(RequireResult(pde_describe_page(doc, 0), "outline page"));
+  const std::string entries = RequireResult(pde_describe_outline(doc), "read PDF outline");
+  Require(entries.find("\"title\":\"Chapter One\"") != std::string::npos &&
+          entries.find("\"pageId\":\"" + page + "\"") != std::string::npos &&
+          entries.find("\"level\":0") != std::string::npos,
+          "outline navigation resolves the actual in-document page ID");
+  const char* pairs[] = {page.c_str(), "outline-copy"};
+  PdeEditCommand duplicate{};
+  duplicate.type = 12; duplicate.ids = pairs; duplicate.id_count = 2;
+  duplicate.target_id = page.c_str();
+  Require(pde_apply_commands(doc, 0, "copy-bookmarked-page", &duplicate, 1) != nullptr,
+          "duplicate a bookmarked page without invalidating the source outline");
+  Require(std::string(pde_describe_outline(doc)) == entries,
+          "source bookmark stays attached to original page, not the duplicate");
+  Require(pde_close(doc) == 1, "close outline fixture");
+}
+
 void TestP1bTransactions() {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -1018,7 +1202,83 @@ void TestDocumentTools(const std::string& font_id,
           "missing field rejects the whole mixed annotation transaction");
   Require(std::string(pde_describe_annotations(doc, 0)) == annotations,
           "failed field write leaves no extra annotation");
+
+  PdeEditCommand update = commands[4];
+  update.type = 22; update.text_utf8 = "Updated note";
+  update.flags = 1 | 2;
+  update.values[4] = 0; update.values[5] = 0; update.values[6] = 1;
+  update.values[7] = 0.8;
+  Require(pde_preview_commands(doc, 3, &update, 1) != nullptr &&
+          std::string(pde_describe_annotations(doc, 0)) == annotations,
+          "annotation update preview does not modify existing appearance");
+  Require(pde_apply_commands(doc, 3, "note-update", &update, 1) != nullptr,
+          "update an existing annotation with stable ID and rebuilt appearance");
+  const std::string updated = RequireResult(pde_describe_annotations(doc, 0), "describe updated note");
+  Require(updated.find("Updated note") != std::string::npos &&
+          updated.find("\"id\":\"note-one\"") != std::string::npos &&
+          RenderPixels(doc, 0, 400, 300) != rendered,
+          "updated annotation appearance and text are rendered");
+  Require(pde_save_memory(doc) != nullptr, "save updated annotation");
+  const std::vector<uint8_t> updated_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened_update = pde_open_memory(updated_bytes.data(),
+      static_cast<uint32_t>(updated_bytes.size()), "tools-update-reopened", "tools-update-saved", nullptr);
+  Require(reopened_update != 0 &&
+          std::string(pde_describe_annotations(reopened_update, 0)).find("Updated note") != std::string::npos &&
+          RenderPixels(reopened_update, 0, 400, 300) == RenderPixels(doc, 0, 400, 300),
+          "annotation update survives save and reopen with the same appearance");
+  Require(pde_close(reopened_update) == 1, "close updated note fixture");
+  PdeEditCommand remove{};
+  remove.type = 23; remove.page_id = page_id.c_str(); remove.target_id = "note-one";
+  Require(pde_apply_commands(doc, 4, "note-delete", &remove, 1) != nullptr &&
+          Count(RequireResult(pde_describe_annotations(doc, 0), "describe removed note"), "\"subtype\"") == 3,
+          "delete removes a real PDF annotation");
+  Require(pde_undo(doc) != nullptr && std::string(pde_describe_annotations(doc, 0)) == updated,
+          "undo restores updated annotation and stable identity");
+  Require(pde_redo(doc) != nullptr &&
+          std::string(pde_describe_annotations(doc, 0)).find("note-one") == std::string::npos,
+          "redo removes only the selected annotation");
   Require(pde_close(doc) == 1, "close document tools fixture");
+}
+
+void TestAnnotationPageDuplicate() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 4 0 R >>",
+      Stream("10 10 20 20 re f"),
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "annot-page-doc", "annot-page-source", nullptr);
+  Require(doc != 0, "open annotation page fixture");
+  const std::string original_page = PageIdFromDescription(pde_describe_page(doc, 0));
+  PdeEditCommand add{};
+  add.type = 17; add.page_id = original_page.c_str(); add.target_id = "note-before-copy";
+  add.resource_id = "text"; add.text_utf8 = "Persist across page copy";
+  add.values[0] = 20; add.values[1] = 20; add.values[2] = 20; add.values[3] = 20;
+  Require(pde_apply_commands(doc, 0, "add-before-copy", &add, 1) != nullptr,
+          "add real source annotation");
+  const char* pairs[] = {original_page.c_str(), "copied-page"};
+  PdeEditCommand duplicate{};
+  duplicate.type = 12; duplicate.ids = pairs; duplicate.id_count = 2;
+  duplicate.target_id = original_page.c_str();
+  Require(pde_apply_commands(doc, 1, "duplicate-annotated-page", &duplicate, 1) != nullptr,
+          "duplicate page containing native annotation");
+  const std::string original = RequireResult(pde_describe_annotations(doc, 0), "original annotation after copy");
+  const std::string copied = RequireResult(pde_describe_annotations(doc, 1), "duplicated page annotation");
+  Require(original.find("Persist across page copy") != std::string::npos &&
+          original.find("\"id\":\"note-before-copy\"") != std::string::npos &&
+          copied.find("Persist across page copy") != std::string::npos &&
+          copied.find("\"id\":\"note-before-copy\"") == std::string::npos,
+          "page duplication preserves annotation contents with a distinct persistent ID");
+  Require(pde_save_memory(doc) != nullptr, "save duplicated page annotations");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "annot-page-reopen", "annot-page-saved", nullptr);
+  Require(reopened != 0 &&
+          std::string(pde_describe_annotations(reopened, 1)).find("Persist across page copy") != std::string::npos,
+          "copied annotation survives save and reopen");
+  Require(pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close annotation page fixture");
 }
 
 void TestParagraphEditing(const std::string& font_id) {
@@ -1552,7 +1812,7 @@ int main(int argc, char** argv) {
                     "\"pages.rotate\",\"pages.delete\",\"pages.reorder\","
                     "\"pages.insert\",\"image.insert\",\"content.insert\","
                     "\"pages.duplicate\",\"pages.import\",\"image.replace\","
-                    "\"image.crop\",\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\"]") != std::string::npos,
+                    "\"image.crop\",\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\"]") != std::string::npos,
           "real ABI3 editing capabilities");
   Require(std::string(pde_capabilities()).find("\"objects.copy\"") !=
               std::string::npos,
@@ -1686,6 +1946,11 @@ int main(int argc, char** argv) {
   TestRangeFormatting();
   TestRecoveryHistory();
   TestAbi3Transactions();
+  TestObjectAlignment();
+  TestObjectDistribution();
+  TestPageCrop();
+  TestOutlineNavigation();
+  TestAnnotationPageDuplicate();
   TestP1bTransactions();
   TestFontRuntime(font_options);
   pde_shutdown();

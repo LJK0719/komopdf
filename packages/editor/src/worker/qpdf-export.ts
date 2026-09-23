@@ -2,7 +2,7 @@ import { EngineError } from '@pdf-editor/contracts';
 
 const QPDF_RUNTIME_URL = '/engines/qpdf/pdf-editor-qpdf.js';
 const QPDF_WASM_URL = '/engines/qpdf/pdf-editor-qpdf.wasm';
-const QPDF_ABI_VERSION = 1;
+const QPDF_ABI_VERSION = 2;
 const WASM32_MAX = 0xffff_ffff;
 const PDE_QPDF_ALLOW_ALL = 0xff;
 const POINTER_BYTES = 4;
@@ -11,12 +11,14 @@ const OPERATION_CODES = {
   decrypt: 1,
   'encrypt-aes256': 2,
   'optimize-lossless': 3,
+  'optimize-images': 4,
 } as const;
 
 export type QpdfExportOptions = {
   operation: keyof typeof OPERATION_CODES;
   inputPassword?: string;
   password?: string;
+  imageQuality?: number;
 };
 
 type QpdfModuleFactoryOptions = {
@@ -45,6 +47,14 @@ interface QpdfEmscriptenModule {
     ownerPassword: number,
     permissions: number,
     encryptMetadata: number,
+    outputData: number,
+    outputSize: number,
+  ): number;
+  _pde_qpdf_optimize_images(
+    inputData: number,
+    inputSize: number,
+    inputPassword: number,
+    imageQuality: number,
     outputData: number,
     outputSize: number,
   ): number;
@@ -77,18 +87,16 @@ export async function transformPdfExport(
 
       let status: number;
       try {
-        status = module._pde_qpdf_transform(
-          operation,
-          inputPointer,
-          bytes.byteLength,
-          inputPasswordPointer,
-          passwordPointer,
-          passwordPointer,
-          PDE_QPDF_ALLOW_ALL,
-          1,
-          outputPointerAddress,
-          outputSizeAddress,
-        );
+        status = options.operation === 'optimize-images'
+          ? module._pde_qpdf_optimize_images(
+            inputPointer, bytes.byteLength, inputPasswordPointer, options.imageQuality!,
+            outputPointerAddress, outputSizeAddress,
+          )
+          : module._pde_qpdf_transform(
+            operation, inputPointer, bytes.byteLength, inputPasswordPointer,
+            passwordPointer, passwordPointer, PDE_QPDF_ALLOW_ALL, 1,
+            outputPointerAddress, outputSizeAddress,
+          );
       } catch {
         throw new EngineError('SAVE_FAILED', 'QPDF export transform failed');
       }
@@ -136,6 +144,13 @@ function validateRequest(bytes: ArrayBuffer, options: QpdfExportOptions): number
   validatePassword(options.password, 'Export password');
   if (options.operation === 'encrypt-aes256' && options.password === undefined) {
     throw new EngineError('INVALID_REQUEST', 'AES-256 export requires an explicit password');
+  }
+  if (options.operation === 'optimize-images') {
+    if (!Number.isInteger(options.imageQuality) || options.imageQuality! < 1 || options.imageQuality! > 95) {
+      throw new EngineError('INVALID_REQUEST', 'JPEG quality must be an integer from 1 to 95');
+    }
+  } else if (options.imageQuality !== undefined) {
+    throw new EngineError('INVALID_REQUEST', 'JPEG quality is only used for image optimization');
   }
   return OPERATION_CODES[options.operation];
 }
@@ -188,6 +203,7 @@ function assertModule(module: QpdfEmscriptenModule): void {
     '_free',
     '_pde_qpdf_abi_version',
     '_pde_qpdf_transform',
+    '_pde_qpdf_optimize_images',
     '_pde_qpdf_last_error',
     '_pde_qpdf_free',
   ] as const;
