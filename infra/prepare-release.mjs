@@ -22,6 +22,7 @@ run(process.execPath, ['scripts/build-gateway.mjs']);
 run('pnpm', ['--filter', '@pdf-editor/web', 'build']);
 
 console.log('[2/4] Staging Gateway production dependencies with their pnpm topology...');
+await mkdir(path.dirname(stageDir), { recursive: true });
 await mkdir(stageDir, { recursive: false });
 const gatewayStageDir = path.join(stageDir, 'apps/gateway');
 run('pnpm', ['--filter', '@pdf-editor/gateway', 'deploy', '--legacy', '--prod', gatewayStageDir, '--config.confirmModulesPurge=false']);

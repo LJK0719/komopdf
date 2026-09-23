@@ -9,7 +9,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 if (!process.argv[2]) throw new Error('Usage: node infra/smoke-release.mjs <extracted-release>');
 const release = path.resolve(process.argv[2]);
 const manifest = JSON.parse(await readFile(path.join(release, 'release-manifest.json'), 'utf8'));
-for (const file of ['index.html', 'editor/index.html', 'download/index.html', 'engines/pdf-core-runtime.wasm', 'engines/qpdf/pdf-editor-qpdf.wasm', 'fonts/font-resources.json']) {
+for (const file of ['index.html', 'editor/index.html', 'download/index.html', 'engines/pdf-core-runtime.wasm', 'engines/qpdf/pdf-editor-qpdf.wasm', 'fonts/font-resources.json', 'licenses/THIRD_PARTY_NOTICES.md']) {
   if (!(await readFile(path.join(release, 'apps/web/dist', file))).length) throw new Error(`Empty static release asset: ${file}`);
 }
 await mkdir(path.join(root, 'tmp'), { recursive: true });
