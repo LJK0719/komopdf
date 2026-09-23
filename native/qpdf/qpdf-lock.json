@@ -48,6 +48,23 @@
       "zlib": "system"
     }
   },
+  "macosX64": {
+    "target": "x86_64-apple-darwin",
+    "arch": "x64",
+    "deploymentTarget": "13.0",
+    "buildType": "Release",
+    "linkage": "static qpdf and static libjpeg with system zlib",
+    "cryptoProviders": ["native"],
+    "defaultCryptoProvider": "native",
+    "libjpegSource": {
+      "version": "3.2.0",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz",
+      "sha256": "6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e"
+    },
+    "dependencies": {
+      "zlib": "system"
+    }
+  },
   "wasm": {
     "target": "wasm32-unknown-emscripten",
     "emscriptenVersion": "6.0.9",

@@ -10,17 +10,20 @@ This package is the isolated P5 QPDF layer. It transforms a completed PDF export
 - macOS: QPDF native crypto provider, statically linked `libjpeg-turbo` 3.2.0, and system `libz`
 - WASM: QPDF native crypto provider; Emscripten 6.0.9 project toolchain and its pinned zlib/libjpeg ports
 
-Build targets from the project root:
+Build targets from the project root (use the shell native to the build host):
 
-```powershell
+```text
 # Windows + WASM (local toolchains)
 python scripts/build-qpdf.py --target all
 
-# macOS arm64 (via authorized remote Mac or local macOS)
+# macOS arm64 and x64 (via the authorized Mac; x64 runs under Rosetta)
 python scripts/build-qpdf.py --target macos
+# Prepare the pinned source archive from qpdf-lock.json inside this project's cache first.
+/bin/bash scripts/build-libjpeg-macos-x64.sh <libjpeg-turbo-3.2.0.tar.gz> <project-cache>/jpeg-x64
+python scripts/build-qpdf.py --target macos-x64 --jpeg-root <project-cache>/jpeg-x64
 ```
 
-Build caches and synthetic validation files stay under `tmp/qpdf-work` (or remote task root `tmp/mac-qpdf-20260922`). Published artifacts are under `native/qpdf/artifacts`.
+The x64 static libjpeg-turbo is built into the project cache from the SHA-pinned 3.2.0 source in `qpdf-lock.json`; it is not taken from the arm64 Homebrew bottle. Build caches and synthetic validation files stay under `tmp/qpdf-work` and the remote project's `tmp/mac-qpdf-*` directories. Native desktop artifacts are kept in ignored `native/qpdf/artifacts/macos-{arm64,x64}`; the browser WASM artifact is tracked.
 
 ## Windows artifact
 
@@ -73,7 +76,13 @@ Supported job operations:
 
 `permissions` is optional and defaults to allowing all listed operations. `print` accepts `full`, `low`, or `none`. AES-256 uses QPDF revision 6. The lossless optimization path regenerates object streams, applies only generalized lossless stream decoding/recompression, recompresses Flate streams, and drops unreachable objects; it does not decode/re-encode JPEG image data. If the optimization input is encrypted, QPDF preserves its encryption and `inputPassword` must open it.
 
-A separate `optimize-images` job accepts `imageQuality` (integer 1–95). It recompresses only eligible opaque 8-bit RGB/grayscale page images as JPEG when the resulting stream is smaller; transparent/masked, unsupported and unreachable image streams remain unchanged. No image downsampling is offered. A request with no smaller eligible page image fails rather than claiming a successful optimization. Text, paths, shared image references and AES-256 protection remain part of the export copy. Upstream QPDF also supports `--password-file=-`; the narrow project CLI keeps passwords and jobs on stdin, never command-line arguments.
+Example downsampling job (password, when required, is passed via stdin as `inputPassword`):
+
+```json
+{"operation":"resample-images","inputFile":"export-copy.pdf","outputFile":"resampled-copy.pdf","imageQuality":70,"imageMaxEdge":1600}
+```
+
+A separate `optimize-images` job accepts `imageQuality` (integer 1–95) and retains original pixel dimensions; it only replaces eligible opaque 8-bit RGB/grayscale page images when JPEG bytes are smaller. `resample-images` additionally requires a positive `imageMaxEdge` in pixels and performs aspect-preserving area downsampling before JPEG encoding. It fails if no eligible image actually shrinks in pixel dimensions. Transparent/masked, unsupported and unreachable image streams remain unchanged; text, paths, shared image references and AES-256 protection stay in the export copy. No path mutates the active editing document. Upstream QPDF also supports `--password-file=-`; the project CLI keeps passwords and jobs on stdin, never command-line arguments.
 
 ## Native C bridge and WASM
 
@@ -83,19 +92,19 @@ A separate `optimize-images` job accepts `imageQuality` (integer 1–95). It rec
 - `PDE_QPDF_ENCRYPT_AES256`
 - `PDE_QPDF_OPTIMIZE_LOSSLESS`
 - `pde_qpdf_transform` for complete in-memory PDF bytes and passwords
-- `pde_qpdf_optimize_images` for explicit quality and in-memory copy optimization
+- `pde_qpdf_optimize_images` for explicit quality-only copy optimization
+- `pde_qpdf_resample_images` for an explicit maximum image edge and quality; additive ABI2 export
 - `pde_qpdf_free` for the returned output buffer
 
-The Windows artifact includes the bridge static library and its complete static link closure. The macOS arm64 artifact provides the static bridge library, static libqpdf and static libjpeg-turbo, linking only against standard system libraries (`libz`, `libc++`, `libSystem`). The WASM artifact contains `pdf-editor-qpdf.js`, `pdf-editor-qpdf.wasm`, and the same C header. It is an ES module factory with no pthreads, growing memory, 64 MiB initial memory, and a 1 GiB configured maximum. Callers copy the export PDF and password strings into WASM memory and release the returned buffer with `pde_qpdf_free`.
+The Windows artifact includes the bridge static library and its complete static link closure. The macOS arm64 and x64 artifacts each provide matching-architecture static bridge, libqpdf and libjpeg-turbo libraries, linking only against standard system libraries (`libz`, `libc++`, `libSystem`). The WASM artifact contains `pdf-editor-qpdf.js`, `pdf-editor-qpdf.wasm`, and the same C header. It is an ES module factory with no pthreads, growing memory, 64 MiB initial memory, and a 1 GiB configured maximum. Callers copy the export PDF and password strings into WASM memory and release the returned buffer with `pde_qpdf_free`.
 
 ## macOS artifact
 
-`artifacts/macos-arm64/bin` contains:
+Both `artifacts/macos-arm64` and `artifacts/macos-x64` have architecture-matched `bin` and `lib` directories:
 
-- `pdf-editor-qpdf`: the narrow project CLI (Mach-O 64-bit executable arm64, minos 13.0)
-- `qpdf`: the pinned upstream CLI for inspection and troubleshooting
-
-`artifacts/macos-arm64/lib` contains:
+- `bin/pdf-editor-qpdf`: the narrow project CLI (Mach-O arm64 or x86_64, minos 13.0)
+- `bin/qpdf`: the pinned upstream CLI for inspection and troubleshooting
+The matching `lib` directory contains:
 
 - `libpdf-editor-qpdf-bridge.a`: static C bridge library
 - `libqpdf.a`: static QPDF library
@@ -105,7 +114,7 @@ Dynamic dependencies are strictly limited to Apple system libraries (`/usr/lib/l
 
 ## Verified result and boundary
 
-The manifests record Windows x64, macOS arm64, and WASM smoke tests that each performed:
+The manifests record Windows x64, macOS arm64, macOS x64 (run through Rosetta), and WASM smoke tests that each performed:
 
 1. AES-256 revision 6 encryption of a synthetic two-page PDF.
 2. Reopen with the correct password and decryption.
@@ -113,4 +122,4 @@ The manifests record Windows x64, macOS arm64, and WASM smoke tests that each pe
 4. Confirmation that both pages and both text streams remained present after decryption and lossless optimization.
 5. In-memory C bridge transform roundtrip (encryption, decryption, lossless optimization).
 
-Windows Rust and Web Worker adapters use the same local copy-export path. Real browser and native checks cover protected export, password reopening/editing, preservation on normal save, decrypted copies and retained history. Separate image-quality cases check new and existing JPEGs, shared references, opaque versus masked streams and preservation of text/vector content; the browser export UI was exercised with a real PDF. The layer never owns the active document. The macOS arm64 artifact is ABI2-built and passes the existing C bridge encryption/decryption/lossless smoke; its new image-quality operation still needs a dedicated Mac run. The artifacts do not claim signing, notarization, Intel execution or a completed installer. License files accompany the runtime for human review; this package makes no legal conclusion.
+Windows Rust and Web Worker adapters use the same local copy-export path. Real Edge and native checks cover protection, decrypted copies, history isolation, and pixel downsampling while retaining searchable text. Synthetic RGB/Gray resampling on both macOS architectures verified smaller pixel dimensions, preserved masks/shared references/text/vector content and an explicit no-op failure; the x64 executable ran under Rosetta, not on Intel hardware. These QPDF results are not a signed or cleanly installed desktop application. Full license texts accompany the runtime.
