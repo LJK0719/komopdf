@@ -88,6 +88,29 @@ describe('feature templates and output validation', () => {
       .toThrow(/does not match page/);
   });
 
+  it('constrains real form suggestions to the supplied field value types', () => {
+    const formRequest: AiRequest = {
+      ...request('form.suggest'),
+      context: { ...request('form.suggest').context,
+        availableCommands: ['form.fill'],
+        fields: [{ id: 'name-field', name: 'Name', type: 'text' },
+          { id: 'city-field', name: 'City', type: 'choice', options: ['Beijing', 'Shanghai'] },
+          { id: 'agree-field', name: 'Agree', type: 'checkbox' }] },
+    };
+    const prepared = prepareProviderInput(formRequest, 8192);
+    expect(JSON.stringify(prepared.input.responseSchema)).toContain('"value":{"anyOf":[{"type":"STRING"},{"type":"BOOLEAN"}]}');
+    const plan = (commands: unknown[]) => JSON.stringify({ kind: 'commandPlan', commands, explanation: 'Synthetic form' });
+    expect(() => parseAndValidateResult(plan([{ type: 'form.fill', fieldId: 'name-field', value: ['Alice'] }]),
+      formRequest, 'commandPlan', prepared.allowedCommands, 1024 * 1024)).toThrow(/field type/);
+    expect(() => parseAndValidateResult(plan([{ type: 'form.fill', fieldId: 'city-field', value: 'London' }]),
+      formRequest, 'commandPlan', prepared.allowedCommands, 1024 * 1024)).toThrow(/field option/);
+    expect(parseAndValidateResult(plan([
+      { type: 'form.fill', fieldId: 'name-field', value: 'Alice' },
+      { type: 'form.fill', fieldId: 'city-field', value: 'Beijing' },
+      { type: 'form.fill', fieldId: 'agree-field', value: true },
+    ]), formRequest, 'commandPlan', prepared.allowedCommands, 1024 * 1024).kind).toBe('commandPlan');
+  });
+
   it('requires document answers to carry verified evidence citations', () => {
     const prepared = prepareProviderInput(request('document.ask'), 8192);
     const noCitation = JSON.stringify({ kind: 'answer', text: 'unsupported', citations: [] });
