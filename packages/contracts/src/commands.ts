@@ -55,7 +55,7 @@ export const editCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('annotation.update'), pageId: idSchema, annotationId: idSchema, subtype: z.enum(['highlight', 'text', 'rectangle', 'ink']), bounds: rectSchema, text: z.string().optional(), color: colorSchema.optional(), opacity: z.number().min(0).max(1).optional(), strokeWidth: z.number().positive().optional(), points: z.array(z.tuple([z.number(), z.number()])).optional() }).strict(),
   z.object({ type: z.literal('annotation.delete'), pageId: idSchema, annotationId: idSchema }).strict(),
   z.object({ type: z.literal('form.fill'), fieldId: idSchema, value: z.union([z.string(), z.boolean(), z.array(z.string())]) }).strict(),
-  z.object({ type: z.literal('form.create'), pageId: idSchema, fieldId: idSchema, name: z.string().min(1), fieldType: z.enum(['text', 'checkbox', 'combo', 'list']), bounds: rectSchema, fontId: idSchema.optional(), fontSize: z.number().positive().max(1000).optional(), options: z.array(z.string().min(1).max(1000)).min(1).max(128).optional() }).strict(),
+  z.object({ type: z.literal('form.create'), pageId: idSchema, fieldId: idSchema, name: z.string().min(1), fieldType: z.enum(['text', 'checkbox', 'combo', 'list', 'radio']), bounds: rectSchema, fontId: idSchema.optional(), fontSize: z.number().positive().max(1000).optional(), options: z.array(z.string().min(1).max(1000)).min(1).max(128).optional() }).strict(),
 ]);
 export type EditCommand = z.infer<typeof editCommandSchema>;
 export type CommandType = EditCommand['type'];

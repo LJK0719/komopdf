@@ -144,20 +144,25 @@ describe('ABI 3 command encoding', () => {
     expect(record(2).ids).toEqual([]);
   });
 
-  it('encodes paragraph underlines and Choice options without widening ABI3', () => {
+  it('encodes paragraph underlines, Choice and Radio options without widening ABI3', () => {
     const bounds = { x: 10, y: 20, width: 180, height: 60 };
     const { bytes, record } = packed([
       { type: 'text.insert', pageId: 'page-1', objectId: 'paragraph-1', bounds,
         text: 'One line', paragraph: true, style: { fontId: 'font-1', fontSize: 14, underline: true } },
       { type: 'form.create', pageId: 'page-1', fieldId: 'choice-1', name: 'City',
         fieldType: 'combo', bounds, fontId: 'font-1', options: ['北京', '上海'] },
+      { type: 'form.create', pageId: 'page-1', fieldId: 'radio-1', name: 'Color',
+        fieldType: 'radio', bounds, options: ['红色', '蓝色'] },
     ]);
-    expect(bytes.byteLength).toBe(2 * EDIT_COMMAND_STRIDE);
+    expect(bytes.byteLength).toBe(3 * EDIT_COMMAND_STRIDE);
     expect(record(0).fields[10]! & 2048).toBe(2048);
     expect(record(0).fields[10]! & 1024).toBe(1024);
     expect(record(1).fields[0]).toBe(19);
     expect(record(1).string(3)).toBe('combo');
     expect(record(1).ids).toEqual(['北京', '上海']);
+    expect(record(2).string(3)).toBe('radio');
+    expect(record(2).fields[10]).toBe(0);
+    expect(record(2).ids).toEqual(['红色', '蓝色']);
   });
 
   it('encodes form.create with optional font and a default 12 point size', () => {

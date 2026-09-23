@@ -57,6 +57,7 @@ enum class FormFieldType {
   kCheckbox,
   kComboBox,
   kListBox,
+  kRadioButton,
 };
 
 struct FormFieldSpec {
@@ -65,6 +66,8 @@ struct FormFieldSpec {
   std::string name_utf8;
   PdfRect rect;
   int rotation = 0;
+  // Radio: an empty initial value leaves every Widget Off; otherwise it must
+  // match one of the distinct options_utf8 export values.
   std::string initial_value_utf8;
   std::vector<std::string> options_utf8;
   bool checked = false;

@@ -297,6 +297,7 @@ bool ApplyDocumentTool(
     spec.type = command.resource_id == "checkbox" ? pdf_editor::FormFieldType::kCheckbox :
         command.resource_id == "combo" ? pdf_editor::FormFieldType::kComboBox :
         command.resource_id == "list" ? pdf_editor::FormFieldType::kListBox :
+        command.resource_id == "radio" ? pdf_editor::FormFieldType::kRadioButton :
         pdf_editor::FormFieldType::kText;
     spec.persistent_id = command.target_id;
     spec.name_utf8 = command.text;

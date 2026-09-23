@@ -495,9 +495,15 @@ bool FieldAppearancesAreComplete(CPDF_FormField* field) {
     RetainPtr<const CPDF_Dictionary> normal =
         ap ? ap->GetDictFor("N") : nullptr;
     const ByteString state = widget ? widget->GetNameFor("AS") : ByteString();
-    if (!normal || state.IsEmpty() ||
-        !normal->GetStreamFor(state.AsStringView()) ||
-        !normal->GetStreamFor("Off")) {
+    const ByteString on_state =
+        control ? control->GetCheckedAPState() : ByteString();
+    RetainPtr<const CPDF_Stream> on =
+        normal ? normal->GetStreamFor(on_state.AsStringView()) : nullptr;
+    RetainPtr<const CPDF_Stream> off =
+        normal ? normal->GetStreamFor("Off") : nullptr;
+    if (state.IsEmpty() || !on || !off || on->GetRawSize() == 0 ||
+        off->GetRawSize() == 0 ||
+        !normal->GetStreamFor(state.AsStringView())) {
       return false;
     }
   }
@@ -870,13 +876,20 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
   }
   const bool choice = spec.type == FormFieldType::kComboBox ||
                       spec.type == FormFieldType::kListBox;
+  const bool radio = spec.type == FormFieldType::kRadioButton;
   if (spec.type != FormFieldType::kText &&
-      spec.type != FormFieldType::kCheckbox && !choice) {
+      spec.type != FormFieldType::kCheckbox && !choice && !radio) {
     return Fail(error, "Unsupported form field type.");
   }
   if ((choice && (spec.options_utf8.empty() || !spec.font)) ||
-      (!choice && !spec.options_utf8.empty())) {
-    return Fail(error, "Choice fields require options and an embedded font.");
+      (radio && spec.options_utf8.empty()) ||
+      (!choice && !radio && !spec.options_utf8.empty())) {
+    return Fail(error, "Choice and radio fields require options; choice fields "
+                       "also require an embedded font.");
+  }
+  if (radio && spec.checked) {
+    return Fail(error, "A radio field selects an option via "
+                       "initial_value_utf8, not checked.");
   }
   if (spec.rotation != 0 && spec.rotation != 90 && spec.rotation != 180 &&
       spec.rotation != 270) {
@@ -899,23 +912,29 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
                 "New top-level field names cannot contain hierarchy dots.");
   }
   std::vector<WideString> choices;
-  int selected_index = 0;
-  if (choice) {
+  int selected_index = radio ? -1 : 0;
+  if (choice || radio) {
     choices.reserve(spec.options_utf8.size());
     for (const auto& value : spec.options_utf8) {
       WideString option;
-      if (!DecodeUtf8(value, false, &option, error, "Choice option") ||
+      if (!DecodeUtf8(value, false, &option, error,
+                      radio ? "Radio option" : "Choice option") ||
           std::find(choices.begin(), choices.end(), option) != choices.end()) {
-        if (error && error->empty()) *error = "Choice options must be distinct.";
+        if (error && error->empty()) *error = "Form field options must be distinct.";
         return false;
       }
       choices.push_back(std::move(option));
     }
     if (!initial_value.IsEmpty()) {
       const auto selected = std::find(choices.begin(), choices.end(), initial_value);
-      if (selected == choices.end()) return Fail(error, "The initial choice must be an option.");
+      if (selected == choices.end()) return Fail(error, "The initial value must be an option.");
       selected_index = static_cast<int>(selected - choices.begin());
     }
+  }
+  if (radio && ((spec.rect.right - spec.rect.left) / choices.size() < 8 ||
+                spec.rect.top - spec.rect.bottom < 8)) {
+    return Fail(error, "Each radio Widget must be at least 8 PDF points "
+                       "wide and tall.");
   }
 
   CPDF_InteractiveForm existing_fields(document);
@@ -980,6 +999,78 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
                   ? MakeDefaultAppearance(font_alias, spec.font_size,
                                           spec.text_color)
                   : ByteString("0 g"));
+  }
+
+  if (radio) {
+    // /Opt holds Unicode export values; PDFium uses each control's index as
+    // its /AP/N on-state and the field's /V when /Opt is present.
+    RetainPtr<CPDF_Dictionary> group = document->NewIndirect<CPDF_Dictionary>();
+    group->SetNewFor<CPDF_Name>("FT", "Btn");
+    group->SetNewFor<CPDF_String>("T", name.AsStringView());
+    group->SetNewFor<CPDF_String>(kFieldIdKey, persistent_id.AsStringView());
+    group->SetNewFor<CPDF_Number>(
+        "Ff", static_cast<int>(pdfium::form_flags::kButtonRadio |
+                               pdfium::form_flags::kButtonNoToggleToOff));
+    group->SetNewFor<CPDF_String>("DA", "0 g");
+    auto options = group->SetNewFor<CPDF_Array>("Opt");
+    for (const auto& option : choices) {
+      options->AppendNew<CPDF_String>(option.AsStringView());
+    }
+    group->SetNewFor<CPDF_Name>(
+        "V", selected_index < 0 ? ByteString("Off")
+                                : ByteString::FormatInteger(selected_index));
+    auto kids = group->SetNewFor<CPDF_Array>("Kids");
+    auto annotations =
+        ShallowCopyArray(page->GetDict()->GetArrayFor("Annots").Get());
+    const double cell_width =
+        (spec.rect.right - spec.rect.left) / choices.size();
+    for (size_t index = 0; index < choices.size(); ++index) {
+      const std::string widget_id =
+          spec.persistent_id + "/radio/" + std::to_string(index);
+      const WideString widget_name = WideString::FromUTF8(
+          ByteStringView(widget_id.data(), widget_id.size()));
+      if (AnnotationIdExists(document, widget_name)) {
+        return Fail(error, "A radio Widget NM already exists.");
+      }
+      PdfRect child_rect = spec.rect;
+      child_rect.left = spec.rect.left + cell_width * index;
+      child_rect.right = index + 1 == choices.size()
+                             ? spec.rect.right
+                             : spec.rect.left + cell_width * (index + 1);
+      const CFX_FloatRect widget_rect = ToCfxRect(child_rect);
+      if (widget_rect.left >= widget_rect.right) {
+        return Fail(error, "A radio Widget rectangle is too narrow.");
+      }
+      RetainPtr<CPDF_Dictionary> widget = NewWidget(
+          document, page, WideString(), WideString(), widget_rect,
+          spec.rotation, "Btn");
+      if (!widget) {
+        return Fail(error, "PDFium could not create an indirect radio Widget.");
+      }
+      widget->RemoveFor("FT");
+      widget->RemoveFor("T");
+      widget->RemoveFor(kFieldIdKey);
+      widget->SetNewFor<CPDF_Reference>("Parent", document, group->GetObjNum());
+      widget->SetNewFor<CPDF_String>("NM", widget_name.AsStringView());
+      widget->SetNewFor<CPDF_Name>(
+          "AS", static_cast<int>(index) == selected_index
+                    ? ByteString::FormatInteger(selected_index)
+                    : ByteString("Off"));
+      kids->AppendNew<CPDF_Reference>(document, widget->GetObjNum());
+      annotations->AppendNew<CPDF_Reference>(document, widget->GetObjNum());
+    }
+    auto fields = ShallowCopyArray(acroform->GetArrayFor("Fields").Get());
+    fields->AppendNew<CPDF_Reference>(document, group->GetObjNum());
+    acroform->SetFor("Fields", std::move(fields));
+    page->GetMutableDict()->SetFor("Annots", std::move(annotations));
+
+    CPDF_InteractiveForm created_fields(document);
+    CPDF_FormField* created = FindExactField(&created_fields, name);
+    if (!created || created->GetType() != CPDF_FormField::kRadioButton ||
+        created->CountControls() != static_cast<int>(choices.size())) {
+      return Fail(error, "PDFium could not index the new radio group.");
+    }
+    return ResetFieldAppearances(document, name, error);
   }
 
   RetainPtr<CPDF_Dictionary> widget = NewWidget(
