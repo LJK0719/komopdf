@@ -57,9 +57,19 @@ function validateCommand(request: AiRequest, command: ProposedCommand, allowedCo
     case 'pages.reorder':
       for (const pageId of command.pageIds) assert(pageIds.has(pageId), 'Page command target is not in request context');
       return;
-    case 'form.fill':
+    case 'form.fill': {
       assert(fieldIds.has(command.fieldId), 'Form command target is not in request context');
+      if (request.feature === 'form.suggest') {
+        const field = request.context.fields!.find(item => item.id === command.fieldId)!;
+        assert(field.type === 'checkbox' ? typeof command.value === 'boolean' : typeof command.value === 'string',
+          'Form suggestion value does not match the supplied field type');
+        if (field.type === 'radio' || field.type === 'choice') {
+          assert(typeof command.value === 'string' && field.options?.includes(command.value),
+            'Form suggestion value is not a supplied field option');
+        }
+      }
       return;
+    }
   }
 }
 

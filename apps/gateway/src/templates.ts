@@ -145,6 +145,13 @@ const commandSchemas: Record<string, JsonSchema> = {
   },
 };
 
+const scalarFormFillSchema: JsonSchema = {
+  type: 'OBJECT', properties: {
+    type: { type: 'STRING', enum: ['form.fill'] }, fieldId: id,
+    value: { anyOf: [{ type: 'STRING' }, { type: 'BOOLEAN' }] },
+  }, required: ['type', 'fieldId', 'value'],
+};
+
 export const SERVER_COMMAND_TYPES = Object.freeze(Object.keys(commandSchemas));
 
 const featureCommands: Partial<Record<AiFeature, ReadonlySet<string>>> = {
@@ -163,7 +170,7 @@ const featureInstructions: Record<AiFeature, string> = {
   'document.summarize': 'Summarize only the supplied evidence and attach citations for the main claims.',
   'document.translate': 'Translate every supplied evidence block, retaining each evidence ID.',
   'document.extract': 'Extract only fields supported by the supplied evidence. Each extracted value must include citations, with exact quotes when practical.',
-  'form.suggest': 'Suggest form values only for supplied field IDs, using only the form.fill command when it is available.',
+  'form.suggest': 'Suggest form values only for supplied field IDs using form.fill: text, radio and single-choice values must be strings (never one-item arrays); checkbox values must be booleans. Radio and choice values must exactly match a supplied option.',
   'blocks.organize': 'Propose layout changes only for supplied page/object IDs and only through the explicitly available command types.',
   'image.explain': 'Explain the supplied local image using only visible image content and supplied evidence. Do not claim facts that are not visible or evidenced.',
 };
@@ -189,8 +196,9 @@ export type PreparedInput = {
   expectedKind: (typeof expectedKind)[AiFeature];
 };
 
-function commandPlanSchema(allowedCommands: readonly string[]): JsonSchema | null {
-  const commands = allowedCommands.map(type => commandSchemas[type]).filter((schema): schema is JsonSchema => schema !== undefined);
+function commandPlanSchema(allowedCommands: readonly string[], formSuggestion = false): JsonSchema | null {
+  const commands = allowedCommands.map(type => formSuggestion && type === 'form.fill'
+    ? scalarFormFillSchema : commandSchemas[type]).filter((schema): schema is JsonSchema => schema !== undefined);
   if (commands.length === 0) return null;
   return {
     type: 'OBJECT',
@@ -204,12 +212,12 @@ function commandPlanSchema(allowedCommands: readonly string[]): JsonSchema | nul
   };
 }
 
-function schemaFor(kind: PreparedInput['expectedKind'], allowedCommands: readonly string[]): JsonSchema {
+function schemaFor(kind: PreparedInput['expectedKind'], allowedCommands: readonly string[], feature: AiFeature): JsonSchema {
   const expected = kind === 'answer' ? answerSchema
     : kind === 'textProposal' ? textProposalSchema
       : kind === 'translation' ? translationSchema
         : kind === 'extraction' ? extractionSchema
-          : commandPlanSchema(allowedCommands);
+          : commandPlanSchema(allowedCommands, feature === 'form.suggest');
   if (!expected) return clarificationSchema;
   return { anyOf: [expected, clarificationSchema] };
 }
@@ -262,7 +270,7 @@ export function prepareProviderInput(request: AiRequest, maxOutputTokens: number
         'Return exactly one JSON object matching the response schema. Never wrap it in Markdown.',
       ].join('\n'),
       parts,
-      responseSchema: schemaFor(kind, allowedCommands),
+      responseSchema: schemaFor(kind, allowedCommands, request.feature),
       maxOutputTokens,
     },
     allowedCommands: new Set(allowedCommands),
