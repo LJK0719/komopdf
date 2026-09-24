@@ -54,7 +54,8 @@ if ! id -u pdf-editor >/dev/null 2>&1; then
   useradd --system --no-create-home --user-group --shell /usr/sbin/nologin pdf-editor
 fi
 
-mkdir -p "${CONFIG_DIR}" "${CREDENTIAL_DIR}" "${RELEASES_DIR}"
+mkdir -p "${CONFIG_DIR}" "${RELEASES_DIR}" "${BASE_DIR}/tmp"
+install -d -m 0700 "${CREDENTIAL_DIR}"
 
 # --- Pre-flight Check 3: Strictly Required Credentials ---
 if [ ! -f "${CREDENTIAL_FILE}" ]; then
@@ -81,8 +82,8 @@ if [ -L "${CURRENT_LINK}" ]; then
 fi
 
 # Backup existing configs if they exist
-SERVICE_BACKUP="/tmp/${SERVICE_NAME}.service.bak.$$"
-NGINX_BACKUP="/tmp/komopdf.nginx.conf.bak.$$"
+SERVICE_BACKUP="${BASE_DIR}/tmp/${SERVICE_NAME}.service.bak.$$"
+NGINX_BACKUP="${BASE_DIR}/tmp/komopdf.nginx.conf.bak.$$"
 [ -f "${SERVICE_FILE}" ] && cp "${SERVICE_FILE}" "${SERVICE_BACKUP}"
 [ -f "${NGINX_CONF}" ] && cp "${NGINX_CONF}" "${NGINX_BACKUP}"
 

@@ -1,13 +1,14 @@
 # 静态站与单进程网关部署
 
-此目录是待实机验证的部署模板，不是已上线服务。VPS 只运行 Nginx 和一个 Node 24 网关，不处理 PDF、字体或 OCR。
+此目录包含网站部署配置；是否已上线以实际目标主机和域名检查为准。VPS 只运行 Nginx 和一个 Node 24 网关，不处理 PDF、字体或 OCR。
 
 ## 发布约定
 
 - 发布目录示例：`/opt/pdf-editor/releases/<version>`；`current` 指向启用版本。
 - 静态产物：`apps/web/dist`；目前是否具备下载/帮助等页面以实际构建产物为准。
 - 网关配置只使用 `apps/gateway` 内的配置样例及其实际校验 schema，不维护第二套可能不兼容的配置。
-- 启动契约：`node --max-old-space-size=256 apps/gateway/dist/cli.mjs --host 127.0.0.1 --port 8787 --config /etc/pdf-editor/gateway.config.json --credential-file %d/gemini`。网关已在开发机构建为 JS bundle；发布时带上该产物、非敏感配置和对应 Linux Fastify 生产依赖。不在 VPS 上编译 PDF 或运行 TypeScript 构建。
+- 启动契约：`/opt/pdf-editor/runtime/node --max-old-space-size=256 apps/gateway/dist/cli.mjs --host 127.0.0.1 --port 8787 --config /etc/pdf-editor/gateway.config.json --credential-file %d/gemini`。网关已在开发机构建为 JS bundle；发布时带上该产物、非敏感配置和对应 Linux Fastify 生产依赖。不在 VPS 上编译 PDF 或运行 TypeScript 构建。
+- 目标主机需将匹配的 Linux x64 Node 24 可执行文件安装到 `/opt/pdf-editor/runtime/node`，不能使用 Ubuntu 24.04 自带的 Node 18 代替。
 - 不设置项目 `.env` 的 `NODE_ENV`/`PORT`；端口由启动参数指定。
 
 ## 凭证和绑定
@@ -35,4 +36,4 @@
 4. 验证真实断开会取消上游、正常完成不会被误取消；检查代理没有请求/响应临时文件。
 5. 仅为网关日志配置 7 天保留，不擅自更改整台服务器其他服务的日志策略。
 
-未执行生产部署，也未将模板语法检查或负载检查标为已通过。
+生产部署、证书续期与容量验收分别记录；模板语法检查和健康检查不能代替负载验收。
