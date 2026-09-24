@@ -165,14 +165,18 @@ export function ObjectSelectionLayer({
   const moved = useRef(false);
   const [preview, setPreview] = useState<Preview | null>(null);
 
-  const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group' };
-  const groups = new Set(
-    page.objects
-      .filter(object => object.type === 'group' && object.locator.containerPath.length === 0)
-      .map(object => object.locator.objectIndex),
-  );
-
+  const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group', shading: 'Gradient' };
+  const groups = page.objects.filter(object => object.type === 'group')
+    .map(object => [...object.locator.containerPath, object.locator.objectIndex]);
   const selectedObjects = page.objects.filter(object => selectedIds.includes(object.id));
+  const selectedParent = selectedObjects[0]?.locator.containerPath;
+  const editingGroup = selectedParent && groups.find(path => path.length === selectedParent.length &&
+    path.every((part, index) => part === selectedParent[index]));
+  const inSelectionScope = (object: PageModel['objects'][number]) => editingGroup
+    ? object.locator.containerPath.length === editingGroup.length &&
+      editingGroup.every((part, index) => object.locator.containerPath[index] === part)
+    : !groups.some(path => path.length <= object.locator.containerPath.length &&
+      path.every((part, index) => object.locator.containerPath[index] === part));
   let bounds: SelectionBounds | null = null;
   if (selectedObjects.length > 0) {
     const minX = Math.min(...selectedObjects.map(o => o.bounds.x));
@@ -389,7 +393,7 @@ export function ObjectSelectionLayer({
               .filter(object => {
                 const b = object.bounds;
                 return (
-                  object.locator.containerPath.length === 0 &&
+                  (editingGroup ? inSelectionScope(object) : object.locator.containerPath.length === 0) &&
                   b.x < right &&
                   b.x + b.width > left &&
                   b.y < bottom &&
@@ -423,10 +427,7 @@ export function ObjectSelectionLayer({
       }}
     >
       {page.objects
-        .filter(
-          object =>
-            !object.locator.containerPath.length || !groups.has(object.locator.containerPath[0]!),
-        )
+        .filter(inSelectionScope)
         .map(object => {
           const selected = selectedIds.includes(object.id);
           const moving = preview?.type === 'move' && preview.ids.includes(object.id);
@@ -480,6 +481,12 @@ export function ObjectSelectionLayer({
               }}
               onDoubleClick={event => {
                 event.stopPropagation();
+                if (!disabled && object.type === 'group' && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+                  const path = [...object.locator.containerPath, object.locator.objectIndex];
+                  onBoxSelect(page.objects.filter(child => child.locator.containerPath.length === path.length &&
+                    path.every((part, index) => child.locator.containerPath[index] === part)).map(child => child.id));
+                  return;
+                }
                 if (
                   !disabled &&
                   object.type === 'text' &&

@@ -159,9 +159,13 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         command.newObjectIds.forEach((id, index) => {
           addId(id);
           const source = originals[index]!;
+          const containerPath = source.locator.containerPath;
+          const siblings = page.objects.filter(object => object.locator.containerPath.length === containerPath.length &&
+            object.locator.containerPath.every((part, offset) => part === containerPath[offset]));
+          const objectIndex = Math.max(-1, ...siblings.map(object => object.locator.objectIndex)) + 1;
           page.objects.push({ id, pageId: page.id, type: source.type,
             bounds: { ...source.bounds, x: source.bounds.x + command.offset.x, y: source.bounds.y + command.offset.y },
-            transform: [...source.transform], locator: { pageId: page.id, containerPath: [], objectIndex: page.objects.length } });
+            transform: [...source.transform], locator: { pageId: page.id, containerPath: [...containerPath], objectIndex } });
         });
         break;
       }
@@ -218,18 +222,64 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         });
         break;
       }
-      case 'objects.group':
+      case 'objects.group': {
         if (command.objectIds.length < 2) invalid('Select at least two objects to group');
-        for (const id of command.objectIds) {
-          const object = requirePage(context, command.pageId).objects.find(item => item.id === id);
-          if (!object || object.locator.containerPath.length || object.type === 'form' || object.type === 'group') {
-            invalid('Only top-level text, path, and image objects can be grouped');
-          }
+        const page = requirePage(context, command.pageId);
+        const members = command.objectIds.map(id => page.objects.find(object => object.id === id)!);
+        const parent = members[0]!.locator.containerPath;
+        if (members.some(object => object.locator.containerPath.length !== parent.length ||
+            object.locator.containerPath.some((part, index) => part !== parent[index]))) {
+          invalid('Group members must share the same drawing container');
         }
+        members.sort((left, right) => left.locator.objectIndex - right.locator.objectIndex);
+        const first = members[0]!.locator.objectIndex;
+        const siblings = page.objects.filter(object => object.locator.containerPath.length === parent.length &&
+          parent.every((part, index) => object.locator.containerPath[index] === part))
+          .sort((left, right) => left.locator.objectIndex - right.locator.objectIndex);
+        const firstSibling = siblings.indexOf(members[0]!);
+        if (members.some((object, index) => siblings[firstSibling + index] !== object)) invalid('Group members must be adjacent in drawing order');
+        const last = members.at(-1)!;
+        const trailingUnderline = last.type === 'text' && !last.textBlock?.isParagraph &&
+          last.textBlock?.runs.some(run => run.style.underline);
+        const memberSlots = last.locator.objectIndex - first + 1 + (trailingUnderline ? 1 : 0);
         addId(command.groupId);
+        const x = Math.min(...members.map(object => object.bounds.x));
+        const y = Math.min(...members.map(object => object.bounds.y));
+        const right = Math.max(...members.map(object => object.bounds.x + object.bounds.width));
+        const bottom = Math.max(...members.map(object => object.bounds.y + object.bounds.height));
+        page.objects = page.objects.map(object => {
+          const path = [...object.locator.containerPath, object.locator.objectIndex];
+          if (path.length <= parent.length || parent.some((part, index) => path[index] !== part)) return object;
+          const index = path[parent.length]!;
+          if (index < first) return object;
+          if (index < first + memberSlots) path.splice(parent.length, 1, first, index - first);
+          else path[parent.length] = index - memberSlots + 1;
+          return { ...object, locator: { ...object.locator, containerPath: path.slice(0, -1), objectIndex: path.at(-1)! } };
+        });
+        page.objects.push({ id: command.groupId, pageId: page.id, type: 'group',
+          bounds: { x, y, width: right - x, height: bottom - y }, transform: [1, 0, 0, 1, 0, 0],
+          locator: { pageId: page.id, containerPath: [...parent], objectIndex: first } });
         break;
+      }
       case 'objects.ungroup': {
-        if (!requirePage(context, command.pageId).objects.some(object => object.id === command.groupId && object.type === 'group')) invalid('Group does not exist');
+        const page = requirePage(context, command.pageId);
+        const group = page.objects.find(object => object.id === command.groupId && object.type === 'group');
+        if (!group || deletedObjects.has(group.id)) invalid('Group does not exist');
+        const parent = group.locator.containerPath;
+        const first = group.locator.objectIndex;
+        const children = page.objects.filter(object => object.locator.containerPath.length === parent.length + 1 &&
+          object.locator.containerPath[parent.length] === first &&
+          parent.every((part, index) => object.locator.containerPath[index] === part));
+        page.objects = page.objects.filter(object => object.id !== group.id).map(object => {
+          const path = [...object.locator.containerPath, object.locator.objectIndex];
+          if (path.length <= parent.length || parent.some((part, index) => path[index] !== part)) return object;
+          const index = path[parent.length]!;
+          if (index < first) return object;
+          if (index === first) path.splice(parent.length, 2, first + path[parent.length + 1]!);
+          else path[parent.length] = index + children.length - 1;
+          return { ...object, locator: { ...object.locator, containerPath: path.slice(0, -1), objectIndex: path.at(-1)! } };
+        });
+        deletedObjects.add(group.id);
         break;
       }
       case 'annotation.add':

@@ -3,7 +3,7 @@ import React from 'react';
 import { renderToString } from 'react-dom/server';
 import type { DocumentInfo, EngineAdapter, PageModel, EditTransaction, TextBlock } from '@pdf-editor/contracts';
 import { CommandRegistry } from '@pdf-editor/commands';
-import { TextEditPanel, resolveSelectionFormatStyle } from '../src/ui/TextEditPanel.js';
+import { TextEditPanel, resolveSelectionFormatStyle, resolveSelectionFormatRuns } from '../src/ui/TextEditPanel.js';
 import { type EditorFont } from '../src/ui/font-resources.js';
 import { packCommands, EDIT_COMMAND_STRIDE } from '../src/worker/abi3-commands.js';
 
@@ -105,6 +105,22 @@ class TestAllocator {
 }
 
 describe('TextEditPanel - Real Font Face Selection', () => {
+  it('formats mixed paragraph faces without flattening preserved posture or family', () => {
+    const block: TextBlock = { ...registeredBlock, runs: [
+      { text: 'Normal ', style: { fontId: 'liberation-sans-regular' }, sourceObjectIds: ['text-obj-1'] },
+      { text: 'italic ', style: { fontId: 'liberation-sans-italic' }, sourceObjectIds: ['text-obj-1'] },
+      { text: '中文', style: { fontId: 'noto-sans-cjk-sc-regular' }, sourceObjectIds: ['text-obj-1'] },
+    ] };
+    const formats = resolveSelectionFormatRuns({ block, range: [2, 16], fonts: mockFonts, formatWeight: 700 });
+    expect(formats.map(part => [part.range, part.style.fontId])).toEqual([
+      [[2, 7], 'liberation-sans-bold'],
+      [[7, 14], 'liberation-sans-bold-italic'],
+      [[14, 16], 'noto-sans-cjk-sc-bold'],
+    ]);
+    expect(() => resolveSelectionFormatRuns({ block, range: [0, 16], fonts: mockFonts, formatItalic: 'on' }))
+      .toThrow('No exact weight 400 italic face');
+  });
+
   beforeEach(() => {
     vi.stubGlobal('location', { href: 'http://localhost/editor/', origin: 'http://localhost' });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({

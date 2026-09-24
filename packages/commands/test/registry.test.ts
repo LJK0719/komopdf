@@ -77,6 +77,31 @@ describe('CommandRegistry & AI Plan 契约边界验证', () => {
     ]),
   };
 
+  it('accepts nested sibling grouping and follow-up edits without mutating the source snapshot', () => {
+    const memberA: EditableObject = { ...textObject, id: 'nested-a', type: 'path',
+      locator: { pageId: 'page-1', containerPath: [0], objectIndex: 0 } };
+    const memberB: EditableObject = { ...memberA, id: 'nested-b',
+      locator: { pageId: 'page-1', containerPath: [0], objectIndex: 1 } };
+    const parent: EditableObject = { ...textObject, id: 'parent-form', type: 'form' };
+    const nestedPage: PageModel = { ...page1, objects: [parent, memberA, memberB] };
+    const nestedContext: CommandContext = { ...context,
+      document: { ...baseDocument, capabilities: ['objects.group', 'objects.ungroup', 'objects.transform', 'objects.copy'] },
+      pages: new Map([['page-1', nestedPage], ['page-2', page2]]) };
+    const transaction = { id: 'nested-groups', docId: 'doc-1', baseRevision: 1, source: 'manual', commands: [
+      { type: 'objects.group', pageId: 'page-1', objectIds: ['nested-a', 'nested-b'], groupId: 'new-group' },
+      { type: 'objects.transform', pageId: 'page-1', objectIds: ['new-group'], matrix: [1, 0, 0, 1, 2, 0] },
+      { type: 'objects.ungroup', pageId: 'page-1', groupId: 'new-group' },
+      { type: 'objects.copy', pageId: 'page-1', objectIds: ['nested-a'], newObjectIds: ['copied-a'], offset: { x: 3, y: 0 } },
+      { type: 'objects.group', pageId: 'page-1', objectIds: ['nested-b', 'copied-a'], groupId: 'second-group' },
+    ] };
+    expect(validateTransaction(transaction, nestedContext).commands).toHaveLength(5);
+    expect(nestedPage.objects).toEqual([parent, memberA, memberB]);
+    expect(memberA.locator).toEqual({ pageId: 'page-1', containerPath: [0], objectIndex: 0 });
+    expect(() => validateTransaction({ ...transaction, commands: [
+      { type: 'objects.group', pageId: 'page-1', objectIds: ['parent-form', 'nested-a'], groupId: 'invalid-group' },
+    ] }, nestedContext)).toThrow('same drawing container');
+  });
+
   // 1. 旧版本拒绝
   it('旧版本拒绝: 事务 baseRevision 与当前文档版本不一致时抛出 STALE_REVISION', () => {
     const staleTx = {

@@ -318,6 +318,8 @@ void CollectDocumentToolIds(const Document& document, std::set<std::string>* ids
   }
 }
 
+#include "form_text_appearance.h"
+
 bool ApplyDocumentTool(
     const Document& document, FPDF_DOCUMENT pdf, CandidateMetadata* metadata,
     const EditCommand& command,
@@ -336,8 +338,7 @@ bool ApplyDocumentTool(
         }
         const int new_max_len = static_cast<int>(command.values[3]);
         if (new_max_len > 0) {
-          const WideString current_val = field->GetValue();
-          if (static_cast<int>(current_val.GetLength()) > new_max_len) {
+          if (Utf16Length(FormUtf8(field->GetValue())) > static_cast<uint32_t>(new_max_len)) {
             SetError("INVALID_REQUEST", "Text field current value exceeds requested maximum length.");
             return false;
           }
@@ -411,8 +412,7 @@ bool ApplyDocumentTool(
     if (field->GetType() == CPDF_FormField::kText && (command.flags == 0)) {
       const int max_len = field->GetMaxLen();
       if (max_len > 0) {
-        const WideString wide_text = WideString::FromUTF8(ByteStringView(command.text));
-        if (static_cast<int>(wide_text.GetLength()) > max_len) {
+        if (Utf16Length(command.text) > static_cast<uint32_t>(max_len)) {
           SetError("INVALID_REQUEST", "Text value exceeds field maximum length.");
           return false;
         }
@@ -423,7 +423,12 @@ bool ApplyDocumentTool(
     if (command.flags & 1U) value.checked = command.values[0] != 0;
     else if (command.flags & 2U) value.selected_values = command.ids;
     else value.text_utf8 = command.text;
-    if (!pdf_editor::FillFormField(pdf, FormUtf8(field->GetFullName()), value, &error)) {
+    const bool shaped_text = field->GetType() == CPDF_FormField::kText &&
+        command.flags == 0 && NeedsShapedFieldText(value.text_utf8);
+    const bool filled = shaped_text
+        ? FillShapedTextField(pdf, field, value.text_utf8, fonts, &error)
+        : pdf_editor::FillFormField(pdf, FormUtf8(field->GetFullName()), value, &error);
+    if (!filled) {
       SetError("UNSUPPORTED_CAPABILITY", std::move(error)); return false;
     }
     return true;
@@ -474,6 +479,14 @@ bool ApplyDocumentTool(
     }
     if (!pdf_editor::CreateFormField(pdf, page.get(), spec, &error)) {
       SetError("UNSUPPORTED_CAPABILITY", std::move(error)); return false;
+    }
+    if (!command.font_id.empty()) {
+      CPDF_InteractiveForm created(CPDFDocumentFromFPDFDocument(pdf));
+      auto* field = FindFormField(document, &created, command.target_id);
+      if (!field) { SetUnexpectedError(); return false; }
+      const auto id = WideString::FromUTF8(ByteStringView(command.font_id));
+      const_cast<CPDF_Dictionary*>(field->GetFieldDict().Get())
+          ->SetNewFor<CPDF_String>("KomoFontId", id.AsStringView());
     }
     return true;
   }

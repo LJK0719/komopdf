@@ -31,7 +31,7 @@ test('real WASM reflows adjacent text lines into a single paragraph, undoes, red
   // 4. Set Paragraph text to mixed Chinese and English with newlines, choose font noto-sans-cjk-sc-regular, and set adequate Box Width/Height (240/160)
   const reflowText = '第一行中文与English段落\n第二行内容继续Reflow混排测试';
   await paragraphSection.getByRole('textbox', { name: 'Paragraph text' }).fill(reflowText);
-  await paragraphSection.getByRole('combobox', { name: 'Font' }).selectOption('noto-sans-cjk-sc-regular');
+  await paragraphSection.getByRole('combobox', { name: 'Font', exact: true }).selectOption('noto-sans-cjk-sc-regular');
   await paragraphSection.getByRole('spinbutton', { name: 'Box Width (pt)' }).fill('240');
   await paragraphSection.getByRole('spinbutton', { name: 'Box Height (pt)' }).fill('160');
   await paragraphSection.getByRole('checkbox', { name: 'Underline paragraph' }).check();
@@ -109,7 +109,7 @@ test('real WASM formats only a logical paragraph selection and preserves it thro
   const paragraph = page.getByRole('region', { name: 'Paragraph reflow and insertion' });
   await paragraph.getByRole('button', { name: 'Use selected text' }).click();
   await paragraph.getByRole('textbox', { name: 'Paragraph text' }).fill('Alpha beta\nGamma delta');
-  await paragraph.getByRole('combobox', { name: 'Font' }).selectOption('noto-sans-cjk-sc-regular');
+  await paragraph.getByRole('combobox', { name: 'Font', exact: true }).selectOption('noto-sans-cjk-sc-regular');
   await paragraph.getByRole('spinbutton', { name: 'Box Width (pt)' }).fill('240');
   await paragraph.getByRole('spinbutton', { name: 'Box Height (pt)' }).fill('160');
   await paragraph.getByRole('button', { name: 'Preview paragraph' }).click();
@@ -151,7 +151,7 @@ test('real WASM inserts a justified paragraph and undoes it as one edit', async 
   await expect(objects).toHaveCount(2, { timeout: 60_000 });
   const paragraph = page.getByRole('region', { name: 'Paragraph reflow and insertion' });
   await paragraph.getByRole('textbox', { name: 'Paragraph text' }).fill('Many small words fit here and wrap into another line of text.');
-  await paragraph.getByRole('combobox', { name: 'Font' }).selectOption('liberation-sans-regular');
+  await paragraph.getByRole('combobox', { name: 'Font', exact: true }).selectOption('liberation-sans-regular');
   await paragraph.getByRole('spinbutton', { name: 'Box Width (pt)' }).fill('150');
   await paragraph.getByRole('spinbutton', { name: 'Box Height (pt)' }).fill('170');
   await paragraph.getByRole('combobox', { name: 'Alignment' }).selectOption('justify');
@@ -184,6 +184,54 @@ test('real WASM inserts text using the exact bold italic font face', async ({ pa
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.toString('latin1')).toContain('LiberationSans-BoldItalic');
+});
+
+test('mixed paragraph weight preserves italic runs in one undo transaction', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'mixed-faces.pdf', mimeType: 'application/pdf', buffer: syntheticParagraphPdf() });
+  const objects = page.locator('.object-hitbox[data-object-type="text"]');
+  await expect(objects).toHaveCount(2, { timeout: 60_000 });
+  const paragraph = page.getByRole('region', { name: 'Paragraph reflow and insertion' });
+  await paragraph.getByRole('textbox', { name: 'Paragraph text' }).fill('Alpha beta');
+  await paragraph.getByRole('combobox', { name: 'Font', exact: true }).selectOption('liberation-sans-regular');
+  await paragraph.getByRole('button', { name: 'Preview paragraph' }).click();
+  await expect(paragraph.getByText('Fits paragraph bounds', { exact: true })).toBeVisible();
+  await paragraph.getByRole('button', { name: 'Insert paragraph' }).click();
+  await expect(objects).toHaveCount(3);
+  await objects.last().click();
+  const editor = page.getByRole('region', { name: 'Manual text editing' });
+  const original = editor.getByRole('textbox', { name: 'Original text', exact: true });
+  await expect(original).toHaveValue('Alpha beta');
+  await original.focus();
+  await original.press('ControlOrMeta+Home');
+  for (let index = 0; index < 6; ++index) await original.press('ArrowRight');
+  for (let index = 0; index < 4; ++index) await original.press('Shift+ArrowRight');
+  const format = editor.getByRole('group', { name: 'Format selected text' });
+  await format.getByRole('combobox', { name: 'Selection posture' }).selectOption('on');
+  await format.getByRole('button', { name: 'Apply selection format' }).click();
+  await expect(format.getByRole('combobox', { name: 'Selection posture' })).toHaveValue('');
+  await original.focus();
+  await original.press('ControlOrMeta+a');
+  await format.getByRole('combobox', { name: 'Selection weight' }).selectOption('700');
+  await format.getByRole('button', { name: 'Apply selection format' }).click();
+  await expect(format.getByRole('combobox', { name: 'Selection weight' })).toHaveValue('');
+  await expect(editor.locator('.error-text')).toHaveCount(0);
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const saved = await readFile((await (await download).path())!);
+  expect(saved.toString('latin1')).toContain('LiberationSans-BoldItalic');
+  expect(saved.toString('latin1')).toContain('LiberationSans-Bold');
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(original).toHaveValue('Alpha beta');
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  const reopen = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await reopen).setFiles({ name: 'mixed-saved.pdf', mimeType: 'application/pdf', buffer: saved });
+  await expect(objects).toHaveCount(3);
+  await objects.last().click();
+  await expect(original).toHaveValue('Alpha beta');
 });
 
 function syntheticParagraphPdf(pageAttributes = '/MediaBox [0 0 400 400]'): Buffer {

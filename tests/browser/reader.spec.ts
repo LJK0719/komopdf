@@ -589,7 +589,7 @@ test('internal PDF link click navigates to target page and ignores unsupported e
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });
 
-test('deleting a page targeted by a surviving PDF link leaves the document unchanged', async ({ page }) => {
+test('deleting a linked page removes dangling navigation and undo restores it', async ({ page }) => {
   await page.goto('/editor/');
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
@@ -598,8 +598,10 @@ test('deleting a page targeted by a surviving PDF link leaves the document uncha
   await page.getByRole('button', { name: 'Open page 2' }).click();
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Delete page' }).click();
+  await expect(page.locator('.page-chip')).toHaveCount(1);
+  await expect(page.locator('.pdf-link-annotation')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
   await expect(page.locator('.page-chip')).toHaveCount(2);
-  await expect(page.getByText('Deleting pages referenced by surviving link annotations is not supported.')).toBeVisible();
   await page.getByRole('button', { name: 'Open page 1' }).click();
   await expect(page.getByRole('link', { name: 'Go to page 2' })).toBeVisible();
 });
