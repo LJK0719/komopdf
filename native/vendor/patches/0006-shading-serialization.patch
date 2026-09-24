@@ -1,0 +1,163 @@
+--- a/core/fpdfapi/page/cpdf_shadingobject.h
++++ b/core/fpdfapi/page/cpdf_shadingobject.h
+@@ -10,6 +10,7 @@
+ #include "core/fpdfapi/page/cpdf_pageobject.h"
++#include "core/fpdfapi/page/cpdf_shadingpattern.h"
+ #include "core/fxcrt/fx_coordinates.h"
+ #include "core/fxcrt/retain_ptr.h"
+
+ class CPDF_ShadingPattern;
+
+@@ -30,6 +31,7 @@
+   void CalcBoundingBox();
+ 
+   const CPDF_ShadingPattern* pattern() const { return shading_.Get(); }
++  RetainPtr<CPDF_ShadingPattern> GetPattern() const { return shading_; }
+   const CFX_Matrix& matrix() const { return matrix_; }
+ 
+  private:
+--- a/core/fpdfapi/page/cpdf_streamcontentparser.cpp
++++ b/core/fpdfapi/page/cpdf_streamcontentparser.cpp
+@@ -1161,7 +1161,8 @@
+ }
+ 
+ void CPDF_StreamContentParser::Handle_ShadeFill() {
+-  RetainPtr<CPDF_ShadingPattern> pShading = FindShading(GetString(0));
++  const ByteString shading_name = GetString(0);
++  RetainPtr<CPDF_ShadingPattern> pShading = FindShading(shading_name);
+   if (!pShading) {
+     return;
+   }
+@@ -1181,6 +1182,7 @@
+     bbox.Intersect(GetShadingBBox(pShading.Get(), pObj->matrix()));
+   }
+   pObj->SetRect(bbox);
++  pObj->SetResourceName(shading_name);
+   object_holder_->AppendPageObject(std::move(pObj));
+ }
+ 
+--- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
++++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.h
+@@ -26,6 +26,7 @@
+ class CPDF_PageObjectHolder;
+ class CPDF_Path;
+ class CPDF_PathObject;
++class CPDF_ShadingObject;
+ class CPDF_TextObject;
+ 
+ class CPDF_PageContentGenerator {
+@@ -50,6 +51,8 @@
+   void ProcessGraphics(fxcrt::ostringstream* buf, CPDF_PageObject* pPageObj);
+   void ProcessDefaultGraphics(fxcrt::ostringstream* buf);
+   void ProcessText(fxcrt::ostringstream* buf, CPDF_TextObject* pTextObj);
++  void ProcessShading(fxcrt::ostringstream* buf,
++                      CPDF_ShadingObject* pShadingObj);
+   ByteString GetOrCreateDefaultGraphics() const;
+   ByteString RealizeResource(const CPDF_Object* pResource,
+                              ByteStringView type) const;
+--- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
++++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
+@@ -29,6 +29,8 @@
+ #include "core/fpdfapi/page/cpdf_page.h"
+ #include "core/fpdfapi/page/cpdf_path.h"
+ #include "core/fpdfapi/page/cpdf_pathobject.h"
++#include "core/fpdfapi/page/cpdf_shadingobject.h"
++#include "core/fpdfapi/page/cpdf_shadingpattern.h"
+ #include "core/fpdfapi/page/cpdf_textobject.h"
+ #include "core/fpdfapi/parser/cpdf_array.h"
+ #include "core/fpdfapi/parser/cpdf_dictionary.h"
+@@ -53,8 +55,7 @@
+ // TODO(thestig): Remove/restore other unused resource types:
+ // - ColorSpace
+ // - Pattern
+-// - Shading
+-constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "XObject"};
++constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "Shading", "XObject"};
+ 
+ // Key: The resource type.
+ // Value: The resource names of a given type.
+@@ -97,6 +98,7 @@
+       case CPDF_PageObject::Type::kPath:
+         break;
+       case CPDF_PageObject::Type::kShading:
++        seen_resources["Shading"].insert(resource_name);
+         break;
+     }
+   }
+@@ -676,6 +678,8 @@
+     ProcessPath(buf, pPathObj);
+   } else if (CPDF_TextObject* pTextObj = pPageObj->AsText()) {
+     ProcessText(buf, pTextObj);
++  } else if (CPDF_ShadingObject* pShadingObj = pPageObj->AsShading()) {
++    ProcessShading(buf, pShadingObj);
+   }
+   pPageObj->SetDirty(false);
+ }
+@@ -747,6 +751,67 @@
+   }
+ 
+   *buf << "/" << PDF_NameEncode(name) << " Do";
++  EndProcessGraphics(*buf);
++}
++
++void CPDF_PageContentGenerator::ProcessShading(
++    fxcrt::ostringstream* buf,
++    CPDF_ShadingObject* pShadingObj) {
++  RetainPtr<CPDF_ShadingPattern> pattern = pShadingObj->GetPattern();
++  if (!pattern) {
++    return;
++  }
++  RetainPtr<const CPDF_Object> pShadingObj_raw = pattern->GetShadingObject();
++  if (!pShadingObj_raw) {
++    return;
++  }
++
++  RetainPtr<CPDF_Object> indirect_obj;
++  const CPDF_Object* resource_obj = pShadingObj_raw.Get();
++  if (resource_obj->IsInline()) {
++    indirect_obj = resource_obj->Clone();
++    document_->AddIndirectObject(indirect_obj);
++    resource_obj = indirect_obj.Get();
++  }
++
++  ByteString name;
++  RetainPtr<const CPDF_Dictionary> shading_dict;
++  if (obj_holder_->GetResources()) {
++    shading_dict = obj_holder_->GetMutableResources()->GetDictFor("Shading");
++  }
++  const ByteString& existing_name = pShadingObj->GetResourceName();
++  if (shading_dict && !existing_name.IsEmpty()) {
++    RetainPtr<const CPDF_Object> existing_obj =
++        shading_dict->GetDirectObjectFor(existing_name.AsStringView());
++    if (existing_obj && (existing_obj == resource_obj ||
++                         existing_obj->GetObjNum() == resource_obj->GetObjNum())) {
++      name = existing_name;
++    }
++  }
++  if (name.IsEmpty() && shading_dict) {
++    CPDF_DictionaryLocker locker(shading_dict.Get());
++    for (const auto& it : locker) {
++      RetainPtr<const CPDF_Object> direct = it.second->GetDirect();
++      if (direct && direct->GetObjNum() == resource_obj->GetObjNum()) {
++        name = it.first;
++        pShadingObj->SetResourceName(name);
++        break;
++      }
++    }
++  }
++  if (name.IsEmpty()) {
++    name = RealizeResource(resource_obj, "Shading");
++    pShadingObj->SetResourceName(name);
++  }
++
++  ProcessGraphics(buf, pShadingObj);
++
++  const CFX_Matrix& matrix = pShadingObj->matrix();
++  if (!matrix.IsIdentity()) {
++    WriteMatrix(*buf, matrix) << " cm ";
++  }
++
++  *buf << "/" << PDF_NameEncode(name) << " sh";
+   EndProcessGraphics(*buf);
+ }
+ 

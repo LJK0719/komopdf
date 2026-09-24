@@ -15,7 +15,8 @@ API = ROOT / 'native/pdf-core/api'
 FONT_PATCH = ROOT / 'native/vendor/patches/0003-opentype-font-subsetting.patch'
 FONT_CODE_PATCH = ROOT / 'native/vendor/patches/0004-font-code-mapping.patch'
 TEXT_SPACING_PATCH = ROOT / 'native/vendor/patches/0005-text-spacing.patch'
-CORE_PATCHES = (FONT_PATCH, FONT_CODE_PATCH, TEXT_SPACING_PATCH)
+SHADING_PATCH = ROOT / 'native/vendor/patches/0006-shading-serialization.patch'
+CORE_PATCHES = (FONT_PATCH, FONT_CODE_PATCH, TEXT_SPACING_PATCH, SHADING_PATCH)
 spec = importlib.util.spec_from_file_location('native_build', Path(__file__).with_name('prepare-native.py'))
 native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
@@ -51,6 +52,7 @@ def copy_api(source):
         ('core/fpdfapi/edit/cpdf_fontsubsetter.cpp', 'Read either representation without relabeling live font descriptors.', FONT_PATCH),
         ('core/fpdfapi/edit/cpdf_fontsubsetter.cpp', 'candidate.char_code_to_width[width_code]', FONT_CODE_PATCH),
         ('core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp', 'Preserve spacing when regenerating or splitting a text object.', TEXT_SPACING_PATCH),
+        ('core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp', 'void CPDF_PageContentGenerator::ProcessShading(', SHADING_PATCH),
     ):
         if marker not in (source / relative).read_text(encoding='utf-8'):
             subprocess.run(['git', 'apply', '--check', str(patch)], cwd=source, check=True)

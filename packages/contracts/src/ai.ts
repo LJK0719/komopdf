@@ -57,7 +57,7 @@ export const aiRequestSchema = z.object({
     evidence: z.array(evidenceBlockSchema),
     // 全文内容不在页面操作请求里发送；目标只含已授权的本地元数据。
     pages: z.array(z.object({ id: idSchema, pageNumber: z.number().int().positive() }).strict()).optional(),
-    objects: z.array(z.object({ id: idSchema, pageId: idSchema, type: z.enum(['text', 'image', 'path', 'form', 'group']), blockId: idSchema.optional(), style: textStyleSchema.optional() }).strict()).optional(),
+    objects: z.array(z.object({ id: idSchema, pageId: idSchema, type: z.enum(['text', 'image', 'path', 'form', 'group', 'shading']), blockId: idSchema.optional(), style: textStyleSchema.optional() }).strict()).optional(),
     fields: z.array(z.object({ id: idSchema, name: z.string(), type: z.enum(['text', 'checkbox', 'radio', 'choice']), options: z.array(z.string()).optional() }).strict()).optional(),
     availableCommands: z.array(z.string().min(1).max(80)).optional(),
     availableFontIds: z.array(idSchema).optional(),

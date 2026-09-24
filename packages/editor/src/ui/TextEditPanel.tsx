@@ -215,10 +215,10 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
   };
 
   const formatSelection = async (): Promise<void> => {
-    if (!document || !page || !block || (selectedObject?.locator.containerPath.length && !wholeBlock) || applying || !formatDirty) return;
+    if (!document || !page || !block || applying || !formatDirty) return;
     setApplying(true); onBusyChange?.(true); setError('');
     try {
-      const { style, resolvedFontId } = resolveSelectionFormatStyle({
+      const formats = resolveSelectionFormatRuns({
         block,
         range,
         fonts,
@@ -232,11 +232,13 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
       });
       const transaction: EditTransaction = {
         id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision, source: 'manual',
-        commands: [{ type: 'text.style', pageId: page.id, blockIds: [block.id], range, style }],
+        commands: formats.map(({ range: part, style }) => ({
+          type: 'text.style', pageId: page.id, blockIds: [block.id], range: part, style,
+        })),
       };
       const registry = new CommandRegistry(engine);
-      const context = { document, pages: new Map([[page.id, page]]),
-        ...(resolvedFontId ? { fontIds: new Set([resolvedFontId]) } : {}) };
+      const fontIds = new Set(formats.flatMap(({ resolvedFontId }) => resolvedFontId ? [resolvedFontId] : []));
+      const context = { document, pages: new Map([[page.id, page]]), fontIds };
       await engine.previewTransaction(transaction);
       await onCommitted(await registry.execute(transaction, context));
       clearFormat();
@@ -380,10 +382,10 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
         </div>
       );
     })()}
-    {document?.capabilities.includes('text.style') && <fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId) || (Boolean(selectedObject?.locator.containerPath.length) && !wholeBlock)}>
+    {document?.capabilities.includes('text.style') && <fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId)}>
       <legend>Format selected text</legend>
       <p>{selectedObject?.locator.containerPath.length
-        ? 'Nested Form text supports whole-block formatting only; range formatting remains unavailable.'
+        ? 'Format selected characters inside this Form instance. Other shared instances stay unchanged; changes must fit the parent clipping bounds.'
         : block.isParagraph
           ? 'Format the selected characters in this logical paragraph. The native preview rejects changes that overflow its box.'
           : 'Applies only to the selected characters. Blank fields preserve existing formatting. Font or size changes move the remaining text on this line; they do not wrap the paragraph.'}</p>
@@ -419,10 +421,10 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
       <label>Selection font size<input type="number" min="0.1" max="1000" step="0.1" value={formatSize} onChange={event => setFormatSize(event.target.value)} placeholder="Preserve size" /></label>
       <label>Selection color<input value={formatColor} onChange={event => setFormatColor(event.target.value)} placeholder="#RRGGBB" /></label>
       <label>Selection character spacing<input type="number" step="0.1" value={formatSpacing} onChange={event => setFormatSpacing(event.target.value)} placeholder="Preserve spacing" /></label>
-      {block.isParagraph && <label>Selection underline<select value={formatUnderline}
+      <label>Selection underline<select value={formatUnderline}
         onChange={event => setFormatUnderline(event.target.value as '' | 'on' | 'off')}>
         <option value="">Preserve underline</option><option value="on">Underline</option><option value="off">Remove underline</option>
-      </select></label>}
+      </select></label>
       <button type="button" disabled={!formatDirty} onClick={() => void formatSelection()}>Apply selection format</button>
     </fieldset>}
     {fontError ? <p role="alert">{fontError}; original font remains available.</p> : null}
@@ -531,6 +533,30 @@ export type SelectionFormatOptions = {
   formatUnderline?: '' | 'on' | 'off';
 };
 
+export function resolveSelectionFormatRuns(options: SelectionFormatOptions): {
+  range: TextRange; style: TextStyle; resolvedFontId?: string;
+}[] {
+  const { block, range, fonts } = options;
+  const changingFace = (options.formatWeight !== undefined && options.formatWeight !== '') ||
+    (options.formatItalic !== undefined && options.formatItalic !== '');
+  if (!block.isParagraph || options.formatFontId || !changingFace ||
+      findSelectionFontInfo(block, range, fonts)) {
+    return [{ range, ...resolveSelectionFormatStyle(options) }];
+  }
+  let offset = 0;
+  const formats: { range: TextRange; style: TextStyle; resolvedFontId?: string }[] = [];
+  for (const run of block.runs) {
+    const start = Math.max(range[0], offset);
+    offset += run.text.length;
+    const end = Math.min(range[1], offset);
+    if (start >= end) continue;
+    const part: TextRange = [start, end];
+    formats.push({ range: part, ...resolveSelectionFormatStyle({ ...options, range: part }) });
+  }
+  if (!formats.length) throw new EngineError('INVALID_REQUEST', 'Select text to format');
+  return formats;
+}
+
 export function resolveSelectionFormatStyle({
   block,
   range,
@@ -596,7 +622,7 @@ export function resolveSelectionFormatStyle({
   if (resolvedFontId) style.fontId = resolvedFontId;
   if (formatSize) style.fontSize = Number(formatSize);
   if (formatSpacing) style.characterSpacing = Number(formatSpacing);
-  if (block.isParagraph && formatUnderline) style.underline = formatUnderline === 'on';
+  if (formatUnderline) style.underline = formatUnderline === 'on';
   if (formatColor) {
     if (!/^#[0-9a-f]{6}$/i.test(formatColor)) throw new EngineError('INVALID_REQUEST', 'Color must use #RRGGBB');
     style.color = [1, 3, 5].map(offset => parseInt(formatColor.slice(offset, offset + 2), 16) / 255) as [number, number, number];

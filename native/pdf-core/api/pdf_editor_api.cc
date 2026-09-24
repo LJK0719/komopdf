@@ -47,6 +47,8 @@
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/page/cpdf_path.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
+#include "core/fpdfapi/page/cpdf_shadingobject.h"
+#include "core/fpdfapi/page/cpdf_shadingpattern.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -80,6 +82,8 @@
 #include "public/fpdf_transformpage.h"
 #include "public/fpdfview.h"
 #include "unicode/ubrk.h"
+#include "unicode/uchar.h"
+#include "page_structure.h"
 
 namespace {
 
@@ -1063,6 +1067,26 @@ std::string GetTextForObject(FPDF_PAGEOBJECT object, FPDF_TEXTPAGE text_page) {
   return Utf16ToUtf8(buffer, buffer.size());
 }
 
+bool HasObjectMark(FPDF_PAGEOBJECT object, const char* name) {
+  for (int index = 0; index < FPDFPageObj_CountMarks(object); ++index) {
+    const auto* mark = CPDFContentMarkItemFromFPDFPageObjectMark(FPDFPageObj_GetMark(object, index));
+    if (mark && mark->GetName() == name) return true;
+  }
+  return false;
+}
+
+bool SetTextUnderline(FPDF_PAGEOBJECT object, bool enabled) {
+  for (int index = FPDFPageObj_CountMarks(object) - 1; index >= 0; --index) {
+    auto mark = FPDFPageObj_GetMark(object, index);
+    const auto* item = CPDFContentMarkItemFromFPDFPageObjectMark(mark);
+    if (item && item->GetName() == "KomoUnderline" && !FPDFPageObj_RemoveMark(object, mark))
+      return false;
+  }
+  if (enabled && !FPDFPageObj_AddMark(object, "KomoUnderline")) return false;
+  CPDFPageObjectFromFPDFPageObject(object)->SetDirty(true);
+  return true;
+}
+
 TextStyleData GetTextStyle(FPDF_PAGEOBJECT object) {
   TextStyleData style;
   float font_size = 0;
@@ -1101,6 +1125,7 @@ TextStyleData GetTextStyle(FPDF_PAGEOBJECT object) {
       style.italic = italic_angle != 0;
     }
   }
+  if (HasObjectMark(object, "KomoUnderline")) style.underline = true;
   return style;
 }
 
@@ -1122,34 +1147,48 @@ RetainPtr<const CPDF_Dictionary> GroupMetadata(FPDF_PAGEOBJECT object) {
   const int count = form ? FPDFFormObj_CountObjects(object) : -1;
   const auto ids = dictionary ? dictionary->GetArrayFor("Ids") : nullptr;
   const auto text_ids = dictionary ? dictionary->GetArrayFor("TextIds") : nullptr;
-  return dictionary && dictionary->GetIntegerFor("Version") == 1 && count >= 2 &&
+  return dictionary && dictionary->GetIntegerFor("Version") == 1 && count >= 0 &&
          ids && text_ids && ids->size() == static_cast<size_t>(count) &&
          text_ids->size() == static_cast<size_t>(count) &&
          !dictionary->GetUnicodeTextFor("Id").IsEmpty() ? dictionary : nullptr;
 }
 
-bool RewriteGroupMetadata(FPDF_PAGEOBJECT object, const ObjectIdentity& identity) {
+bool RewriteGroupMetadata(FPDF_PAGEOBJECT object, const ObjectIdentity& identity,
+                          bool* rewritten = nullptr) {
+  if (rewritten) *rewritten = false;
   auto* native = CPDFPageObjectFromFPDFPageObject(object);
   auto* form = native ? native->AsForm() : nullptr;
-  if (!form || !GroupMetadata(object) ||
-      form->form()->GetPageObjectCount() != identity.children.size()) {
-    SetError("INVALID_REQUEST", "A copied group has inconsistent child identities.");
+  if (!form || form->form()->GetPageObjectCount() != identity.children.size()) {
+    SetError("INVALID_REQUEST", "A copied Form has inconsistent child identities.");
     return false;
   }
-  // Imported pages and copied objects may share the original Form stream.
-  form->form()->DetachStreamForEditing();
-  auto group = form->form()->GetMutableDict()->GetMutableDictFor("KomoGroup");
-  const WideString name = WideString::FromUTF8(ByteStringView(identity.id));
-  group->SetNewFor<CPDF_String>("Id", name.AsStringView());
-  auto ids = group->SetNewFor<CPDF_Array>("Ids");
-  auto text_ids = group->SetNewFor<CPDF_Array>("TextIds");
-  for (const auto& child : identity.children) {
-    const WideString id = WideString::FromUTF8(ByteStringView(child.id));
-    const WideString text_id = WideString::FromUTF8(ByteStringView(child.text_block_id));
-    ids->AppendNew<CPDF_String>(id.AsStringView());
-    text_ids->AppendNew<CPDF_String>(text_id.AsStringView());
+  bool changed = form->form()->GetDict()->KeyExist("KomoGroup");
+  for (size_t index = 0; index < identity.children.size(); ++index) {
+    auto* child = form->form()->GetPageObjectByIndex(index);
+    if (!child->AsForm()) continue;
+    bool child_changed = false;
+    if (!RewriteGroupMetadata(FPDFPageObjectFromCPDFPageObject(child),
+                              identity.children[index], &child_changed)) return false;
+    changed = changed || child_changed;
   }
+  if (!changed) return true;
+  // Each copied instance owns its group dictionaries, including nested groups.
+  form->form()->DetachStreamForEditing();
+  if (auto group = form->form()->GetMutableDict()->GetMutableDictFor("KomoGroup")) {
+    const WideString name = WideString::FromUTF8(ByteStringView(identity.id));
+    group->SetNewFor<CPDF_String>("Id", name.AsStringView());
+    auto ids = group->SetNewFor<CPDF_Array>("Ids");
+    auto text_ids = group->SetNewFor<CPDF_Array>("TextIds");
+    for (const auto& child : identity.children) {
+      const WideString id = WideString::FromUTF8(ByteStringView(child.id));
+      const WideString text_id = WideString::FromUTF8(ByteStringView(child.text_block_id));
+      ids->AppendNew<CPDF_String>(id.AsStringView());
+      text_ids->AppendNew<CPDF_String>(text_id.AsStringView());
+    }
+  }
+  CPDF_PageContentGenerator(form->form()).GenerateFormContentForEditing(form->form());
   native->SetDirty(true);
+  if (rewritten) *rewritten = true;
   return true;
 }
 
@@ -1161,20 +1200,17 @@ bool IsOcrTextObject(FPDF_PAGEOBJECT object) {
 }
 
 bool HasSupportedTextMarks(FPDF_PAGEOBJECT object) {
-  const int mark_count = FPDFPageObj_CountMarks(object);
-  if (mark_count == 0) {
-    return true;
+  bool has_actual_text = false;
+  for (int index = 0; index < FPDFPageObj_CountMarks(object); ++index) {
+    const auto* item = CPDFContentMarkItemFromFPDFPageObjectMark(FPDFPageObj_GetMark(object, index));
+    if (!item) return false;
+    if (item->GetName() == "KomoUnderline" && !item->GetParam()) continue;
+    const auto params = item->GetParam();
+    if (has_actual_text || item->GetParamType() != CPDF_ContentMarkItem::kDirectDict ||
+        !params || params->size() != 1 || !params->KeyExist("ActualText")) return false;
+    has_actual_text = true;
   }
-  if (mark_count != 1) {
-    return false;
-  }
-  FPDF_PAGEOBJECTMARK mark = FPDFPageObj_GetMark(object, 0);
-  CPDF_ContentMarkItem* item = CPDFContentMarkItemFromFPDFPageObjectMark(mark);
-  if (!item || item->GetParamType() != CPDF_ContentMarkItem::kDirectDict) {
-    return false;
-  }
-  RetainPtr<const CPDF_Dictionary> params = item->GetParam();
-  return params && params->size() == 1 && params->KeyExist("ActualText");
+  return true;
 }
 
 std::string ObjectTypeName(int type) {
@@ -1187,6 +1223,8 @@ std::string ObjectTypeName(int type) {
       return "path";
     case FPDF_PAGEOBJ_FORM:
       return "form";
+    case FPDF_PAGEOBJ_SHADING:
+      return "shading";
     default:
       return "group";
   }
@@ -1535,13 +1573,12 @@ template <typename Index>
 bool NestedFormPathIsStructurallyEditable(FPDF_PAGE page,
                                       FPDF_PAGEOBJECT leaf,
                                       const std::vector<Index>& path) {
-  if (!page || !leaf || path.size() < 2 || FPDFPageObj_CountMarks(leaf) != 0)
+  if (!page || !leaf || path.size() < 2 ||
+      (FPDFPageObj_CountMarks(leaf) != 0 &&
+       !(FPDFPageObj_CountMarks(leaf) == 1 && HasObjectMark(leaf, "KomoUnderline"))))
     return false;
   const auto* native_page = CPDFPageFromFPDFPage(page);
-  if (!native_page || native_page->GetDict()->KeyExist("StructParents") ||
-      native_page->GetDict()->KeyExist("StructParent") ||
-      native_page->GetDocument()->GetRoot()->KeyExist("StructTreeRoot"))
-    return false;
+  if (!native_page) return false;
   FPDF_PAGEOBJECT ancestor = FPDFPage_GetObject(page, static_cast<int>(path[0]));
   for (size_t depth = 1; depth < path.size(); ++depth) {
     const auto* native = CPDFPageObjectFromFPDFPageObject(ancestor);
@@ -1575,7 +1612,7 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
   if (depth > kMaxObjectDepth) {
     throw std::runtime_error("PDF object nesting is too deep");
   }
-  if (!IsActiveObject(object)) {
+  if (!IsActiveObject(object) || HasObjectMark(object, "KomoUnderlinePath")) {
     return;
   }
   if (identity.id.empty()) {
@@ -2441,29 +2478,16 @@ bool GetSupportedActualTextMark(FPDF_PAGEOBJECT object,
     SetUnexpectedError();
     return false;
   }
-  if (mark_count == 0) {
-    return true;
-  }
-  if (mark_count != 1) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Text with multiple marked-content scopes cannot be edited yet.");
+  if (!HasSupportedTextMarks(object)) {
+    SetError("UNSUPPORTED_CAPABILITY", "The text's marked-content scopes require structure remapping.");
     return false;
   }
-
-  FPDF_PAGEOBJECTMARK mark = FPDFPageObj_GetMark(object, 0);
-  CPDF_ContentMarkItem* item = CPDFContentMarkItemFromFPDFPageObjectMark(mark);
-  if (!item || item->GetParamType() != CPDF_ContentMarkItem::kDirectDict) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Only a direct single ActualText mark is supported.");
-    return false;
+  for (int index = 0; index < mark_count; ++index) {
+    auto mark = FPDFPageObj_GetMark(object, index);
+    const auto* item = CPDFContentMarkItemFromFPDFPageObjectMark(mark);
+    if (item->GetParam() && item->GetParam()->KeyExist("ActualText"))
+      *actual_text_mark = mark;
   }
-  RetainPtr<const CPDF_Dictionary> params = item->GetParam();
-  if (!params || params->size() != 1 || !params->KeyExist("ActualText")) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Only a direct single ActualText mark is supported.");
-    return false;
-  }
-  *actual_text_mark = mark;
   return true;
 }
 
@@ -3113,6 +3137,11 @@ bool ApplyStyleToText(
   } else if (command.flags & (2U | 8U)) {
     text->SetTextMatrix(text->GetTextMatrix());
   }
+  if ((command.flags & kTextStyleUnderlineFlag) &&
+      !SetTextUnderline(object, command.values[5] != 0)) {
+    SetError("CORE_UNAVAILABLE", "The text underline state could not be updated.");
+    return false;
+  }
   text->SetDirty(true);
   return true;
 }
@@ -3179,8 +3208,14 @@ bool ApplyTextRangeStyle(
     SetError("UNSUPPORTED_CAPABILITY", "Vertical range layout is not connected yet.");
     return false;
   }
-  auto& identities = metadata->pages[page_index].objects;
-  const ObjectIdentity original_identity = identities[target.path[0]];
+  auto* siblings = &metadata->pages[page_index].objects;
+  CPDF_PageObjectHolder* parent_holder = CPDFPageFromFPDFPage(page);
+  for (size_t depth = 0; depth + 1 < target.path.size(); ++depth) {
+    siblings = &(*siblings)[target.path[depth]].children;
+    parent_holder = parent_holder->GetPageObjectByIndex(target.path[depth])->AsForm()->form();
+  }
+  auto& identities = *siblings;
+  const ObjectIdentity original_identity = identities[target.path.back()];
   const std::string seed = command.transaction_id + ":style:" +
       std::to_string(command.transaction_index) + ":" + original_identity.id;
   std::vector<std::unique_ptr<CPDF_TextObject>> pieces;
@@ -3211,7 +3246,10 @@ bool ApplyTextRangeStyle(
     if (original_mark) {
       const auto* original_item = CPDFContentMarkItemFromFPDFPageObjectMark(original_mark);
       // A cloned mark may share its dictionary; detach before updating ActualText.
-      if (!FPDFPageObj_RemoveMark(handle, FPDFPageObj_GetMark(handle, 0))) return false;
+      int mark_index = 0;
+      while (mark_index < FPDFPageObj_CountMarks(target.object) &&
+             FPDFPageObj_GetMark(target.object, mark_index) != original_mark) ++mark_index;
+      if (!FPDFPageObj_RemoveMark(handle, FPDFPageObj_GetMark(handle, mark_index))) return false;
       FPDF_PAGEOBJECTMARK mark = FPDFPageObj_AddMark(handle, original_item->GetName().c_str());
       auto* item = CPDFContentMarkItemFromFPDFPageObjectMark(mark);
       if (!item) return false;
@@ -3232,6 +3270,7 @@ bool ApplyTextRangeStyle(
     matrix.f = origin.y;
     piece->SetTextMatrix(matrix);
     piece->SetDirty(true);
+    if (!NestedObjectFitsForm(page, handle, target.path)) return false;
     ObjectIdentity identity = original_identity;
     if (!pieces.empty()) {
       identity.id = GeneratedObjectId(document, seed, part);
@@ -3250,20 +3289,22 @@ bool ApplyTextRangeStyle(
     pieces.push_back(std::move(piece));
     piece_ids.push_back(std::move(identity));
   }
-  CPDF_Page* native_page = CPDFPageFromFPDFPage(page);
-  const size_t object_index = target.path[0];
-  if (!native_page->ErasePageObjectAtIndex(object_index)) {
+  const size_t object_index = target.path.back();
+  if (!parent_holder->ErasePageObjectAtIndex(object_index)) {
     SetError("CORE_UNAVAILABLE", "The formatted text could not be replaced.");
     return false;
   }
   identities.erase(identities.begin() + object_index);
   for (size_t index = 0; index < pieces.size(); ++index) {
-    if (!native_page->InsertPageObjectAtIndex(object_index + index, std::move(pieces[index]))) {
+    if (!parent_holder->InsertPageObjectAtIndex(object_index + index, std::move(pieces[index]))) {
       SetError("CORE_UNAVAILABLE", "A formatted text run could not be inserted.");
       return false;
     }
   }
   identities.insert(identities.begin() + object_index, piece_ids.begin(), piece_ids.end());
+  if (target.path.size() > 1 && !RewriteGroupMetadata(
+          FPDFPage_GetObject(page, static_cast<int>(target.path.front())),
+          metadata->pages[page_index].objects[target.path.front()])) return false;
   return true;
 }
 
@@ -3292,12 +3333,7 @@ bool ApplyTextStyle(
                                target, command, resources)) return false;
       continue;
     }
-    if (command.flags & kTextStyleUnderlineFlag) {
-      SetError("UNSUPPORTED_CAPABILITY", "Underlining a regular TextObject is not implemented.");
-      return false;
-    }
-    if (nested && ((command.flags & kTextStyleRangeFlag) ||
-                   !NestedFormPathIsStructurallyEditable(page.get(), target.object, target.path))) {
+    if (nested && !NestedFormPathIsStructurallyEditable(page.get(), target.object, target.path)) {
       SetError("UNSUPPORTED_CAPABILITY",
                "Nested marked/tagged text and nested range formatting cannot be rewritten safely.");
       return false;
@@ -3326,7 +3362,8 @@ bool ApplyTextStyle(
                                 resources, font_cache)) {
       return false;
     }
-    if (nested && (!NestedObjectFitsForm(page.get(), target.object, target.path) ||
+    if (nested && ((!(command.flags & kTextStyleRangeFlag) &&
+                    !NestedObjectFitsForm(page.get(), target.object, target.path)) ||
                    !GenerateEditedObjectHolder(
                        page.get(), prepared_path, "The styled Form content could not be generated.")))
       return false;
@@ -3897,13 +3934,10 @@ bool ApplyObjectsAlign(FPDF_DOCUMENT pdf,
     ObjectTarget target;
     if (!FindObjectTarget(page.get(), &metadata->pages[page_index], id,
                           false, &target)) return false;
-    if (target.path.size() != 1) {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Nested Form XObject children cannot be aligned independently.");
-      return false;
-    }
+    Matrix parent_to_pdf;
     Rect box;
-    if (!GetNormalizedObjectBounds(page.get(), target.object, &box))
+    if (!ParentFormToPdf(page.get(), target.path, &parent_to_pdf) ||
+        !GetNormalizedObjectBounds(page.get(), target.object, &box, parent_to_pdf))
       return false;
     IncludeRect(box, &initialized, &selection);
     bounds.push_back(box);
@@ -3929,7 +3963,15 @@ bool ApplyObjectsAlign(FPDF_DOCUMENT pdf,
     const Matrix move{1, 0, 0, 1,
                       axis < 3 ? distance : 0,
                       axis >= 3 ? distance : 0};
-    if (!ApplyNormalizedTransform(page.get(), target.object, move)) return false;
+    Matrix parent_to_pdf;
+    CPDF_PageObjectHolder* holder = nullptr;
+    std::optional<pdf_editor::PreparedFormPath> prepared;
+    if (!ParentFormToPdf(page.get(), target.path, &parent_to_pdf) ||
+        !PrepareObjectHolder(page.get(), target.path, &holder, &prepared) ||
+        !ApplyNormalizedTransform(page.get(), target.object, move, parent_to_pdf) ||
+        !NestedObjectFitsForm(page.get(), target.object, target.path) ||
+        !GenerateEditedObjectHolder(page.get(), prepared,
+            "The arranged Form content could not be generated.")) return false;
   }
   if (!FPDFPage_GenerateContent(page.get())) {
     SetError("CORE_UNAVAILABLE", "The aligned page could not be generated.");
@@ -3955,13 +3997,10 @@ bool ApplyObjectsDistribute(FPDF_DOCUMENT pdf,
     ObjectTarget target;
     if (!FindObjectTarget(page.get(), &metadata->pages[page_index], id,
                           false, &target)) return false;
-    if (target.path.size() != 1) {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Nested Form XObject children cannot be distributed independently.");
-      return false;
-    }
+    Matrix parent_to_pdf;
     Rect box;
-    if (!GetNormalizedObjectBounds(page.get(), target.object, &box))
+    if (!ParentFormToPdf(page.get(), target.path, &parent_to_pdf) ||
+        !GetNormalizedObjectBounds(page.get(), target.object, &box, parent_to_pdf))
       return false;
     positions.push_back({id, horizontal ? box.x + box.width / 2
                                          : box.y + box.height / 2});
@@ -3980,7 +4019,15 @@ bool ApplyObjectsDistribute(FPDF_DOCUMENT pdf,
                          positions[index].center;
     const Matrix move{1, 0, 0, 1, horizontal ? delta : 0,
                       horizontal ? 0 : delta};
-    if (!ApplyNormalizedTransform(page.get(), target.object, move)) return false;
+    Matrix parent_to_pdf;
+    CPDF_PageObjectHolder* holder = nullptr;
+    std::optional<pdf_editor::PreparedFormPath> prepared;
+    if (!ParentFormToPdf(page.get(), target.path, &parent_to_pdf) ||
+        !PrepareObjectHolder(page.get(), target.path, &holder, &prepared) ||
+        !ApplyNormalizedTransform(page.get(), target.object, move, parent_to_pdf) ||
+        !NestedObjectFitsForm(page.get(), target.object, target.path) ||
+        !GenerateEditedObjectHolder(page.get(), prepared,
+            "The arranged Form content could not be generated.")) return false;
   }
   if (!FPDFPage_GenerateContent(page.get())) {
     SetError("CORE_UNAVAILABLE", "The distributed page could not be generated.");
@@ -4002,14 +4049,6 @@ bool ApplyObjectsDelete(FPDF_DOCUMENT pdf,
     ObjectTarget target;
     if (!FindObjectTarget(page.get(), &metadata->pages[page_index], object_id,
                           false, &target)) return false;
-    for (size_t depth = 1; depth < target.path.size(); ++depth) {
-      std::vector<size_t> ancestor(target.path.begin(), target.path.begin() + depth);
-      if (GroupMetadata(ObjectAtPath(page.get(), ancestor))) {
-        SetError("UNSUPPORTED_CAPABILITY",
-                 "Ungroup persistent members before deleting them separately.");
-        return false;
-      }
-    }
     paths.push_back(std::move(target.path));
   }
   std::sort(paths.begin(), paths.end());
@@ -4027,14 +4066,27 @@ bool ApplyObjectsDelete(FPDF_DOCUMENT pdf,
     std::optional<pdf_editor::PreparedFormPath> prepared;
     if (!PrepareObjectHolder(page.get(), *it, &holder, &prepared)) return false;
     auto* object = holder->GetPageObjectByIndex(it->back());
-    if (!object || !holder->RemovePageObject(object)) {
+    if (!object) {
       SetError("CORE_UNAVAILABLE", "The page object could not be deleted.");
       return false;
+    }
+    const int mcid = object->GetContentMarks()->GetMarkedContentID();
+    if (!holder->RemovePageObject(object)) {
+      SetError("CORE_UNAVAILABLE", "The page object could not be deleted.");
+      return false;
+    }
+    if (mcid >= 0) {
+      CPDF_Document* native_doc = CPDFDocumentFromFPDFDocument(pdf);
+      CPDF_Page* native_page = CPDFPageFromFPDFPage(page.get());
+      pdf_editor::structure::CleanupDeletedObjectMcid(native_doc, native_page, mcid);
     }
     auto* identities = &metadata->pages[page_index].objects;
     for (size_t depth = 0; depth + 1 < it->size(); ++depth)
       identities = &(*identities)[(*it)[depth]].children;
     identities->erase(identities->begin() + static_cast<std::ptrdiff_t>(it->back()));
+    if (prepared && !RewriteGroupMetadata(
+            FPDFPage_GetObject(page.get(), static_cast<int>(it->front())),
+            metadata->pages[page_index].objects[it->front()])) return false;
     if (prepared && !GenerateEditedObjectHolder(
             page.get(), prepared, "The edited Form could not be generated.")) return false;
   }
@@ -4224,12 +4276,7 @@ bool ApplyPagesDelete(FPDF_DOCUMENT pdf,
     SetUnexpectedError();
     return false;
   }
-  const auto* root = native_doc->GetRoot();
-  if (root && root->KeyExist("StructTreeRoot")) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Deleting pages from a tagged PDF is not supported without structure remapping.");
-    return false;
-  }
+  MigrateAllDestinations(pdf);
 
   std::vector<size_t> indices;
   std::set<size_t> deleted_set;
@@ -4246,26 +4293,10 @@ bool ApplyPagesDelete(FPDF_DOCUMENT pdf,
     indices.push_back(*index);
   }
 
-  for (size_t index : indices) {
-    const auto page_dict = native_doc->GetPageDictionary(static_cast<int>(index));
-    if (page_dict && page_dict->KeyExist("StructParents")) {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Deleting tagged pages is not supported without structure remapping.");
-      return false;
-    }
-  }
-
-  if (OutlineTargetsDeletedPages(pdf, native_doc, deleted_set)) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Deleting pages referenced by document bookmarks is not supported.");
-    return false;
-  }
-
-  if (SurvivingPageLinksTargetDeletedPages(pdf, native_doc, metadata->pages.size(), deleted_set)) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Deleting pages referenced by surviving link annotations is not supported.");
-    return false;
-  }
+  pdf_editor::structure::PruneSurvivingLinksTargetingDeletedPages(native_doc, metadata->pages.size(), deleted_set);
+  pdf_editor::structure::PruneOutlinesTargetingDeletedPages(native_doc, deleted_set);
+  pdf_editor::structure::PruneWidgetsOnDeletedPages(native_doc, deleted_set);
+  pdf_editor::structure::PruneTaggedStructureForDeletedPages(native_doc, deleted_set);
 
   std::sort(indices.rbegin(), indices.rend());
   for (size_t index : indices) {
@@ -4404,11 +4435,6 @@ bool ValidateImportedPageFeatures(FPDF_DOCUMENT source, int page_index) {
     SetError("CORE_UNAVAILABLE", "The source PDF page could not be inspected.");
     return false;
   }
-  if (page_dict->KeyExist("StructParents")) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Tagged-PDF structure links are not imported with pages yet.");
-    return false;
-  }
   RetainPtr<const CPDF_Array> annotations = page_dict->GetArrayFor("Annots");
   if (!annotations) {
     return true;
@@ -4418,20 +4444,11 @@ bool ValidateImportedPageFeatures(FPDF_DOCUMENT source, int page_index) {
     if (!annotation) {
       continue;
     }
-    if (annotation->KeyExist("StructParent")) {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Tagged annotation structure links are not imported yet.");
-      return false;
-    }
     const ByteString subtype = annotation->GetNameFor("Subtype");
-    if (subtype == "Link") {
+    if (subtype == "Movie" || subtype == "Screen" || subtype == "RichMedia" ||
+        subtype == "3D" || subtype == "PrinterMark" || subtype == "TrapNet") {
       SetError("UNSUPPORTED_CAPABILITY",
-               "Page links are not duplicated or imported yet.");
-      return false;
-    }
-    if (subtype == "Widget") {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "AcroForm widgets are not duplicated or imported yet.");
+               "Complex media annotations are not supported for page import.");
       return false;
     }
   }
@@ -4446,25 +4463,12 @@ bool ValidateExtractablePageFeatures(FPDF_DOCUMENT source, int page_index) {
   if (!ValidateImportedPageFeatures(source, page_index)) return false;
   ScopedPage parsed(FPDF_LoadPage(source, page_index));
   if (!parsed.get()) { SetUnexpectedError(); return false; }
-  const int count = FPDFPage_CountObjects(parsed.get());
-  if (count < 0) { SetUnexpectedError(); return false; }
-  for (int index = 0; index < count; ++index) {
-    bool linked = false;
-    if (!ObjectTreeHasStructureLink(
-            CPDFPageObjectFromFPDFPageObject(FPDFPage_GetObject(parsed.get(), index)),
-            0, &linked)) return false;
-    if (linked) {
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Tagged page content cannot be extracted without structure remapping.");
-      return false;
-    }
-  }
   CPDF_Document* native = CPDFDocumentFromFPDFDocument(source);
   const auto page = native ? native->GetPageDictionary(page_index) : nullptr;
   if (!page) { SetUnexpectedError(); return false; }
-  if (page->KeyExist("StructParent") || page->KeyExist("AA")) {
+  if (page->KeyExist("AA")) {
     SetError("UNSUPPORTED_CAPABILITY",
-             "Page structure links or actions cannot be extracted safely.");
+             "Page actions cannot be extracted safely.");
     return false;
   }
   const auto annotations = page->GetArrayFor("Annots");
@@ -4473,22 +4477,14 @@ bool ValidateExtractablePageFeatures(FPDF_DOCUMENT source, int page_index) {
     return false;
   }
   if (!annotations) return true;
-  constexpr const char* kOrdinaryAnnotations[] = {
-      "Text", "FreeText", "Line", "Square", "Circle", "Polygon", "PolyLine",
-      "Highlight", "Underline", "Squiggly", "StrikeOut", "Stamp", "Caret", "Ink"};
   for (size_t index = 0; index < annotations->size(); ++index) {
     const auto annotation = annotations->GetDictAt(index);
-    const ByteString subtype = annotation ? annotation->GetNameFor("Subtype") : ByteString();
-    if (!annotation || !std::any_of(std::begin(kOrdinaryAnnotations),
-                                    std::end(kOrdinaryAnnotations),
-                                    [&](const char* allowed) { return subtype == allowed; }) ||
-        annotation->KeyExist("A") || annotation->KeyExist("AA") ||
-        annotation->KeyExist("Dest") || annotation->KeyExist("IRT") ||
-        annotation->KeyExist("Popup") || annotation->KeyExist("Parent") ||
-        (annotation->KeyExist("P") &&
-         annotation->GetDictFor("P").Get() != page.Get())) {
+    if (!annotation) continue;
+    const ByteString subtype = annotation->GetNameFor("Subtype");
+    if (subtype == "Movie" || subtype == "Screen" || subtype == "RichMedia" ||
+        subtype == "3D" || subtype == "PrinterMark" || subtype == "TrapNet") {
       SetError("UNSUPPORTED_CAPABILITY",
-               "Interactive or cross-linked annotations cannot be extracted safely.");
+               "Complex media annotations cannot be extracted safely.");
       return false;
     }
   }
@@ -4522,10 +4518,6 @@ bool AssignImportedAnnotationIds(const Document& document,
     for (size_t index = 0; index < annots->size(); ++index) {
       auto annot = annots->GetMutableDictAt(index);
       if (!annot) continue;
-      if (annot->GetNameFor("Subtype") == "Widget" || annot->KeyExist("StructParent")) {
-        SetError("UNSUPPORTED_CAPABILITY", "Widget or tagged annotation imports need structure remapping.");
-        return false;
-      }
       const std::string id = "a:" + std::to_string(document.session_id) +
           ":g:" + std::to_string(StableIdHash(new_page_ids[offset])) + ":" +
           std::to_string(index);
@@ -4574,11 +4566,6 @@ bool ApplyImportedPages(const Document& document,
     SetError("CORE_UNAVAILABLE", "The source PDF catalog is unavailable.");
     return false;
   }
-  if (!duplicate_within_document && source_root->KeyExist("Outlines")) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Importing bookmarks from another PDF is not supported yet.");
-    return false;
-  }
   const int source_page_count = FPDF_GetPageCount(source);
   std::set<std::string> requested_ids;
   for (size_t index = 0; index < source_indices.size(); ++index) {
@@ -4596,6 +4583,9 @@ bool ApplyImportedPages(const Document& document,
       return false;
     }
   }
+  // Existing numeric destinations must become page references before insertion
+  // changes the original document's page indices.
+  MigrateAllDestinations(pdf);
   if (!FPDF_ImportPagesByIndex(
           pdf, source, source_indices.data(),
           static_cast<unsigned long>(source_indices.size()),
@@ -4605,6 +4595,10 @@ bool ApplyImportedPages(const Document& document,
   }
   if (!AssignImportedAnnotationIds(document, pdf, insertion_index, new_page_ids))
     return false;
+  CPDF_Document* native_pdf = CPDFDocumentFromFPDFDocument(pdf);
+  pdf_editor::structure::ApplyImportedPageStructures(
+      native_pdf, native_source, source_indices, insertion_index,
+      duplicate_within_document);
   for (size_t offset = 0; offset < new_page_ids.size(); ++offset) {
     PageIdentity identity;
     if (!BuildGeneratedPageIdentity(document, pdf, insertion_index + offset,
@@ -4617,7 +4611,7 @@ bool ApplyImportedPages(const Document& document,
     bool rewritten_group = false;
     for (size_t index = 0; index < identity.objects.size(); ++index) {
       FPDF_PAGEOBJECT object = FPDFPage_GetObject(copied.get(), static_cast<int>(index));
-      if (GroupMetadata(object)) {
+      if (FPDFPageObj_GetType(object) == FPDF_PAGEOBJ_FORM) {
         if (!RewriteGroupMetadata(object, identity.objects[index])) return false;
         rewritten_group = true;
       }
@@ -5213,10 +5207,14 @@ std::unique_ptr<CPDF_PageObject> CloneTopLevelObject(CPDF_PageObject* source) {
       clone = std::move(form_object);
       break;
     }
-    case CPDF_PageObject::Type::kShading:
-      SetError("UNSUPPORTED_CAPABILITY",
-               "Top-level shading objects cannot be copied yet.");
-      return nullptr;
+    case CPDF_PageObject::Type::kShading: {
+      const auto* shading = source->AsShading();
+      auto copied = std::make_unique<CPDF_ShadingObject>(
+          CPDF_PageObject::kNoContentStream, shading->GetPattern(), shading->matrix());
+      CopyCommonObjectState(*source, copied.get());
+      clone = std::move(copied);
+      break;
+    }
   }
   if (!clone) {
     SetUnexpectedError();
@@ -5271,7 +5269,7 @@ bool ApplyObjectsCopy(const Document& document,
     return false;
   }
   struct PendingCopy {
-    size_t source_index = 0;
+    std::vector<size_t> source_path;
     std::unique_ptr<CPDF_PageObject> object;
     ObjectIdentity identity;
   };
@@ -5286,12 +5284,12 @@ bool ApplyObjectsCopy(const Document& document,
                           false, &source)) {
       return false;
     }
-    if (source.path.size() != 1) {
+    if (source.path.size() > 1 && !NestedFormPathIsStructurallyEditable(
+            page.get(), source.object, source.path)) {
       SetError("UNSUPPORTED_CAPABILITY",
-               "Nested Form children cannot be copied independently yet.");
+               "Copying this marked Form child requires structure remapping.");
       return false;
     }
-    const bool copying_group = GroupMetadata(source.object) != nullptr;
     if (MetadataContainsId(*metadata, new_id)) {
       SetError("INVALID_REQUEST", "A copied object ID is already in use.");
       return false;
@@ -5312,40 +5310,43 @@ bool ApplyObjectsCopy(const Document& document,
       }
       return false;
     }
-    if (copying_group &&
+    if (clone->AsForm() &&
         !RewriteGroupMetadata(FPDFPageObjectFromCPDFPageObject(clone.get()), identity))
       return false;
-    copies.push_back({source.path[0], std::move(clone), std::move(identity)});
+    copies.push_back({source.path, std::move(clone), std::move(identity)});
   }
   std::stable_sort(copies.begin(), copies.end(),
                    [](const PendingCopy& left, const PendingCopy& right) {
-                     return left.source_index < right.source_index;
+                     return left.source_path < right.source_path;
                    });
   const Matrix translation{1, 0, 0, 1, command.values[0], command.values[1]};
-  CPDF_Page* native_page = CPDFPageFromFPDFPage(page.get());
-  if (!native_page) {
-    SetUnexpectedError();
-    return false;
-  }
   for (PendingCopy& copy : copies) {
-    FPDF_PAGEOBJECT handle =
-        FPDFPageObjectFromCPDFPageObject(copy.object.get());
-    if (!ApplyNormalizedTransform(page.get(), handle, translation)) {
+    Matrix parent_to_pdf;
+    if (!ParentFormToPdf(page.get(), copy.source_path, &parent_to_pdf)) return false;
+    FPDF_PAGEOBJECT handle = FPDFPageObjectFromCPDFPageObject(copy.object.get());
+    if (!ApplyNormalizedTransform(page.get(), handle, translation, parent_to_pdf) ||
+        !NestedObjectFitsForm(page.get(), handle, copy.source_path)) return false;
+    CPDF_PageObjectHolder* holder = nullptr;
+    std::optional<pdf_editor::PreparedFormPath> prepared_path;
+    if (!PrepareObjectHolder(page.get(), copy.source_path, &holder, &prepared_path))
       return false;
-    }
-    native_page->AppendPageObject(std::move(copy.object));
-    metadata->pages[page_index].objects.push_back(std::move(copy.identity));
-  }
-  if (!FPDFPage_GenerateContent(page.get())) {
-    SetError("CORE_UNAVAILABLE",
-             "The copied page objects could not be generated.");
-    return false;
+    auto* siblings = &metadata->pages[page_index].objects;
+    for (size_t depth = 0; depth + 1 < copy.source_path.size(); ++depth)
+      siblings = &(*siblings)[copy.source_path[depth]].children;
+    holder->AppendPageObject(std::move(copy.object));
+    siblings->push_back(std::move(copy.identity));
+    if (prepared_path && !RewriteGroupMetadata(
+            FPDFPage_GetObject(page.get(), static_cast<int>(copy.source_path.front())),
+            metadata->pages[page_index].objects[copy.source_path.front()])) return false;
+    if (!GenerateEditedObjectHolder(page.get(), prepared_path,
+            "The copied page objects could not be generated.")) return false;
   }
   return true;
 }
 
 #include "document_commands.h"
 #include "group_commands.h"
+#include "text_decoration.h"
 
 bool ApplyCommand(
     const Document& document,
@@ -5468,6 +5469,11 @@ bool ApplyTransactionToPdf(
                       command_insert_layout && allow_text_insert_overflow)) {
       return false;
     }
+  }
+  std::set<std::string> decorated_pages;
+  for (const auto& command : transaction.commands) {
+    if (!command.page_id.empty() && decorated_pages.insert(command.page_id).second &&
+        !RefreshPageUnderlines(document, pdf, metadata, command.page_id)) return false;
   }
   return true;
 }
@@ -6405,12 +6411,10 @@ bool BuildExtractedPdf(Document* document,
   CPDF_Document* native = CPDFDocumentFromFPDFDocument(document->pdf);
   const CPDF_Dictionary* catalog = native ? native->GetRoot() : nullptr;
   if (!catalog) { SetUnexpectedError(); return false; }
-  for (const char* key : {"Outlines", "StructTreeRoot", "AcroForm", "Names",
-                          "Dests", "PageLabels", "OCProperties", "OpenAction",
-                          "AA", "AF", "Perms", "OutputIntents"}) {
+  for (const char* key : {"OpenAction", "AA", "AF", "Perms"}) {
     if (catalog->KeyExist(key)) {
       SetError("UNSUPPORTED_CAPABILITY",
-               "Document-level navigation, form, structure or appearance semantics cannot be extracted safely.");
+               "Document-level actions, permissions or attachments cannot be extracted safely.");
       return false;
     }
   }
@@ -6436,6 +6440,8 @@ bool BuildExtractedPdf(Document* document,
     SetError("CORE_UNAVAILABLE", "The selected pages could not be copied to a new PDF.");
     return false;
   }
+  CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(extracted.get());
+  pdf_editor::structure::ExtractStructureForSelectedPages(dest_doc, native, indices);
   *result = extracted.release();
   return true;
 }

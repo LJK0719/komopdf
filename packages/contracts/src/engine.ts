@@ -35,7 +35,7 @@ export type TextBlock = {
   isParagraph?: boolean;
 };
 export type EditableObject = {
-  id: string; pageId: string; type: 'text' | 'image' | 'path' | 'form' | 'group';
+  id: string; pageId: string; type: 'text' | 'image' | 'path' | 'form' | 'group' | 'shading';
   bounds: Rect; transform: Matrix; locator: SourceObjectLocator; textBlock?: TextBlock;
 };
 export type PageModel = { id: string; widthPt: number; heightPt: number; rotation: 0 | 90 | 180 | 270; objects: EditableObject[] };

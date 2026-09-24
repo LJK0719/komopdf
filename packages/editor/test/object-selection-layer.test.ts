@@ -39,6 +39,26 @@ const dummyRender: RenderResult = {
 };
 
 describe('ObjectSelectionLayer', () => {
+  it('exposes direct group children when editing their container without selecting ancestors twice', () => {
+    const page: PageModel = { ...dummyPage, objects: [
+      { ...dummyPage.objects[0]!, id: 'outer', type: 'group' },
+      { ...dummyPage.objects[0]!, id: 'inner', type: 'group',
+        locator: { pageId: 'page-1', containerPath: [0], objectIndex: 0 } },
+      { ...dummyPage.objects[1]!, id: 'leaf',
+        locator: { pageId: 'page-1', containerPath: [0, 0], objectIndex: 0 } },
+    ] };
+    const render = (selectedIds: string[]) => renderToString(React.createElement(ObjectSelectionLayer, {
+      page, render: dummyRender, selectedIds, disabled: false, canTransform: true,
+      onSelect: vi.fn(), onBoxSelect: vi.fn(), onEditText: vi.fn(), onMove: vi.fn(),
+    }));
+    expect(render(['outer'])).toContain('data-object-id="outer"');
+    expect(render(['outer'])).not.toContain('data-object-id="inner"');
+    expect(render(['inner'])).toContain('data-object-id="inner"');
+    expect(render(['inner'])).not.toContain('data-object-id="leaf"');
+    expect(render(['leaf'])).toContain('data-object-id="leaf"');
+    expect(render(['leaf'])).not.toContain('data-object-id="outer"');
+  });
+
   it('renders no selection box or handles when selectedIds is empty', () => {
     const html = renderToString(
       React.createElement(ObjectSelectionLayer, {

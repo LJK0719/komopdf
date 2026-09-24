@@ -545,8 +545,10 @@ bool IsCjkCluster(const std::u16string& text, uint32_t start, uint32_t end) {
 
 bool IsWordCluster(const std::u16string& text, uint32_t start, uint32_t end) {
   if (start >= end || end > text.size()) return false;
-  const auto first = static_cast<UChar32>(text[start]);
-  return first < 0xd800 || first > 0xdfff ? u_isalnum(first) : false;
+  UChar32 cp = 0;
+  int32_t offset = static_cast<int32_t>(start);
+  U16_NEXT(text.data(), offset, static_cast<int32_t>(end), cp);
+  return cp > 0 && u_isalnum(cp);
 }
 
 bool JustifyLines(const ParagraphRequest& request,
@@ -554,12 +556,6 @@ bool JustifyLines(const ParagraphRequest& request,
                   std::vector<LayoutLine>* lines,
                   std::string* error_message) {
   for (LayoutLine& line : *lines) {
-    for (const auto& run : line.shaped.visual_runs) {
-      if (run.direction != TextDirection::kLeftToRight) {
-        return Fail("Justification of right-to-left or mixed-direction lines is not supported.",
-                    error_message);
-      }
-    }
     for (const auto& glyph : line.shaped.glyphs) {
       if (glyph.y_advance != 0) {
         return Fail("Vertical text cannot be justified as a horizontal paragraph.",
@@ -573,11 +569,19 @@ bool JustifyLines(const ParagraphRequest& request,
       return glyph.cluster.end == glyph.cluster.start + 1 &&
              start < text.size() && text[start] == u' ';
     };
-    // Soft-wrap spaces remain in ActualText, but contribute no visible advance
-    // beyond the last painted glyph on the justified line.
-    for (size_t index = glyphs.size(); index > 0 && single_space(glyphs[index - 1]); --index) {
-      glyphs[index - 1].x_advance = 0;
+    uint32_t logical_content_end = line.end_utf16;
+    while (logical_content_end > line.start_utf16 &&
+           u_isspace(static_cast<UChar32>(text[logical_content_end - 1]))) {
+      --logical_content_end;
     }
+    for (auto& glyph : glyphs) {
+      const uint32_t cluster_start = line.start_utf16 + glyph.cluster.start;
+      if (cluster_start >= logical_content_end && single_space(glyph)) {
+        glyph.x_advance = 0;
+      }
+    }
+    // Only logical trailing wrap spaces lose advance. Visual-edge trimming
+    // would also erase intentional indentation on RTL or mixed-direction lines.
     std::vector<size_t> word_gaps, cjk_gaps;
     const auto has_word = [&](size_t index, bool backward) {
       while (index < glyphs.size()) {
@@ -656,7 +660,8 @@ bool JustifyLines(const ParagraphRequest& request,
 
 float AlignedX(ParagraphAlignment alignment,
                float paragraph_width,
-               float line_width) {
+               float line_width,
+               TextDirection direction = TextDirection::kLeftToRight) {
   switch (alignment) {
     case ParagraphAlignment::kLeft:
       return 0;
@@ -665,7 +670,7 @@ float AlignedX(ParagraphAlignment alignment,
     case ParagraphAlignment::kRight:
       return paragraph_width - line_width;
     case ParagraphAlignment::kJustify:
-      return 0;
+      return direction == TextDirection::kRightToLeft ? (paragraph_width - line_width) : 0;
   }
   return 0;
 }
@@ -712,7 +717,7 @@ bool PositionLines(const ParagraphRequest& request,
     const float leading = std::max(0.0f, line_step - font_height) / 2;
     line.ascent = ascent;
     line.descent = descent;
-    line.x = AlignedX(request.alignment, request.width, line.width);
+    line.x = AlignedX(request.alignment, request.width, line.width, line.shaped.base_direction);
     line.top = top;
     top += line_step;
     line.bounds_y = line.top + leading;

@@ -44,8 +44,8 @@ export default function HelpPage() {
             </p>
             <ul className="list-disc pl-5 space-y-1.5">
               <li><strong>In-Place Replacement:</strong> Select existing text blocks or characters to replace their string content while maintaining grapheme cluster boundaries and baseline alignment.</li>
-              <li><strong>Multi-Line Insertion:</strong> Insert paragraphs with automatic text wrapping, custom line height multipliers, paragraph margins, and alignment (left, center, right). Empty lines do not generate phantom PDF objects.</li>
-              <li><strong>Typography &amp; Styles:</strong> Adjust font size, fill color, character spacing, and true font weights. Italic slant and bounding box extents are calculated from raw font glyph metrics.</li>
+              <li><strong>Multi-Line Insertion:</strong> Insert paragraphs inside a text box with automatic wrapping, custom line height, and left, center, right or justified alignment. Empty lines retain their spacing without adding text glyphs.</li>
+              <li><strong>Typography &amp; Styles:</strong> Format selected characters with font size, color, spacing and vector underlines. Weight and italic use actual registered font faces, never synthetic distortion. Missing faces are reported without silently replacing the font.</li>
               <li><strong>Bundled Fonts (6 families, 18 faces):</strong> Noto Sans CJK SC (Regular/Bold), Noto Serif CJK SC (Regular/Bold), LXGW WenKai (Regular/Medium), Liberation Sans (4 styles), Liberation Serif (4 styles), and Liberation Mono (4 styles).</li>
               <li><strong>Custom Font Import:</strong> Load external TTF or OpenType/CFF files, select individual faces from TrueType Collection (.ttc) files, or query authorized browser system fonts.</li>
             </ul>
@@ -68,8 +68,8 @@ export default function HelpPage() {
               <li><strong>Rotation:</strong> Rotate selected pages by 90&deg;, 180&deg;, or 270&deg;. Existing page annotations and form fields adapt accordingly.</li>
               <li><strong>Page Reordering:</strong> Drag and drop page thumbnails to reorder document sequences in a single atomic transaction.</li>
               <li><strong>Page Insertion &amp; Duplication:</strong> Insert blank pages at any position or clone existing pages along with their vector resources.</li>
-              <li><strong>Import from External PDF:</strong> Import specific page ranges from an external PDF file into the active document. Imported pages are incorporated as native page dictionaries without rasterization.</li>
-              <li><strong>Page Deletion:</strong> Remove unneeded pages with immediate undo availability. Documents must retain at least one page.</li>
+              <li><strong>Import &amp; Extract:</strong> Copy selected pages as real PDF pages, retaining supported links, bookmarks, fields and tagged structure without rasterization. Internal links and bookmarks that target omitted pages are removed rather than left pointing at the wrong page. Field names are disambiguated when importing into an existing document.</li>
+              <li><strong>Page Deletion:</strong> Remove pages together with their annotations and fields. Incoming links and bookmarks with no surviving target are removed in the same undoable transaction. Documents must retain at least one page.</li>
             </ul>
           </CardContent>
         </Card>
@@ -90,7 +90,8 @@ export default function HelpPage() {
               <li><strong>Image Insertion:</strong> Embed PNG and JPEG images with preservation of full alpha transparency and resolution.</li>
               <li><strong>Shared Instance Isolation:</strong> Replacing an image that appears multiple times in a document automatically isolates the modified instance so other pages remain untouched.</li>
               <li><strong>Reversible Crop:</strong> Crop raster images non-destructively by adjusting clipping paths. Original image byte streams are preserved in the transaction history.</li>
-              <li><strong>Object Transformation:</strong> Move, scale, rotate, and align text and graphical objects on the canvas using direct mouse handles or numerical inputs.</li>
+              <li><strong>Object Transformation:</strong> Move, scale, rotate, align and distribute text, images, paths and gradients using mouse handles or numerical inputs. Shared Form instances are isolated before editing.</li>
+              <li><strong>Persistent Groups:</strong> Group adjacent objects without rasterizing them. Double-click a group or choose “Edit group contents” to edit its members, and use “Select parent group” to leave that level. Groups and nested groups remain editable after saving.</li>
             </ul>
           </CardContent>
         </Card>

@@ -5359,6 +5359,8 @@ var wasmImports = {
   /** @export */
   invoke_iif,
   /** @export */
+  invoke_iiff,
+  /** @export */
   invoke_iifff,
   /** @export */
   invoke_iifi,
@@ -5872,6 +5874,17 @@ function invoke_iiif(index,a1,a2,a3) {
   }
 }
 
+function invoke_iiff(index,a1,a2,a3) {
+  var sp = stackSave();
+  try {
+    return getWasmTableEntry(index)(a1,a2,a3);
+  } catch(e) {
+    stackRestore(sp);
+    if (!(e instanceof EmscriptenEH)) throw e;
+    _setThrew(1, 0);
+  }
+}
+
 function invoke_iifff(index,a1,a2,a3,a4) {
   var sp = stackSave();
   try {
@@ -6108,4 +6121,4 @@ for (const prop of Object.keys(Module)) {
 export default Module;
 
 
-export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi3-4d8c05b9a7da4d5e819c";
+export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi3-900cd41abf0e0357c426";

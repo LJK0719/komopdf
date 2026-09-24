@@ -455,7 +455,18 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       const refreshed = { ...loaded, info: latest.info };
       documentRef.current = refreshed;
       setDocument(refreshed);
-      setSelectedIds((ids) => ids.filter((id) => refreshed.page.objects.some((object) => object.id === id)));
+      setSelectedIds((ids) => {
+        const retained = ids.filter(id => refreshed.page.objects.some(object => object.id === id));
+        if (action === 'Committed' || !retained.length) return retained;
+        const selected = refreshed.page.objects.filter(object => retained.includes(object.id));
+        const path = selected[0]!.locator.containerPath;
+        if (!path.length || selected.some(object => object.locator.containerPath.length !== path.length ||
+            object.locator.containerPath.some((part, index) => part !== path[index]))) return retained;
+        const parent = refreshed.page.objects.find(object => object.type === 'group' &&
+          object.locator.objectIndex === path.at(-1) && object.locator.containerPath.length === path.length - 1 &&
+          object.locator.containerPath.every((part, index) => part === path[index]));
+        return parent && !current.page.objects.some(object => object.id === parent.id) ? [parent.id] : retained;
+      });
     } catch (caught) {
       setError(`Changes committed, but page refresh failed: ${formatError(caught)}`);
     } finally {
@@ -1098,6 +1109,7 @@ function objectTypeName(type: EditableObject['type']): string {
     path: 'Path',
     form: 'Form',
     group: 'Group',
+    shading: 'Gradient',
   };
   return names[type];
 }

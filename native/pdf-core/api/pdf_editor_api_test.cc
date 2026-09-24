@@ -3,6 +3,8 @@
 #include "text_shaping.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/fpdf_edit.h"
@@ -781,10 +783,15 @@ void TestNestedTextReplacement() {
   range.flags |= 16;
   range.start_utf16 = 0;
   range.end_utf16 = 2;
-  Require(pde_preview_commands(reopened, 1, &range, 1) == nullptr &&
-              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+  range.flags |= 32; range.values[5] = 1;
+  Require(pde_preview_commands(reopened, 1, &range, 1) != nullptr &&
               std::string(pde_describe_page(reopened, 0)) == styled,
-          "nested range style remains explicitly unsupported");
+          "nested range formatting preview preserves the active Form");
+  Require(pde_apply_commands(reopened, 1, "style-nested-range", &range, 1) != nullptr &&
+              std::string(pde_describe_page(reopened, 0)).find("\"underline\":true") != std::string::npos &&
+              RenderPixels(reopened, 1, 300, 300) == untouched_other_page &&
+              pde_undo(reopened) != nullptr && std::string(pde_describe_page(reopened, 0)) == styled,
+          "nested range underline is real, isolated and undone in one step");
   Require(pde_save_memory(reopened) != nullptr, "save styled nested Form");
   const std::vector<uint8_t> styled_pdf(pde_binary_data(),
                                          pde_binary_data() + pde_binary_size());
@@ -866,15 +873,15 @@ void TestNestedTextReplacement() {
   Require(structured != 0, "open structured Form fixture");
   const std::string described = RequireResult(pde_describe_page(structured, 0),
                                                 "describe structured Form");
-  Require(described.find("\"editability\":\"geometry-only\"") != std::string::npos,
-          "structured Form text is not advertised as directly editable");
+  Require(described.find("\"editability\":\"geometry-only\"") == std::string::npos,
+          "unmarked Form text remains editable on a page with unrelated structure metadata");
   const auto structured_ids = TextBlockIds(described);
   Require(structured_ids.size() == 1, "resolve structured text block");
   PdeTextEdit rejected{0, structured_ids[0].c_str(), 0, 8, "CHANGED", nullptr};
-  Require(pde_preview_text(structured, &rejected) == nullptr &&
-              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
-              pde_document_revision(structured) == 0,
-          "structured Form text rewrite is explicitly rejected before commit");
+  Require(pde_preview_text(structured, &rejected) != nullptr &&
+              pde_document_revision(structured) == 0 &&
+              std::string(pde_describe_page(structured, 0)) == described,
+          "unmarked Form text preview preserves unrelated page structure");
   const std::string structured_object_id =
       JsonStringAfter(described, "\"sourceObjectIds\":[\"");
   const std::string structured_page_id = PageIdFromDescription(described);
@@ -887,10 +894,9 @@ void TestNestedTextReplacement() {
   structured_move.values[0] = 1;
   structured_move.values[3] = 1;
   structured_move.values[4] = 1;
-  Require(pde_preview_commands(structured, 0, &structured_move, 1) == nullptr &&
-              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+  Require(pde_preview_commands(structured, 0, &structured_move, 1) != nullptr &&
               pde_document_revision(structured) == 0,
-          "structured nested geometry rewrite is also rejected before commit");
+          "unmarked nested geometry can move without changing tagged objects");
   Require(pde_close(structured) == 1, "close structured Form fixture");
 
   const std::string marked = Pdf({
@@ -1380,20 +1386,27 @@ void TestPageDeleteDestinationIntegrity() {
   PdeEditCommand cmd_del_p1{};
   cmd_del_p1.type = 7; cmd_del_p1.ids = del_p1; cmd_del_p1.id_count = 1;
 
-  Require(pde_apply_commands(doc, 0, "del-p1-refused", &cmd_del_p1, 1) == nullptr &&
-          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
-          pde_document_revision(doc) == 0,
-          "deleting page 1 is rejected because surviving page 0 has a link to it");
+  Require(pde_apply_commands(doc, 0, "del-p1-pruned", &cmd_del_p1, 1) != nullptr &&
+          pde_document_revision(doc) == 1,
+          "deleting page 1 prunes links that no longer have a target");
+  const std::string remaining_links = RequireResult(pde_describe_annotations(doc, 0), "remaining links");
+  Require(remaining_links.find("\"targetPageId\":\"" + p1_id + "\"") == std::string::npos &&
+          remaining_links.find("\"targetPageId\":\"" + p2_id + "\"") != std::string::npos &&
+          pde_undo(doc) != nullptr,
+          "only the dangling link is removed and undo restores the pages");
 
   // Test B: Attempt to delete Page 2 while Book 2 points to Page 2
   const char* del_p2[] = {p2_id.c_str()};
   PdeEditCommand cmd_del_p2{};
   cmd_del_p2.type = 7; cmd_del_p2.ids = del_p2; cmd_del_p2.id_count = 1;
 
-  Require(pde_apply_commands(doc, 0, "del-p2-refused", &cmd_del_p2, 1) == nullptr &&
-          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
-          pde_document_revision(doc) == 0,
-          "deleting page 2 is rejected because surviving bookmark and page 0 link point to it");
+  Require(pde_apply_commands(doc, 2, "del-p2-pruned", &cmd_del_p2, 1) != nullptr &&
+          pde_document_revision(doc) == 3,
+          "deleting page 2 prunes its bookmark and incoming link");
+  const std::string remaining_outline = RequireResult(pde_describe_outline(doc), "remaining outline");
+  Require(remaining_outline.find("Book 2") == std::string::npos &&
+          remaining_outline.find("Book 0") != std::string::npos,
+          "bookmarks for surviving pages remain navigable");
 
   Require(pde_close(doc) == 1, "close first destination fixture");
 
@@ -2169,6 +2182,31 @@ void TestRadioFields() {
           "selected radio Widget persists after save and reopen");
   Require(pde_undo(doc) != nullptr && std::string(pde_describe_forms(doc)) == initial,
           "undo restores the unselected radio group");
+  const std::string copy_page = PageIdFromDescription(pde_describe_page(reopened, 0));
+  const auto original_pixels = RenderPixels(reopened, 0, 300, 200);
+  const char* copy_pair[] = {copy_page.c_str(), "radio-page-copy"};
+  PdeEditCommand duplicate{};
+  duplicate.type = 12; duplicate.ids = copy_pair; duplicate.id_count = 2; duplicate.target_id = copy_page.c_str();
+  Require(pde_apply_commands(reopened, 0, "duplicate-editable-radio", &duplicate, 1) != nullptr,
+          "duplicate a real radio group with its widget appearances");
+  const std::string copied_fields = RequireResult(pde_describe_forms(reopened), "copied radio groups");
+  Require(Count(copied_fields, "\"type\":\"radio\"") == 2,
+          "radio widgets stay under two independent parent fields");
+  const size_t second_id = copied_fields.find("\"id\":\"", copied_fields.find("\"id\":\"") + 1);
+  const std::string cloned_field = JsonStringAfter(copied_fields, "\"id\":\"", second_id);
+  Require(cloned_field != "radio-city", "copied radio field has a distinct persistent identity");
+  fill.target_id = cloned_field.c_str(); fill.text_utf8 = options[0];
+  Require(pde_apply_commands(reopened, 1, "fill-radio-copy", &fill, 1) != nullptr &&
+          RenderPixels(reopened, 0, 300, 200) == original_pixels,
+          "filling the copied radio group does not change original widgets or values");
+  const auto copied_pixels = RenderPixels(reopened, 1, 300, 200);
+  Require(pde_save_memory(reopened) != nullptr, "save independently edited radio copy");
+  const std::vector<uint8_t> radio_copy_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t copy_reopened = pde_open_memory(radio_copy_bytes.data(), static_cast<uint32_t>(radio_copy_bytes.size()),
+      "radio-copy-reopened", "radio-copy-saved", nullptr);
+  Require(copy_reopened != 0 && RenderPixels(copy_reopened, 0, 300, 200) == original_pixels &&
+          RenderPixels(copy_reopened, 1, 300, 200) == copied_pixels && pde_close(copy_reopened) == 1,
+          "independent radio parent/widget structures and appearances survive a second save");
   Require(pde_close(reopened) == 1 && pde_close(doc) == 1,
           "close radio group fixture");
 }
@@ -2669,9 +2707,22 @@ void TestExtractPagesUnsupported() {
     const uint32_t doc = pde_open_memory(
         reinterpret_cast<const uint8_t*>(pdf.data()), static_cast<uint32_t>(pdf.size()),
         label, label, nullptr);
-    Require(doc != 0, "open unsupported extraction fixture");
+    Require(doc != 0, "open structural extraction fixture");
     const std::string page_id = PageIdFromDescription(pde_describe_page(doc, 0));
     const char* ids[] = {page_id.c_str()};
+    if (std::string_view(label) != "RichMedia") {
+      const auto pixels = RenderPixels(doc, 0, 100, 100);
+      Require(pde_extract_pages_memory(doc, ids, 1) != nullptr,
+              "supported page structures can be extracted");
+      const std::vector<uint8_t> bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+      Require(pde_document_revision(doc) == 0, "page extraction does not change the source revision");
+      const uint32_t extracted = pde_open_memory(bytes.data(), static_cast<uint32_t>(bytes.size()),
+          "extracted-structure", "extracted-structure-source", nullptr);
+      Require(extracted != 0 && RenderPixels(extracted, 0, 100, 100) == pixels &&
+              pde_close(extracted) == 1 && pde_close(doc) == 1,
+              "extracted structure fixture preserves the visible page");
+      return;
+    }
     Require(pde_extract_pages_memory(doc, ids, 1) == nullptr &&
                 std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
                 pde_binary_size() == 0 && pde_document_revision(doc) == 0,
@@ -2690,7 +2741,7 @@ void TestExtractPagesUnsupported() {
              "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>",
              Stream("0 0 20 20 re f"),
              "<< /Type /Outlines /Count 0 >>"}), "extract-bookmark");
-  for (const char* subtype : {"Link", "Widget", "FileAttachment"}) {
+  for (const char* subtype : {"Link", "Widget", "RichMedia"}) {
     check(Pdf({"<< /Type /Catalog /Pages 2 0 R >>",
                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
@@ -3130,9 +3181,8 @@ void TestParagraphJustify(const std::string& latin_font,
   PdeEditCommand unsafe = insert;
   unsafe.text_utf8 = "abc \xD7\x90\xD7\x91\xD7\x92 xyz";
   unsafe.target_id = "rtl-justify";
-  Require(pde_preview_commands(doc, 3, &unsafe, 1) == nullptr &&
-          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY",
-          "mixed RTL line is explicitly rejected for justify");
+  Require(pde_preview_commands(doc, 3, &unsafe, 1) != nullptr,
+          "mixed RTL line supports paragraph justification");
   unsafe.text_utf8 = "Supercalifragilisticexpialidocious";
   Require(pde_preview_commands(doc, 3, &unsafe, 1) == nullptr &&
           std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY",
@@ -3752,6 +3802,12 @@ void TestFontRuntime(const FontTestOptions& options) {
                          ttc_is_otf);
 }
 
+#include "nested_object_test.h"
+#include "text_completion_test.h"
+#include "shading_test.h"
+#include "page_structure_test.h"
+#include "tagged_page_test.h"
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -3947,6 +4003,8 @@ int main(int argc, char** argv) {
   TestNestedSharedFormTextTransformAndEdit();
   if (font_options.enabled()) TestNestedTextFont(font_options.ttf_path);
   TestObjectGroup();
+  TestNestedObjectCopyAndArrange();
+  TestNestedPersistentGroupCopy();
   TestPageCrop();
   TestOutlineNavigation();
   TestLinkAnnotationNavigation();
@@ -3957,7 +4015,12 @@ int main(int argc, char** argv) {
   TestAnnotationPageDuplicate();
   TestRadioFields();
   TestP1bTransactions();
+  TestRegularUnderlineLifecycle();
+  TestShadingPreservationAndFormEditing();
+  RunAllPageStructureTests();
+  TestTaggedPageStructureRoundtrip();
   TestFontRuntime(font_options);
+  if (font_options.enabled()) TestShapedFormText("runtime-otf");
   pde_shutdown();
   Require(pde_binary_size() == 0, "shutdown releases result buffers");
   std::puts(

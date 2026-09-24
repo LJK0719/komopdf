@@ -89,13 +89,25 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
   function distributeSelection(axis: 'horizontal' | 'vertical') {
     return execute([{ type: 'objects.distribute', pageId: page.id, objectIds: selectedIds, axis }]);
   }
-  const groupable = page.objects.filter(object => selectedIds.includes(object.id) && !object.locator.containerPath.length);
+  const groupable = page.objects.filter(object => selectedIds.includes(object.id));
+  const groupPath = groupable[0]?.locator.containerPath ?? [];
+  const groupSiblings = page.objects.filter(object => object.locator.containerPath.length === groupPath.length &&
+    object.locator.containerPath.every((part, index) => part === groupPath[index]));
   const canGroup = groupable.length === selectedIds.length && groupable.length >= 2 &&
-    groupable.every(object => object.type !== 'form' && object.type !== 'group') &&
-    groupable.every((object, index) => index === 0 || object.locator.objectIndex === groupable[index - 1]!.locator.objectIndex + 1);
+    groupable.every(object => groupSiblings.includes(object)) &&
+    groupable.every((object, index) => index === 0 || groupSiblings.indexOf(object) === groupSiblings.indexOf(groupable[index - 1]!) + 1);
   const selectedGroup = selectedIds.length === 1
-    ? page.objects.find(object => object.id === selectedIds[0] && object.type === 'group' && !object.locator.containerPath.length)
+    ? page.objects.find(object => object.id === selectedIds[0] && object.type === 'group')
     : undefined;
+  const parentGroup = groupPath.length ? page.objects.find(object => object.type === 'group' &&
+    object.locator.objectIndex === groupPath.at(-1) && object.locator.containerPath.length === groupPath.length - 1 &&
+    object.locator.containerPath.every((part, index) => part === groupPath[index])) : undefined;
+  function selectGroupContents() {
+    if (!selectedGroup) return;
+    const path = [...selectedGroup.locator.containerPath, selectedGroup.locator.objectIndex];
+    onSelectionChange(page.objects.filter(object => object.locator.containerPath.length === path.length &&
+      object.locator.containerPath.every((part, index) => part === path[index])).map(object => object.id));
+  }
   async function groupSelection() {
     const groupId = crypto.randomUUID();
     await execute([{ type: 'objects.group', pageId: page.id, objectIds: groupable.map(object => object.id), groupId }]);
@@ -103,8 +115,9 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
   }
   async function ungroupSelection() {
     if (!selectedGroup) return;
-    const childIds = page.objects.filter(object => object.locator.containerPath.length === 1 &&
-      object.locator.containerPath[0] === selectedGroup.locator.objectIndex).map(object => object.id);
+    const path = [...selectedGroup.locator.containerPath, selectedGroup.locator.objectIndex];
+    const childIds = page.objects.filter(object => object.locator.containerPath.length === path.length &&
+      object.locator.containerPath.every((part, index) => part === path[index])).map(object => object.id);
     await execute([{ type: 'objects.ungroup', pageId: page.id, groupId: selectedGroup.id }]);
     onSelectionChange(childIds);
   }
@@ -181,7 +194,7 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
         ]))}>Duplicate page</button>}
         {supports('pages.import') && host.pickResource && <button disabled={locked} onClick={() => void run(() => insertResource('pdf', 'pages'))}>Import PDF pages</button>}
         {supports('pages.delete') && <button disabled={locked || document.pageOrder.length <= 1} onClick={() => {
-          if (window.confirm('Delete the current page? This can be undone.')) void run(() => execute([{ type: 'pages.delete', pageIds: [page.id] }]));
+          if (window.confirm('Delete the current page and its annotations and fields? Links and bookmarks targeting it will also be removed. This can be undone.')) void run(() => execute([{ type: 'pages.delete', pageIds: [page.id] }]));
         }}>Delete page</button>}
         {supports('pages.reorder') && <>
           <button disabled={locked || document.pageOrder[0] === page.id} onClick={() => void run(async () => { await reorder(-1); })}>Move page earlier</button>
@@ -206,6 +219,8 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
       <div className="text-edit-actions">
         {supports('objects.group') && <button disabled={locked || !canGroup} onClick={() => void run(groupSelection)}>Group selected objects</button>}
         {supports('objects.ungroup') && <button disabled={locked || !selectedGroup} onClick={() => void run(ungroupSelection)}>Ungroup selected objects</button>}
+        {selectedGroup && <button disabled={locked} onClick={selectGroupContents}>Edit group contents</button>}
+        {parentGroup && <button disabled={locked} onClick={() => onSelectionChange([parentGroup.id])}>Select parent group</button>}
         {supports('objects.transform') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
         ]))}>Move selected objects</button>}
