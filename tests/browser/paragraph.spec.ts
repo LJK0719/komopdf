@@ -142,6 +142,27 @@ test('real WASM formats only a logical paragraph selection and preserves it thro
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });
 
+test('real WASM inserts a justified paragraph and undoes it as one edit', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'justify.pdf', mimeType: 'application/pdf', buffer: syntheticParagraphPdf() });
+  const objects = page.locator('.object-hitbox[data-object-type="text"]');
+  await expect(objects).toHaveCount(2, { timeout: 60_000 });
+  const paragraph = page.getByRole('region', { name: 'Paragraph reflow and insertion' });
+  await paragraph.getByRole('textbox', { name: 'Paragraph text' }).fill('Many small words fit here and wrap into another line of text.');
+  await paragraph.getByRole('combobox', { name: 'Font' }).selectOption('liberation-sans-regular');
+  await paragraph.getByRole('spinbutton', { name: 'Box Width (pt)' }).fill('150');
+  await paragraph.getByRole('spinbutton', { name: 'Box Height (pt)' }).fill('170');
+  await paragraph.getByRole('combobox', { name: 'Alignment' }).selectOption('justify');
+  await paragraph.getByRole('button', { name: 'Preview paragraph' }).click();
+  await expect(paragraph.getByText('Fits paragraph bounds', { exact: true })).toBeVisible();
+  await paragraph.getByRole('button', { name: 'Insert paragraph' }).click();
+  await expect(objects).toHaveCount(3);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(objects).toHaveCount(2);
+});
+
 function syntheticParagraphPdf(pageAttributes = '/MediaBox [0 0 400 400]'): Buffer {
   const stream = 'BT /F1 14 Tf 36 340 Td (First line) Tj ET\nBT /F1 14 Tf 36 300 Td (Second line) Tj ET';
   const objects = [

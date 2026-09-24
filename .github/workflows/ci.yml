@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Website release version (vMAJOR.MINOR.PATCH-site.DATE.N)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -39,6 +44,8 @@ jobs:
     needs: source
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -49,9 +56,17 @@ jobs:
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
       - run: pnpm install --frozen-lockfile
       - run: python3 scripts/prepare-fonts.py
-      - run: node infra/prepare-release.mjs v0.1.0-ci.${{ github.run_number }}
+      - run: node infra/prepare-release.mjs "$RELEASE_VERSION"
       - name: Verify extracted Linux production bundle without an upstream request
         run: |
           mkdir tmp/extracted-release
-          tar -xzf tmp/release-v0.1.0-ci.${{ github.run_number }}.tar.gz -C tmp/extracted-release
+          tar -xzf "tmp/release-$RELEASE_VERSION.tar.gz" -C tmp/extracted-release
           node infra/smoke-release.mjs tmp/extracted-release
+      - name: Upload verified website bundle for deployment
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: komopdf-site-${{ inputs.version }}
+          path: tmp/release-${{ inputs.version }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0

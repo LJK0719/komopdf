@@ -775,28 +775,32 @@ export function AiPanel(props: Props) {
     }
   };
 
-  const handleApplyBatchBlock = async (pageId: string, blockId: string, range: [number, number], text: string) => {
-    if (!props.document || applying || props.disabled) return;
+  const handleApplyBatchBlocks = async (blocks: { pageId: string; blockId: string; range: [number, number]; text: string }[]) => {
+    const info = current.current.document;
+    if (!info || !blocks.length || applying || props.disabled) throw new Error('Document is not ready for translation writeback');
     setApplying(true);
     props.onBusyChange?.(true);
     setError('');
     try {
-      const registry = new CommandRegistry(props.engine);
-      const pageModel = props.page?.id === pageId ? props.page : await props.engine.describePage(props.document.id, pageId);
+      const pages = new Map<string, PageModel>();
+      for (const block of blocks) {
+        if (pages.has(block.pageId)) continue;
+        const pageModel = current.current.page?.id === block.pageId
+          ? current.current.page : await props.engine.describePage(info.id, block.pageId);
+        pages.set(block.pageId, pageModel);
+      }
+      if (current.current.document?.id !== info.id || current.current.document.revision !== info.revision) {
+        throw new Error('Document changed before translation writeback');
+      }
       const transaction: EditTransaction = {
-        id: crypto.randomUUID(),
-        docId: props.document.id,
-        baseRevision: props.document.revision,
-        source: 'ai',
-        commands: [{ type: 'text.replace', pageId, blockId, range, text }],
+        id: crypto.randomUUID(), docId: info.id, baseRevision: info.revision, source: 'ai',
+        commands: blocks.map(block => ({ type: 'text.replace', ...block })),
       };
-      const res = await registry.execute(transaction, {
-        document: props.document,
-        pages: new Map([[pageId, pageModel]]),
-      });
+      const res = await new CommandRegistry(props.engine).execute(transaction, { document: info, pages });
       await props.onCommitted(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to write translation to PDF');
+      throw err;
     } finally {
       props.onBusyChange?.(false);
       setApplying(false);
@@ -1012,7 +1016,7 @@ export function AiPanel(props: Props) {
               authorization={authorization}
               endpoint={props.endpoint}
               targetLanguage={language}
-              onApplyBlock={handleApplyBatchBlock}
+              onApplyBlocks={handleApplyBatchBlocks}
               onLocate={props.onLocate}
               disabled={Boolean(props.disabled)}
             />

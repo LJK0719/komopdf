@@ -174,6 +174,26 @@ class FakePdfCoreModule implements PdfCoreEmscriptenModule {
   _pde_save_file_utf8(): number { this.setError('UNSUPPORTED_CAPABILITY', 'not available'); return 0; }
   _pde_text_edit_stride(): number { return this.textEditStride; }
 
+  _pde_describe_annotations(document: number, pageIndex: number): number {
+    const current = this.documents.get(document);
+    if (!current) return this.fail('DOCUMENT_NOT_FOUND', 'missing document');
+    const pageId = `${current.documentId}-page-${pageIndex + 1}`;
+    const targetPageId = `${current.documentId}-page-2`;
+    return this.json([
+      {
+        id: `link-annot-${pageIndex}`,
+        pageId,
+        subtype: 'link',
+        bounds: { x: 10, y: 20, width: 80, height: 30 },
+        text: '',
+        color: [0, 0, 0],
+        opacity: 1,
+        targetPageId,
+        targetTopPt: 150,
+      },
+    ]);
+  }
+
   _pde_register_truetype_font(fontId: number, bytes: number, length: number): number {
     this.registeredFonts.push({ id: this.string(fontId), bytes: this.HEAPU8.slice(bytes, bytes + length) });
     return 1;
@@ -500,6 +520,19 @@ describe('WASM C ABI binding', () => {
     await expect(engine.open({
       kind: 'bytes', sourceId: 'source', name: 'locked.pdf', bytes: Uint8Array.of(0xee).buffer,
     })).rejects.toMatchObject({ code: 'PASSWORD_REQUIRED', message: 'A password is required' });
+  });
+
+  it('describes link annotations with targetPageId and targetTopPt', async () => {
+    const fake = new FakePdfCoreModule();
+    const binding = createPdfCoreBinding(fake);
+    const info = await binding.engine.open({
+      kind: 'bytes', sourceId: 'src', name: 'test.pdf', bytes: Uint8Array.of(1, 2, 3).buffer,
+    });
+    const annots = await binding.engine.describeAnnotations!(info.id, info.pageOrder[0]!);
+    expect(annots).toHaveLength(1);
+    expect(annots[0]!.subtype).toBe('link');
+    expect(annots[0]!.targetPageId).toBe(`${info.id}-page-2`);
+    expect(annots[0]!.targetTopPt).toBe(150);
   });
 });
 

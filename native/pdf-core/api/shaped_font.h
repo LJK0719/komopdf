@@ -23,8 +23,10 @@ struct ShapedFontMapping {
 };
 
 // Loads a shaped composite PDF font without treating glyph IDs as Unicode.
-// TrueType uses CIDToGIDMap; OpenType/CFF uses a custom Encoding CMap. Both use
-// the caller's independent PDF character codes and multi-code-point ToUnicode.
+// TrueType uses CIDToGIDMap; OpenType/CFF (including a prepared, default-axis
+// static instance of a CFF2 source) uses a custom Encoding CMap. Raw CFF2 must
+// not be embedded as if it were CFF1. Both use independent PDF character codes
+// and multi-code-point ToUnicode.
 // This function does not place text objects or emit ActualText. Bidi and
 // multi-glyph-cluster extraction still requires the caller to wrap placed runs
 // or clusters with the exact ShapedText logical text.

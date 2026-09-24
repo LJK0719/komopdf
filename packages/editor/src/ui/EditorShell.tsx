@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
   EngineError,
@@ -29,6 +29,7 @@ import { PdfSearchPanel } from './PdfSearchPanel.js';
 import { PageThumbnail } from './PageThumbnail.js';
 import { drawRender, mountVisiblePageTiles, renderPage } from './draw-render.js';
 import { ObjectSelectionLayer as SelectionLayer } from './ObjectSelectionLayer.js';
+import { PdfLinkLayer } from './PdfLinkLayer.js';
 import { addImportedFont } from './font-resources.js';
 import {
   checkRecoverableSessions,
@@ -102,6 +103,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const [outline, setOutline] = useState<OutlineEntry[]>([]);
   const [outlineError, setOutlineError] = useState(false);
+  const [pageAnnotations, setPageAnnotations] = useState<import('@pdf-editor/contracts').PdfAnnotationInfo[]>([]);
   const [editPending, setEditPending] = useState(false);
   const [textDraftDirty, setTextDraftDirty] = useState(false);
   const [paragraphDraftDirty, setParagraphDraftDirty] = useState(false);
@@ -164,6 +166,20 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }).catch(() => { if (!cancelled) setOutlineError(true); });
     return () => { cancelled = true; };
   }, [engine, document?.info.id, document?.info.revision]);
+
+  useEffect(() => {
+    setPageAnnotations([]);
+    const info = document?.info;
+    const pageId = document?.page.id;
+    if (!info || !pageId || !engine.describeAnnotations) return;
+    let cancelled = false;
+    void engine.describeAnnotations(info.id, pageId).then(annotations => {
+      if (!cancelled) setPageAnnotations(annotations);
+    }).catch(() => {
+      if (!cancelled) setPageAnnotations([]);
+    });
+    return () => { cancelled = true; };
+  }, [engine, document?.info.id, document?.page.id, document?.info.revision]);
 
   useEffect(() => () => {
     const current = documentRef.current;
@@ -352,9 +368,17 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
   };
 
-  const switchPage = async (pageId: string): Promise<void> => {
+  const switchPage = async (pageId: string, targetTopPt?: number): Promise<void> => {
     if (isDraftDirty) { setError('Apply or discard the current text draft before changing pages'); return; }
-    if (!document || document.page.id === pageId) return;
+    if (!document) return;
+    if (document.page.id === pageId) {
+      if (targetTopPt !== undefined && stageRef.current) {
+        const scaleY = document.render.height / document.page.heightPt;
+        const targetScrollTop = targetTopPt * scaleY;
+        stageRef.current.scrollTo({ top: Math.max(0, targetScrollTop - 20), behavior: 'smooth' });
+      }
+      return;
+    }
     setActivity('rendering');
     setError(null);
     try {
@@ -367,6 +391,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       setSelectedIds([]);
       setSearchSelection(null);
       setNotice(`Page ${latest.info.pageOrder.indexOf(pageId) + 1} · Rev ${latest.info.revision}`);
+      if (targetTopPt !== undefined && stageRef.current) {
+        const scaleY = refreshed.render.height / refreshed.page.heightPt;
+        const targetScrollTop = targetTopPt * scaleY;
+        stageRef.current.scrollTo({ top: Math.max(0, targetScrollTop - 20), behavior: 'smooth' });
+      }
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -832,6 +861,14 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                 disabled={isBusy}
                 canTransform={document.info.capabilities.includes('objects.transform')}
                 onMove={moveObjects}
+              />
+              <PdfLinkLayer
+                annotations={pageAnnotations}
+                page={document.page}
+                render={document.render}
+                pageOrder={document.info.pageOrder}
+                disabled={isBusy || isDraftDirty}
+                onNavigate={(targetPageId, targetTopPt) => void switchPage(targetPageId, targetTopPt)}
               />
             </div>
           )}

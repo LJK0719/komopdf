@@ -111,8 +111,9 @@ const char* pde_apply_text(uint32_t document,
 // must use this C structure and pde_edit_command_stride(); a 64-bit native
 // structure is intentionally larger than the wasm32 record. For type 3,
 // flags 1/2/4/8 keep font/size/color/character-spacing; flag 16 enables
-// values[9] as a line-height multiplier, and mutually exclusive flags 32/64
-// select center/right alignment (neither means left). For type 2, flag 16
+// values[9] as a line-height multiplier; flag 32=center, 64=right, neither=left.
+// Both 32|64=justify only with 1024=logical paragraph (type 3 or type 20);
+// non-paragraph text still rejects both alignment flags together. For type 2, flag 16
 // enables start_utf16/end_utf16 range formatting of exactly one block in ids;
 // flags 1/2/4/8 and their values retain the whole-block style layout. For a
 // top-level logical paragraph only, type-2 flag 32 sets real vector underline

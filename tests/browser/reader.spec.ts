@@ -568,3 +568,51 @@ test('PDF search locates each occurrence at its UTF-16 text range', async ({ pag
   await expect(original).toHaveJSProperty('selectionStart', 3);
   await expect(original).toHaveJSProperty('selectionEnd', 4);
 });
+
+test('internal PDF link click navigates to target page and ignores unsupported external links', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'internal-links.pdf', mimeType: 'application/pdf', buffer: linkedPdf() });
+  await expect(page.locator('.page-chip')).toHaveCount(2, { timeout: 60_000 });
+  await expect(page.locator('.page-chip-active')).toHaveAttribute('aria-label', 'Open page 1');
+
+  // Verify internal link exists on page 1 and external link is not navigable
+  const internalLink = page.getByRole('link', { name: 'Go to page 2' });
+  await expect(internalLink).toBeVisible();
+  await expect(page.locator('.pdf-link-annotation')).toHaveCount(1);
+
+  // Click internal link and verify navigation to page 2
+  await internalLink.click();
+  await expect(page.locator('.page-chip-active')).toHaveAttribute('aria-label', 'Open page 2');
+  await expect(page.locator('.pdf-link-annotation')).toHaveCount(0);
+  await expect(page.locator('.status-dot-error')).toHaveCount(0);
+});
+
+function linkedPdf(): Buffer {
+  const first = 'q 1 0 0 rg 20 20 50 50 re f Q\nBT /F1 18 Tf 20 200 Td (Page One Link) Tj ET';
+  const second = 'q 0 0 1 rg 30 30 60 60 re f Q\nBT /F1 18 Tf 20 200 Td (Page Two Destination) Tj ET';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R /Annots [ 8 0 R 9 0 R ] >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(first)} >>\nstream\n${first}\nendstream`,
+    `<< /Length ${Buffer.byteLength(second)} >>\nstream\n${second}\nendstream`,
+    // Object 8: Valid internal link to Page 2 (4 0 R)
+    '<< /Type /Annot /Subtype /Link /Rect [20 180 160 220] /Dest [4 0 R /Fit] >>',
+    // Object 9: External URI link - must not navigate or pretend to be usable internal link
+    '<< /Type /Annot /Subtype /Link /Rect [20 100 160 140] /A << /S /URI /URI (https://example.com) >> >>',
+  ];
+  let pdf = '%PDF-1.7\n';
+  const offsets = objects.map((body, index) => {
+    const position = Buffer.byteLength(pdf);
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+    return position;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}

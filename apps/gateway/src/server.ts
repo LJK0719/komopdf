@@ -109,8 +109,14 @@ function anthropicErrorBody(type: AnthropicErrorType, message: string): { type: 
 }
 
 function rawJson(response: ServerResponse, statusCode: number, body: unknown): void {
-  if (response.headersSent || response.destroyed || response.writableEnded) {
-    if (!response.destroyed) response.destroy();
+  if (response.destroyed || response.writableEnded) return;
+  if (response.headersSent) {
+    try {
+      response.write(`event: error\ndata: ${JSON.stringify(body)}\n\n`);
+      response.end();
+    } catch {
+      if (!response.destroyed) response.destroy();
+    }
     return;
   }
   const payload = Buffer.from(JSON.stringify(body), 'utf8');
@@ -148,7 +154,7 @@ function base64Bytes(data: string): number {
   return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
 }
 
-function scanAgentContent(value: unknown, config: GatewayConfig, state: { images: number }): void {
+function scanAgentContent(value: unknown, config: GatewayConfig, state: { images: number; totalBytes: number }): void {
   if (typeof value === 'string' || value === null || value === undefined) return;
   if (Array.isArray(value)) {
     for (const item of value) scanAgentContent(item, config, state);
@@ -167,7 +173,10 @@ function scanAgentContent(value: unknown, config: GatewayConfig, state: { images
       throw new AgentRequestError('Unsupported image media type');
     }
     if (typeof source.data !== 'string') throw new AgentRequestError('Invalid base64 image source');
-    if (base64Bytes(source.data) > config.limits.imageFileBytes) throw new AgentRequestError('Image attachment exceeds size limit');
+    const bytes = base64Bytes(source.data);
+    if (bytes > config.limits.imageFileBytes) throw new AgentRequestError('Image attachment exceeds size limit');
+    state.totalBytes += bytes;
+    if (state.totalBytes > config.limits.imageFileBytes) throw new AgentRequestError('Total image attachments exceed size limit');
     return;
   }
   if (block.type === 'tool_result') scanAgentContent(block.content, config, state);
@@ -194,7 +203,7 @@ function prepareAgentRequest(body: unknown, endpoint: AnthropicEndpoint, config:
     }
     if (source.stream !== undefined && typeof source.stream !== 'boolean') throw new AgentRequestError('stream must be a boolean');
   }
-  const scan = { images: 0 };
+  const scan = { images: 0, totalBytes: 0 };
   const messages = Array.isArray(source.messages) ? source.messages : [];
   for (const message of messages) scanAgentContent(record(message)?.content, config, scan);
   scanAgentContent(source.system, config, scan);
@@ -268,7 +277,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
   const admittedAt = new WeakMap<FastifyRequest, number>();
   const app = Fastify({
     logger: false,
-    bodyLimit: options.config.limits.imageBodyBytes,
+    bodyLimit: Math.max(options.config.limits.imageBodyBytes, options.config.limits.agentBodyBytes),
     requestTimeout: options.config.limits.requestTimeoutMs,
     trustProxy: (address, hop) => hop === 0 && isLoopback(address),
   });

@@ -5568,14 +5568,15 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
            (target->flags & (kTextFitBoundsFlag | kTextInvisibleFlag)) !=
                (kTextFitBoundsFlag | kTextInvisibleFlag)) ||
           ((target->flags & kTextInsertCenterFlag) &&
-           (target->flags & kTextInsertRightFlag)) ||
+           (target->flags & kTextInsertRightFlag) &&
+           !(target->flags & kTextParagraphFlag)) ||
           ((target->flags & kTextInsertLineHeightFlag) &&
            (target->values[9] <= 0 || target->values[9] > 100)) ||
           !ValidateRectValues(*target)) {
         if (g_error_code.empty()) {
           SetError("INVALID_REQUEST",
                    "New text requires positive bounds, text, font, font size, "
-                   "and at most one alignment flag.");
+                   "and compatible alignment flags (both flags require a logical paragraph).");
         }
         return false;
       }

@@ -5,6 +5,7 @@
 ## 发布约定
 
 - 发布目录示例：`/opt/pdf-editor/releases/<version>`；`current` 指向启用版本。
+- 公共 CI 的手动 `workflow_dispatch` 输入网站版本号，先运行源码检查，再在 Linux 构建、解包检查并上传同名站点 tar.gz（产物只保留 1 天）。取回产物核对 SHA-256 后在目标主机解包并调用 `infra/deploy.sh <version>`；这只是网站/网关部署，不是桌面安装包发版。
 - 静态产物：`apps/web/dist`；目前是否具备下载/帮助等页面以实际构建产物为准。
 - 网关配置只使用 `apps/gateway` 内的配置样例及其实际校验 schema，不维护第二套可能不兼容的配置。
 - 启动契约：`/opt/pdf-editor/runtime/node --max-old-space-size=256 apps/gateway/dist/cli.mjs --host 127.0.0.1 --port 8787 --config /etc/pdf-editor/gateway.config.json --credential-file %d/gemini`。网关已在开发机构建为 JS bundle；发布时带上该产物、非敏感配置和对应 Linux Fastify 生产依赖。不在 VPS 上编译 PDF 或运行 TypeScript 构建。

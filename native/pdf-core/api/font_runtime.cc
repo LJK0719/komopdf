@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <span>
 #include <string>
@@ -30,6 +31,7 @@
 #include "core/fxge/fx_font.h"
 #include "core/fxge/fx_fontencoding.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "third_party/harfbuzz/src/src/hb-subset.h"
 
 namespace pdf_editor {
 namespace {
@@ -56,6 +58,7 @@ constexpr uint32_t kGlyfTag = Tag('g', 'l', 'y', 'f');
 constexpr uint32_t kLocaTag = Tag('l', 'o', 'c', 'a');
 constexpr uint32_t kCffTag = Tag('C', 'F', 'F', ' ');
 constexpr uint32_t kCff2Tag = Tag('C', 'F', 'F', '2');
+constexpr uint32_t kFvarTag = Tag('f', 'v', 'a', 'r');
 constexpr uint32_t kMaxFaces = 1024;
 constexpr uint16_t kMaxTables = 256;
 
@@ -528,23 +531,23 @@ bool ParseFace(std::span<const uint8_t> bytes,
     face->info.format = FontFormat::kTrueType;
   } else {
     const TableRecord* cff = FindTable(*face, kCffTag);
-    if (!cff || cff->length < 4 || bytes[cff->offset] != 1) {
-      SetFailure(
-          FindTable(*face, kCff2Tag) ? "UNSUPPORTED_CAPABILITY"
-                                     : "INVALID_REQUEST",
-          FindTable(*face, kCff2Tag)
-              ? "OpenType CFF2 fonts are not supported for PDF embedding."
-              : "The OpenType font has no valid CFF table.",
-          error_code, error_message);
-      return false;
-    }
-    const uint8_t cff_header_size = bytes[cff->offset + 2];
-    if (cff_header_size < 4 || cff_header_size > cff->length) {
-      SetFailure("INVALID_REQUEST", "The OpenType CFF header is invalid.",
+    const TableRecord* cff2 = FindTable(*face, kCff2Tag);
+    if (cff && !cff2 && cff->length >= 4 && bytes[cff->offset] == 1 &&
+        bytes[cff->offset + 2] >= 4 && bytes[cff->offset + 2] <= cff->length) {
+      face->info.format = FontFormat::kOpenTypeCff;
+    } else if (!cff && cff2 && cff2->length >= 5 &&
+               bytes[cff2->offset] == 2 && bytes[cff2->offset + 2] >= 5 &&
+               bytes[cff2->offset + 2] <= cff2->length &&
+               ReadU16(bytes, cff2->offset + 3) != 0 &&
+               ReadU16(bytes, cff2->offset + 3) <=
+                   cff2->length - bytes[cff2->offset + 2] &&
+               FindTable(*face, kFvarTag)) {
+      face->info.format = FontFormat::kOpenTypeCff2;
+    } else {
+      SetFailure("INVALID_REQUEST", "The OpenType CFF/CFF2 outline is invalid.",
                  error_code, error_message);
       return false;
     }
-    face->info.format = FontFormat::kOpenTypeCff;
   }
 
   if (!ValidateCmap(bytes, *cmap, error_code, error_message) ||
@@ -700,6 +703,106 @@ std::vector<uint8_t> ExtractFace(std::span<const uint8_t> bytes,
   }
   WriteU32(&output, head_destination + 8, kChecksumMagic - checksum);
   return output;
+}
+
+bool InstantiateCff2Default(std::span<const uint8_t> source,
+                            std::vector<uint8_t>* output,
+                            std::string* error_code,
+                            std::string* error_message) {
+  if (source.size() > std::numeric_limits<unsigned int>::max()) {
+    SetFailure("RESOURCE_LIMIT", "The CFF2 font is too large to instantiate.",
+               error_code, error_message);
+    return false;
+  }
+  using Blob = std::unique_ptr<hb_blob_t, decltype(&hb_blob_destroy)>;
+  using Face = std::unique_ptr<hb_face_t, decltype(&hb_face_destroy)>;
+  using Input =
+      std::unique_ptr<hb_subset_input_t, decltype(&hb_subset_input_destroy)>;
+  Blob blob(hb_blob_create_or_fail(
+                reinterpret_cast<const char*>(source.data()),
+                static_cast<unsigned int>(source.size()), HB_MEMORY_MODE_READONLY,
+                nullptr, nullptr),
+            hb_blob_destroy);
+  Face face(blob ? hb_face_create_or_fail(blob.get(), 0) : nullptr,
+            hb_face_destroy);
+  Input input(hb_subset_input_create_or_fail(), hb_subset_input_destroy);
+  if (!face || !input) {
+    SetFailure("RESOURCE_LIMIT", "Could not prepare the CFF2 font instance.",
+               error_code, error_message);
+    return false;
+  }
+
+  // PDF font resources require a static outline. Preserve all characters and
+  // glyph IDs used by the subsequent shaping and CID mappings, then actually
+  // instantiate every axis and convert CFF2 charstrings into CFF1 charstrings.
+  hb_subset_input_keep_everything(input.get());
+  hb_subset_input_set_flags(
+      input.get(), hb_subset_input_get_flags(input.get()) |
+                       HB_SUBSET_FLAGS_RETAIN_GIDS |
+                       HB_SUBSET_FLAGS_DOWNGRADE_CFF2);
+  hb_set_t* no_subset =
+      hb_subset_input_set(input.get(), HB_SUBSET_SETS_NO_SUBSET_TABLE_TAG);
+  for (hb_tag_t tag : {HB_TAG('G', 'S', 'U', 'B'), HB_TAG('G', 'P', 'O', 'S'),
+                       HB_TAG('G', 'D', 'E', 'F'), HB_TAG('B', 'A', 'S', 'E')}) {
+    hb_set_add(no_subset, tag);
+  }
+  if (!hb_subset_input_pin_all_axes_to_default(input.get(), face.get())) {
+    SetFailure("UNSUPPORTED_CAPABILITY", "CFF2 variation axes could not be pinned.",
+               error_code, error_message);
+    return false;
+  }
+  Face instance(hb_subset_or_fail(face.get(), input.get()), hb_face_destroy);
+  if (!instance) {
+    SetFailure("UNSUPPORTED_CAPABILITY", "CFF2 could not be converted to static CFF.",
+               error_code, error_message);
+    return false;
+  }
+  // PDFium's stock HarfBuzz build can disable layout-table subsetting. Do not
+  // silently change ligatures, kerning or mark placement in the static face:
+  // preserve the original tables directly if the subsetter dropped them.
+  for (hb_tag_t tag : {HB_TAG('G', 'S', 'U', 'B'), HB_TAG('G', 'P', 'O', 'S'),
+                       HB_TAG('G', 'D', 'E', 'F'), HB_TAG('B', 'A', 'S', 'E')}) {
+    Blob original_table(hb_face_reference_table(face.get(), tag),
+                        hb_blob_destroy);
+    Blob converted_table(hb_face_reference_table(instance.get(), tag),
+                         hb_blob_destroy);
+    if (hb_blob_get_length(original_table.get()) != 0 &&
+        hb_blob_get_length(converted_table.get()) == 0) {
+      hb_face_builder_add_table(instance.get(), tag, original_table.get());
+    }
+  }
+  Blob result(hb_face_reference_blob(instance.get()), hb_blob_destroy);
+  unsigned int length = 0;
+  const char* data = result ? hb_blob_get_data(result.get(), &length) : nullptr;
+  if (!data || !length) {
+    SetFailure("UNSUPPORTED_CAPABILITY", "CFF2 could not be converted to static CFF.",
+               error_code, error_message);
+    return false;
+  }
+  for (hb_tag_t tag : {HB_TAG('G', 'S', 'U', 'B'), HB_TAG('G', 'P', 'O', 'S'),
+                       HB_TAG('G', 'D', 'E', 'F')}) {
+    Blob original_table(hb_face_reference_table(face.get(), tag),
+                        hb_blob_destroy);
+    Blob converted_table(hb_face_reference_table(instance.get(), tag),
+                         hb_blob_destroy);
+    if (hb_blob_get_length(original_table.get()) != 0 &&
+        hb_blob_get_length(converted_table.get()) == 0) {
+      SetFailure("UNSUPPORTED_CAPABILITY",
+                 "CFF2 conversion lost OpenType layout tables.", error_code,
+                 error_message);
+      return false;
+    }
+  }
+  output->assign(data, data + length);
+  ParsedContainer converted;
+  if (!ParseContainer(*output, &converted, error_code, error_message) ||
+      converted.collection || converted.faces.size() != 1 ||
+      converted.faces.front().info.format != FontFormat::kOpenTypeCff) {
+    SetFailure("UNSUPPORTED_CAPABILITY", "CFF2 did not produce a valid static CFF face.",
+               error_code, error_message);
+    return false;
+  }
+  return true;
 }
 
 struct BmpGlyphMapping {
@@ -1024,6 +1127,14 @@ bool PrepareFontFace(std::span<const uint8_t> bytes,
   } else {
     face->sfnt.assign(bytes.begin(), bytes.end());
   }
+  if (parsed.info.format == FontFormat::kOpenTypeCff2) {
+    std::vector<uint8_t> instance;
+    if (!InstantiateCff2Default(face->sfnt, &instance, error_code,
+                                error_message)) {
+      return false;
+    }
+    face->sfnt = std::move(instance);
+  }
   return true;
 }
 
@@ -1031,6 +1142,16 @@ FPDF_FONT LoadFontFace(FPDF_DOCUMENT document,
                        const FontFaceInfo& info,
                        std::span<const uint8_t> sfnt,
                        std::string* error_message) {
+  if (info.format == FontFormat::kOpenTypeCff2) {
+    ParsedContainer prepared;
+    std::string code;
+    if (!ParseContainer(sfnt, &prepared, &code, error_message) ||
+        prepared.collection || prepared.faces.size() != 1 ||
+        prepared.faces.front().info.format != FontFormat::kOpenTypeCff) {
+      *error_message = "CFF2 must be instantiated to static CFF before PDF embedding.";
+      return nullptr;
+    }
+  }
   std::vector<BmpGlyphMapping> mappings;
   if (!BuildBmpGlyphMappings(sfnt, &mappings, error_message)) {
     return nullptr;
