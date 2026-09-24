@@ -223,13 +223,6 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   ScopedPage page(nullptr);
   if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) return false;
   const bool justify = (command.flags & (32U | 64U)) == (32U | 64U);
-  const auto* checked_page = CPDFPageFromFPDFPage(page.get());
-  if (justify && (!checked_page || checked_page->GetDict()->KeyExist("StructParents") ||
-                  checked_page->GetDict()->KeyExist("StructParent") ||
-                  checked_page->GetDocument()->GetRoot()->KeyExist("StructTreeRoot"))) {
-    SetError("UNSUPPORTED_CAPABILITY", "Justification cannot rewrite tagged page structure.");
-    return false;
-  }
   const auto font = resources.find(command.font_id);
   if (font == resources.end()) { SetError("INVALID_REQUEST", "Select a registered paragraph font."); return false; }
   pdf_editor::ParagraphRequest request;
@@ -266,17 +259,18 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
     }
   }
   auto* native_page = CPDFPageFromFPDFPage(page.get());
+  auto* native_doc = CPDFDocumentFromFPDFDocument(pdf);
   auto& identities = metadata->pages[page_index].objects;
+  std::set<int> removed_mcids;
+  RetainPtr<CPDF_Dictionary> reflow_element;
+  std::set<CPDF_Dictionary*> reflow_elements;
+  std::optional<pdf_editor::tagged::ParagraphLeafMerge> leaf_merge;
   size_t insertion = identities.size();
   if (command.type == EditType::kTextReflow) {
     std::vector<size_t> positions;
     for (const auto& block_id : command.ids) {
       ObjectTarget target;
       if (!FindObjectTarget(page.get(), &metadata->pages[page_index], block_id, true, &target)) return false;
-      if (justify && FPDFPageObj_CountMarks(target.object) != 0) {
-        SetError("UNSUPPORTED_CAPABILITY", "Justification cannot replace marked source objects.");
-        return false;
-      }
       if (justify && FPDFPageObj_GetType(target.object) == FPDF_PAGEOBJ_TEXT) {
         FS_MATRIX matrix{};
         auto* source_text = CPDFPageObjectFromFPDFPageObject(target.object)->AsText();
@@ -301,13 +295,103 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
       }
     }
     insertion = positions.front();
+    const std::set<size_t> selected(positions.begin(), positions.end());
+    for (size_t position : positions) {
+      auto* source = native_page->GetPageObjectByIndex(position);
+      const int mcid = source->GetContentMarks()->GetMarkedContentID();
+      if (mcid < 0) continue;
+      auto element = pdf_editor::tagged::ElementFor(native_doc, native_page, mcid);
+      if (!element) {
+        SetError("UNSUPPORTED_CAPABILITY", "A reflow source has no ParentTree element.");
+        return false;
+      }
+      if (!reflow_element) reflow_element = element;
+      reflow_elements.insert(element.Get());
+      removed_mcids.insert(mcid);
+      if (!pdf_editor::tagged::CanEditTextScope(native_page, source)) {
+        for (size_t other = 0; other < native_page->GetPageObjectCount(); ++other)
+          if (native_page->GetPageObjectByIndex(other)->GetContentMarks()->GetMarkedContentID() == mcid &&
+              !selected.contains(other)) {
+            SetError("UNSUPPORTED_CAPABILITY", "Reflow cannot split a non-local ActualText scope.");
+            return false;
+          }
+      }
+    }
+    if (reflow_elements.size() > 1) {
+      leaf_merge = pdf_editor::tagged::PrepareParagraphLeafMerge(native_doc, native_page, positions);
+      if (!leaf_merge) {
+        SetError("UNSUPPORTED_CAPABILITY",
+                 "Reflow can merge only adjacent, fully selected P/Span structure leaves under one parent.");
+        return false;
+      }
+      reflow_element = leaf_merge->target;
+    }
     for (auto position = positions.rbegin(); position != positions.rend(); ++position) {
       if (!native_page->RemovePageObject(native_page->GetPageObjectByIndex(*position))) { SetUnexpectedError(); return false; }
       identities.erase(identities.begin() + *position);
     }
+    for (int mcid : removed_mcids) {
+      CPDF_PageObject* survivor = nullptr;
+      for (const auto& candidate : *native_page)
+        if (candidate->GetContentMarks()->GetMarkedContentID() == mcid) {
+          survivor = candidate.get(); break;
+        }
+      if (!survivor) pdf_editor::tagged::ClearMcid(native_doc, native_page, mcid);
+      else if (survivor->AsText() && pdf_editor::tagged::ActualMark(survivor))
+        pdf_editor::tagged::RefreshAllTextScopes(native_page, survivor,
+            pdf_editor::tagged::GlyphText(survivor->AsText()));
+    }
+  }
+  if (!pdf_editor::tagged::TagNewParagraph(native_doc, native_page,
+                                            object.get(), request.utf8, reflow_element.Get())) {
+    SetError("UNSUPPORTED_CAPABILITY", "The paragraph could not be added to the tagged structure.");
+    return false;
   }
   if (!native_page->InsertPageObjectAtIndex(insertion, std::move(object))) { SetUnexpectedError(); return false; }
   identities.insert(identities.begin() + insertion, std::move(identity));
+  if (leaf_merge) pdf_editor::tagged::FinishParagraphLeafMerge(native_doc, *leaf_merge,
+      native_page->GetPageObjectByIndex(insertion)->GetContentMarks()->GetMarkedContentID());
+  for (int mcid : removed_mcids) {
+    CPDF_PageObject* before = nullptr;
+    CPDF_PageObject* after = nullptr;
+    std::vector<CPDF_PageObject*> trailing;
+    for (size_t index = 0; index < native_page->GetPageObjectCount(); ++index) {
+      auto* candidate = native_page->GetPageObjectByIndex(index);
+      if (candidate->GetContentMarks()->GetMarkedContentID() != mcid) continue;
+      if (index < insertion) before = before ? before : candidate;
+      else if (index > insertion) {
+        after = after ? after : candidate;
+        trailing.push_back(candidate);
+      }
+    }
+    if (before && after) {
+      CPDF_PageObject* first = nullptr;
+      for (auto* tail : trailing) {
+        const bool rebound = first
+            ? pdf_editor::tagged::ShareReboundMcid(tail, mcid, first)
+            : pdf_editor::tagged::DuplicateMcid(native_doc, native_page,
+                native_page, native_page, tail, tail);
+        if (!rebound) {
+          SetError("UNSUPPORTED_CAPABILITY", "The reflowed tagged scope cannot be split.");
+          return false;
+        }
+        if (!first) first = tail;
+      }
+    }
+    if (!before && after) {
+      auto element = pdf_editor::tagged::ElementFor(native_doc, native_page, mcid);
+      const int added = native_page->GetPageObjectByIndex(insertion)->GetContentMarks()->GetMarkedContentID();
+      pdf_editor::tagged::MovePageMcrBeforeOriginal(element.Get(), mcid, added);
+    }
+    for (auto* survivor : {before, after}) {
+      if (survivor && survivor->AsText() && pdf_editor::tagged::ActualMark(survivor) &&
+          !pdf_editor::tagged::RefreshAllTextScopes(native_page, survivor,
+              pdf_editor::tagged::GlyphText(survivor->AsText()))) {
+        SetError("UNSUPPORTED_CAPABILITY", "The remaining paragraph scope cannot be refreshed.");
+        return false;
+      }
+    }
+  }
   if (!FPDFPage_GenerateContent(page.get())) { SetError("CORE_UNAVAILABLE", "The paragraph content could not be saved."); return false; }
   if (layout) {
     layout->overflow = paragraph.overflow;
@@ -328,7 +412,7 @@ bool ParagraphRangePreservesClusters(FPDF_PAGEOBJECT object,
     return unit == u'\r' || unit == u'\n' || unit == u'\v' || unit == u'\f' ||
            unit == 0x0085 || unit == 0x2028 || unit == 0x2029;
   };
-  if (FPDFPageObj_CountMarks(object) != 0) return false;
+  if (!HasSupportedTextMarks(object)) return false;
   const int count = FPDFFormObj_CountObjects(object);
   if (count <= 0) return false;
   for (int index = 0; index < count; ++index) {
@@ -467,6 +551,13 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
     SetUnexpectedError(); return false;
   }
   replacement->SetContentStream(CPDFPageObjectFromFPDFPageObject(target.object)->GetContentStream());
+  auto* prior_object = CPDFPageObjectFromFPDFPageObject(target.object);
+  replacement->SetContentMarks(*prior_object->GetContentMarks());
+  const int marked_id = prior_object->GetContentMarks()->GetMarkedContentID();
+  if (pdf_editor::tagged::ActualMark(replacement.get()) &&
+      (marked_id < 0 || !pdf_editor::tagged::HasOtherMember(
+          CPDFPageFromFPDFPage(page), marked_id, prior_object)))
+    pdf_editor::tagged::SetLocalActualText(replacement.get(), request.utf8);
   ObjectIdentity identity;
   if (!ParagraphIdentity(document, paragraph.object,
       target.identity->id + ":style:" + command.transaction_id,
@@ -507,8 +598,21 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   if (!GetPageMatrices(page, &to_page, &to_pdf)) return false;
   const Matrix paragraph_to_page = MatrixFromFs(matrix).Then(to_page);
   const Rect box = TransformBounds(0, 0, info->GetFloatFor("Width"), info->GetFloatFor("Height"), paragraph_to_page);
+  auto* native_doc = CPDFDocumentFromFPDFDocument(pdf);
+  auto* old_object = CPDFPageObjectFromFPDFPageObject(target.object);
+  const int old_mcid = old_object->GetContentMarks()->GetMarkedContentID();
+  if (old_mcid >= 0 && !pdf_editor::tagged::ElementFor(native_doc, native_page, old_mcid)) {
+    SetError("UNSUPPORTED_CAPABILITY", "The paragraph's ParentTree entry is missing.");
+    return false;
+  }
+  if (old_mcid >= 0 && pdf_editor::tagged::HasOtherMember(native_page, old_mcid, old_object)) {
+    SetError("UNSUPPORTED_CAPABILITY", "The paragraph's ActualText scope includes other Form objects.");
+    return false;
+  }
   if (updated.empty()) {
     if (!native_page->RemovePageObject(native_page->GetPageObjectByIndex(index))) return false;
+    if (old_mcid >= 0 && !pdf_editor::tagged::HasOtherMember(native_page, old_mcid, nullptr))
+      pdf_editor::tagged::ClearMcid(native_doc, native_page, old_mcid);
     identities.erase(identities.begin() + index);
     if (layout_bounds) *layout_bounds = {box.x, box.y, 0, 0};
     if (overflow) *overflow = false;
@@ -539,6 +643,9 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   if (paragraph.overflow && !overflow) { SetError("UNSUPPORTED_CAPABILITY", "The replacement paragraph overflows its text box."); return false; }
   if (!FPDFPageObj_SetMatrix(paragraph.object, &matrix)) { SetUnexpectedError(); return false; }
   object->SetContentStream(CPDFPageObjectFromFPDFPageObject(target.object)->GetContentStream());
+  object->SetContentMarks(*old_object->GetContentMarks());
+  if (pdf_editor::tagged::ActualMark(object.get()))
+    pdf_editor::tagged::SetLocalActualText(object.get(), updated);
   ObjectIdentity identity;
   const std::string seed = target.identity->id + ":reflow:" + updated;
   if (!ParagraphIdentity(document, paragraph.object, seed, target.identity, &identity)) return false;

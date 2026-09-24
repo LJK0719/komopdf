@@ -17,6 +17,10 @@ bool RefreshUnderlineHolder(const Document& document, CPDF_PageObjectHolder* hol
   for (size_t index = holder->GetPageObjectCount(); index > 0; --index) {
     auto* object = holder->GetPageObjectByIndex(index - 1);
     if (HasObjectMark(FPDFPageObjectFromCPDFPageObject(object), "KomoUnderlinePath")) {
+      const int mcid = object->GetContentMarks()->GetMarkedContentID();
+      if (mcid >= 0 && !pdf_editor::tagged::HasOtherMember(holder, mcid, object))
+        pdf_editor::tagged::ClearMcid(holder->GetDocument(), holder, mcid,
+            holder->IsPage() ? 0 : static_cast<CPDF_Form*>(holder)->GetStream()->GetObjNum());
       if (!holder->RemovePageObject(object)) { SetUnexpectedError(); return false; }
       identities->erase(identities->begin() + static_cast<std::ptrdiff_t>(index - 1));
     }
@@ -46,9 +50,15 @@ bool RefreshUnderlineHolder(const Document& document, CPDF_PageObjectHolder* hol
     if (!path_handle) { SetAllocationError(); return false; }
     std::unique_ptr<CPDF_PageObject> path(CPDFPageObjectFromFPDFPageObject(path_handle));
     CopyCommonObjectState(*text, path.get());
-    // The decoration owns no ActualText or tagged-content identity.
-    while (FPDFPageObj_CountMarks(path_handle) > 0)
-      if (!FPDFPageObj_RemoveMark(path_handle, FPDFPageObj_GetMark(path_handle, 0))) return false;
+    // Keep the text's lexical scope open across the decorative path. Giving
+    // it an unrelated mark stack would serialize the same MCID in two BDCs.
+    CPDF_ContentMarks decoration_marks;
+    const auto* text_marks = text->GetContentMarks();
+    for (size_t mark_index = 0; mark_index < text_marks->CountItems(); ++mark_index) {
+      auto* mark = const_cast<CPDF_ContentMarkItem*>(text_marks->GetItem(mark_index));
+      if (mark->GetName() != "KomoUnderline") decoration_marks.AddExistingMark(pdfium::WrapRetain(mark));
+    }
+    path->SetContentMarks(decoration_marks);
     unsigned int red = 0, green = 0, blue = 0, alpha = 255;
     if (!FPDFPageObj_GetFillColor(handle, &red, &green, &blue, &alpha) ||
         !FPDFPath_LineTo(path_handle, advance.x, offset) ||

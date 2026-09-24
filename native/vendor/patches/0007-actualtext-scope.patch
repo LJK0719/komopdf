@@ -1,0 +1,51 @@
+--- a/core/fpdftext/cpdf_textpage.cpp
++++ b/core/fpdftext/cpdf_textpage.cpp
+@@ -959,6 +959,7 @@
+ 
+   WideString actual_text;
+   bool bExist = false;
++  const CPDF_ContentMarkItem* actual_mark = nullptr;
+   RetainPtr<const CPDF_Dictionary> dict;
+   for (size_t i = 0; i < nContentMarks; ++i) {
+     const CPDF_ContentMarkItem* item = pMarks->GetItem(i);
+@@ -969,6 +970,7 @@
+     RetainPtr<const CPDF_String> temp = dict->GetStringFor("ActualText");
+     if (temp) {
+       bExist = true;
++      actual_mark = item;
+       actual_text = temp->GetUnicodeText();
+     }
+   }
+@@ -976,11 +978,19 @@
+     return MarkedContentState::kPass;
+   }
+ 
++  // The lexical ActualText scope is independent of inner decoration marks.
+   if (prev_text_obj_) {
+-    const CPDF_ContentMarks* pPrevMarks = prev_text_obj_->GetContentMarks();
+-    if (pPrevMarks->CountItems() == nContentMarks &&
+-        pPrevMarks->GetItem(nContentMarks - 1)->GetParam() == dict) {
+-      return MarkedContentState::kDone;
++    const CPDF_ContentMarks* previous = prev_text_obj_->GetContentMarks();
++    for (size_t index = previous->CountItems(); index > 0; --index) {
++      const auto* mark = previous->GetItem(index - 1);
++      const auto params = mark->GetParam();
++      if (!params || !params->GetStringFor("ActualText")) {
++        continue;
++      }
++      if (mark == actual_mark) {
++        return MarkedContentState::kDone;
++      }
++      break;
+     }
+   }
+ 
+@@ -1011,7 +1021,7 @@
+   for (size_t n = 0; n < nContentMarks; ++n) {
+     const CPDF_ContentMarkItem* item = pMarks->GetItem(n);
+     RetainPtr<const CPDF_Dictionary> dict = item->GetParam();
+-    if (dict) {
++    if (dict && dict->KeyExist("ActualText")) {
+       actual_text = dict->GetUnicodeTextFor("ActualText");
+     }
+   }

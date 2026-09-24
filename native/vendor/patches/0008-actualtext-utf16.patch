@@ -1,0 +1,65 @@
+--- a/core/fpdftext/cpdf_textpage.cpp
++++ b/core/fpdftext/cpdf_textpage.cpp
+@@ -30,12 +30,26 @@
+ #include "core/fxcrt/data_vector.h"
+ #include "core/fxcrt/fx_bidi.h"
+ #include "core/fxcrt/fx_extension.h"
++#include "core/fxcrt/fx_string.h"
+ #include "core/fxcrt/fx_unicode.h"
+ #include "core/fxcrt/notreached.h"
+ #include "core/fxcrt/span.h"
+ #include "core/fxcrt/stl_util.h"
+ 
+ namespace {
++
++// Text-page character indices and FPDFText_GetText use UTF-16 code units.
++// Preserve that representation when wchar_t is 32-bit (macOS and WASM).
++WideString TextPageUtf16Units(const WideString& value) {
++  if constexpr (sizeof(wchar_t) == 2) {
++    return value;
++  }
++  WideString result;
++  for (char16_t unit : FX_UTF16Encode(value.AsStringView())) {
++    result += static_cast<wchar_t>(unit);
++  }
++  return result;
++}
+ 
+ constexpr float kDefaultFontSize = 1.0f;
+ constexpr float kSizeEpsilon = 0.01f;
+@@ -971,7 +985,7 @@
+     if (temp) {
+       bExist = true;
+       actual_mark = item;
+-      actual_text = temp->GetUnicodeText();
++      actual_text = TextPageUtf16Units(temp->GetUnicodeText());
+     }
+   }
+   if (!bExist) {
+@@ -1022,7 +1036,7 @@
+     const CPDF_ContentMarkItem* item = pMarks->GetItem(n);
+     RetainPtr<const CPDF_Dictionary> dict = item->GetParam();
+     if (dict && dict->KeyExist("ActualText")) {
+-      actual_text = dict->GetUnicodeTextFor("ActualText");
++      actual_text = TextPageUtf16Units(dict->GetUnicodeTextFor("ActualText"));
+     }
+   }
+   if (actual_text.IsEmpty()) {
+--- a/core/fpdftext/cpdf_textpagefind.cpp
++++ b/core/fpdftext/cpdf_textpagefind.cpp
+@@ -193,8 +193,13 @@
+     const WideString& findwhat,
+     const Options& options,
+     std::optional<size_t> startPos) {
+-  std::vector<WideString> findwhat_array =
+-      ExtractFindWhat(GetStringCase(findwhat, options.bMatchCase));
++  // Match the UTF-16 code-unit representation stored by the text page.
++  WideString needle;
++  const auto cased = GetStringCase(findwhat, options.bMatchCase);
++  for (char16_t unit : FX_UTF16Encode(cased.AsStringView())) {
++    needle += static_cast<wchar_t>(unit);
++  }
++  std::vector<WideString> findwhat_array = ExtractFindWhat(needle);
+   auto find = pdfium::WrapUnique(
+       new CPDF_TextPageFind(pTextPage, findwhat_array, options, startPos));
+   find->FindFirst();
