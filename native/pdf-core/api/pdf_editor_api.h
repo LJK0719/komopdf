@@ -53,6 +53,21 @@ const char* pde_render(uint32_t document,
 // savedRevision advances only through pde_confirm_save() after host
 // persistence.
 const char* pde_save_memory(uint32_t document);
+// Read-only page extraction from the current committed PDF. page_ids are
+// unique current-session page IDs in output order, not page indexes. Returns
+// {kind:"bytes",sourceRevision,pageIds}; copy PDF bytes from pde_binary_*.
+// Opening those bytes creates new session page IDs; source IDs are not embedded.
+// Fails rather than dropping bookmarks, links, widgets or tagged structure.
+const char* pde_extract_pages_memory(uint32_t document,
+                                     const char* const* page_ids,
+                                     uint32_t page_count);
+// Same selection and safety checks, but writes to a new host-owned staging file
+// without carrying PDF bytes through the worker. Returns
+// {kind:"native-file",sourceRevision,pageIds}; failed writes remove this new file.
+const char* pde_extract_pages_file_utf8(uint32_t document,
+                                        const char* const* page_ids,
+                                        uint32_t page_count,
+                                        const char* staging_path_utf8);
 // Use a new staging destination. Existing files are never truncated here;
 // the native host owns the final user-confirmed atomic replacement.
 int pde_save_file_utf8(uint32_t document, const char* destination_utf8);

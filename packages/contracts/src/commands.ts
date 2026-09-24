@@ -55,7 +55,10 @@ export const editCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('annotation.update'), pageId: idSchema, annotationId: idSchema, subtype: z.enum(['highlight', 'text', 'rectangle', 'ink']), bounds: rectSchema, text: z.string().optional(), color: colorSchema.optional(), opacity: z.number().min(0).max(1).optional(), strokeWidth: z.number().positive().optional(), points: z.array(z.tuple([z.number(), z.number()])).optional() }).strict(),
   z.object({ type: z.literal('annotation.delete'), pageId: idSchema, annotationId: idSchema }).strict(),
   z.object({ type: z.literal('form.fill'), fieldId: idSchema, value: z.union([z.string(), z.boolean(), z.array(z.string())]) }).strict(),
-  z.object({ type: z.literal('form.create'), pageId: idSchema, fieldId: idSchema, name: z.string().min(1), fieldType: z.enum(['text', 'checkbox', 'combo', 'list', 'radio']), bounds: rectSchema, fontId: idSchema.optional(), fontSize: z.number().positive().max(1000).optional(), options: z.array(z.string().min(1).max(1000)).min(1).max(128).optional() }).strict(),
+  z.object({ type: z.literal('form.create'), pageId: idSchema, fieldId: idSchema, name: z.string().min(1), fieldType: z.enum(['text', 'checkbox', 'combo', 'list', 'radio']), bounds: rectSchema, fontId: idSchema.optional(), fontSize: z.number().positive().max(1000).optional(), options: z.array(z.string().min(1).max(1000)).min(1).max(128).optional(), readOnly: z.boolean().optional(), required: z.boolean().optional(), multiple: z.boolean().optional() }).strict()
+    .refine(command => !command.multiple || command.fieldType === 'list', 'Only list fields can be multiple'),
+  z.object({ type: z.literal('form.update'), fieldId: idSchema, readOnly: z.boolean().optional(), required: z.boolean().optional(), multiple: z.boolean().optional() }).strict()
+    .refine(command => command.readOnly !== undefined || command.required !== undefined || command.multiple !== undefined, 'Specify at least one field attribute'),
 ]);
 export type EditCommand = z.infer<typeof editCommandSchema>;
 export type CommandType = EditCommand['type'];
@@ -75,6 +78,8 @@ export const proposedCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('objects.delete'), pageId: idSchema, objectIds: idsSchema }).strict(),
   z.object({ type: z.literal('objects.copy'), pageId: idSchema, objectIds: idsSchema,
     offset: z.object({ x: z.number(), y: z.number() }).strict().optional() }).strict(),
+  z.object({ type: z.literal('objects.group'), pageId: idSchema, objectIds: idsSchema.min(2) }).strict(),
+  z.object({ type: z.literal('objects.ungroup'), pageId: idSchema, groupId: idSchema }).strict(),
   z.object({ type: z.literal('objects.align'), pageId: idSchema, objectIds: idsSchema, axis: z.enum(['left', 'center', 'right', 'top', 'middle', 'bottom']) }).strict(),
   z.object({ type: z.literal('objects.distribute'), pageId: idSchema, objectIds: idsSchema, axis: z.enum(['horizontal', 'vertical']) }).strict(),
   z.object({ type: z.literal('pages.rotate'), pageIds: idsSchema, degrees: z.union([z.literal(90), z.literal(180), z.literal(270)]) }).strict(),

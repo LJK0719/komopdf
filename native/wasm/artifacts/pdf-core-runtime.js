@@ -5080,7 +5080,6 @@ var _pde_describe_annotations = Module['_pde_describe_annotations'] = makeInvali
 var _pde_recovery_resources = Module['_pde_recovery_resources'] = makeInvalidEarlyAccess('_pde_recovery_resources');
 var _pde_export_recovery = Module['_pde_export_recovery'] = makeInvalidEarlyAccess('_pde_export_recovery');
 var _pde_export_recovery_file_utf8 = Module['_pde_export_recovery_file_utf8'] = makeInvalidEarlyAccess('_pde_export_recovery_file_utf8');
-var _fflush = makeInvalidEarlyAccess('_fflush');
 var _pde_restore_recovery = Module['_pde_restore_recovery'] = makeInvalidEarlyAccess('_pde_restore_recovery');
 var _pde_restore_recovery_file_utf8 = Module['_pde_restore_recovery_file_utf8'] = makeInvalidEarlyAccess('_pde_restore_recovery_file_utf8');
 var _pde_close = Module['_pde_close'] = makeInvalidEarlyAccess('_pde_close');
@@ -5089,6 +5088,8 @@ var _pde_describe_page = Module['_pde_describe_page'] = makeInvalidEarlyAccess('
 var _pde_extract_page = Module['_pde_extract_page'] = makeInvalidEarlyAccess('_pde_extract_page');
 var _pde_render = Module['_pde_render'] = makeInvalidEarlyAccess('_pde_render');
 var _pde_save_memory = Module['_pde_save_memory'] = makeInvalidEarlyAccess('_pde_save_memory');
+var _pde_extract_pages_memory = Module['_pde_extract_pages_memory'] = makeInvalidEarlyAccess('_pde_extract_pages_memory');
+var _pde_extract_pages_file_utf8 = Module['_pde_extract_pages_file_utf8'] = makeInvalidEarlyAccess('_pde_extract_pages_file_utf8');
 var _pde_save_file_utf8 = Module['_pde_save_file_utf8'] = makeInvalidEarlyAccess('_pde_save_file_utf8');
 var _pde_text_edit_stride = Module['_pde_text_edit_stride'] = makeInvalidEarlyAccess('_pde_text_edit_stride');
 var _pde_edit_command_stride = Module['_pde_edit_command_stride'] = makeInvalidEarlyAccess('_pde_edit_command_stride');
@@ -5111,6 +5112,7 @@ var _pde_error_code = Module['_pde_error_code'] = makeInvalidEarlyAccess('_pde_e
 var _pde_error_message = Module['_pde_error_message'] = makeInvalidEarlyAccess('_pde_error_message');
 var _malloc = Module['_malloc'] = makeInvalidEarlyAccess('_malloc');
 var _free = Module['_free'] = makeInvalidEarlyAccess('_free');
+var _fflush = makeInvalidEarlyAccess('_fflush');
 var _emscripten_stack_get_end = makeInvalidEarlyAccess('_emscripten_stack_get_end');
 var _emscripten_stack_get_base = makeInvalidEarlyAccess('_emscripten_stack_get_base');
 var _emscripten_builtin_memalign = makeInvalidEarlyAccess('_emscripten_builtin_memalign');
@@ -5145,7 +5147,6 @@ function assignWasmExports(wasmExports) {
   assert(typeof wasmExports['pde_recovery_resources'] != 'undefined', 'missing Wasm export: pde_recovery_resources');
   assert(typeof wasmExports['pde_export_recovery'] != 'undefined', 'missing Wasm export: pde_export_recovery');
   assert(typeof wasmExports['pde_export_recovery_file_utf8'] != 'undefined', 'missing Wasm export: pde_export_recovery_file_utf8');
-  assert(typeof wasmExports['fflush'] != 'undefined', 'missing Wasm export: fflush');
   assert(typeof wasmExports['pde_restore_recovery'] != 'undefined', 'missing Wasm export: pde_restore_recovery');
   assert(typeof wasmExports['pde_restore_recovery_file_utf8'] != 'undefined', 'missing Wasm export: pde_restore_recovery_file_utf8');
   assert(typeof wasmExports['pde_close'] != 'undefined', 'missing Wasm export: pde_close');
@@ -5154,6 +5155,8 @@ function assignWasmExports(wasmExports) {
   assert(typeof wasmExports['pde_extract_page'] != 'undefined', 'missing Wasm export: pde_extract_page');
   assert(typeof wasmExports['pde_render'] != 'undefined', 'missing Wasm export: pde_render');
   assert(typeof wasmExports['pde_save_memory'] != 'undefined', 'missing Wasm export: pde_save_memory');
+  assert(typeof wasmExports['pde_extract_pages_memory'] != 'undefined', 'missing Wasm export: pde_extract_pages_memory');
+  assert(typeof wasmExports['pde_extract_pages_file_utf8'] != 'undefined', 'missing Wasm export: pde_extract_pages_file_utf8');
   assert(typeof wasmExports['pde_save_file_utf8'] != 'undefined', 'missing Wasm export: pde_save_file_utf8');
   assert(typeof wasmExports['pde_text_edit_stride'] != 'undefined', 'missing Wasm export: pde_text_edit_stride');
   assert(typeof wasmExports['pde_edit_command_stride'] != 'undefined', 'missing Wasm export: pde_edit_command_stride');
@@ -5176,6 +5179,7 @@ function assignWasmExports(wasmExports) {
   assert(typeof wasmExports['pde_error_message'] != 'undefined', 'missing Wasm export: pde_error_message');
   assert(typeof wasmExports['malloc'] != 'undefined', 'missing Wasm export: malloc');
   assert(typeof wasmExports['free'] != 'undefined', 'missing Wasm export: free');
+  assert(typeof wasmExports['fflush'] != 'undefined', 'missing Wasm export: fflush');
   assert(typeof wasmExports['emscripten_stack_get_end'] != 'undefined', 'missing Wasm export: emscripten_stack_get_end');
   assert(typeof wasmExports['emscripten_stack_get_base'] != 'undefined', 'missing Wasm export: emscripten_stack_get_base');
   assert(typeof wasmExports['emscripten_builtin_memalign'] != 'undefined', 'missing Wasm export: emscripten_builtin_memalign');
@@ -5206,7 +5210,6 @@ function assignWasmExports(wasmExports) {
   _pde_recovery_resources = Module['_pde_recovery_resources'] = createExportWrapper('pde_recovery_resources', wasmExports['pde_recovery_resources'], 1);
   _pde_export_recovery = Module['_pde_export_recovery'] = createExportWrapper('pde_export_recovery', wasmExports['pde_export_recovery'], 1);
   _pde_export_recovery_file_utf8 = Module['_pde_export_recovery_file_utf8'] = createExportWrapper('pde_export_recovery_file_utf8', wasmExports['pde_export_recovery_file_utf8'], 2);
-  _fflush = createExportWrapper('fflush', wasmExports['fflush'], 1);
   _pde_restore_recovery = Module['_pde_restore_recovery'] = createExportWrapper('pde_restore_recovery', wasmExports['pde_restore_recovery'], 3);
   _pde_restore_recovery_file_utf8 = Module['_pde_restore_recovery_file_utf8'] = createExportWrapper('pde_restore_recovery_file_utf8', wasmExports['pde_restore_recovery_file_utf8'], 2);
   _pde_close = Module['_pde_close'] = createExportWrapper('pde_close', wasmExports['pde_close'], 1);
@@ -5215,6 +5218,8 @@ function assignWasmExports(wasmExports) {
   _pde_extract_page = Module['_pde_extract_page'] = createExportWrapper('pde_extract_page', wasmExports['pde_extract_page'], 2);
   _pde_render = Module['_pde_render'] = createExportWrapper('pde_render', wasmExports['pde_render'], 8);
   _pde_save_memory = Module['_pde_save_memory'] = createExportWrapper('pde_save_memory', wasmExports['pde_save_memory'], 1);
+  _pde_extract_pages_memory = Module['_pde_extract_pages_memory'] = createExportWrapper('pde_extract_pages_memory', wasmExports['pde_extract_pages_memory'], 3);
+  _pde_extract_pages_file_utf8 = Module['_pde_extract_pages_file_utf8'] = createExportWrapper('pde_extract_pages_file_utf8', wasmExports['pde_extract_pages_file_utf8'], 4);
   _pde_save_file_utf8 = Module['_pde_save_file_utf8'] = createExportWrapper('pde_save_file_utf8', wasmExports['pde_save_file_utf8'], 2);
   _pde_text_edit_stride = Module['_pde_text_edit_stride'] = createExportWrapper('pde_text_edit_stride', wasmExports['pde_text_edit_stride'], 0);
   _pde_edit_command_stride = Module['_pde_edit_command_stride'] = createExportWrapper('pde_edit_command_stride', wasmExports['pde_edit_command_stride'], 0);
@@ -5237,6 +5242,7 @@ function assignWasmExports(wasmExports) {
   _pde_error_message = Module['_pde_error_message'] = createExportWrapper('pde_error_message', wasmExports['pde_error_message'], 0);
   _malloc = Module['_malloc'] = createExportWrapper('malloc', wasmExports['malloc'], 1);
   _free = Module['_free'] = createExportWrapper('free', wasmExports['free'], 1);
+  _fflush = createExportWrapper('fflush', wasmExports['fflush'], 1);
   _emscripten_stack_get_end = wasmExports['emscripten_stack_get_end'];
   _emscripten_stack_get_base = wasmExports['emscripten_stack_get_base'];
   _emscripten_builtin_memalign = createExportWrapper('emscripten_builtin_memalign', wasmExports['emscripten_builtin_memalign'], 2);
@@ -6128,4 +6134,4 @@ for (const prop of Object.keys(Module)) {
 export default Module;
 
 
-export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi3-5cf6fa08900797c37c47";
+export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi3-7817c80571330dc2afd3";

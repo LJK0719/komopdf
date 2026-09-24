@@ -112,7 +112,7 @@ constexpr std::string_view kCapabilitiesJson =
     "\"pages.delete\",\"pages.reorder\",\"pages.insert\","
     "\"image.insert\",\"content.insert\",\"pages.duplicate\","
     "\"pages.import\",\"image.replace\",\"image.crop\","
-    "\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\"]";
+    "\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\",\"form.update\"]";
 
 struct Matrix {
   double a = 1;
@@ -269,6 +269,7 @@ enum class EditType : uint32_t {
   kPagesCrop = 25,
   kObjectsGroup = 26,
   kObjectsUngroup = 27,
+  kFormUpdate = 28,
 };
 
 struct EditCommand {
@@ -2007,20 +2008,34 @@ bool CopySourceToMemory(Document* document) {
 
 class DestinationFile {
  public:
-  ~DestinationFile() { Close(); }
+  ~DestinationFile() {
+    Close();
+    // Open uses CREATE_NEW / "wbx". Only the file this call created may be
+    // removed; a pre-existing destination is never touched on failure.
+    if (!finished_ && !created_path_.empty()) {
+#if defined(_WIN32)
+      DeleteFileW(created_path_.c_str());
+#else
+      std::remove(created_path_.c_str());
+#endif
+    }
+  }
 
   bool Open(std::string_view path) {
 #if defined(_WIN32)
-    const std::wstring wide_path = pdf_editor::NativeWidePath(path);
-    if (wide_path.empty()) {
-      return false;
-    }
+    std::wstring wide_path = pdf_editor::NativeWidePath(path);
+    if (wide_path.empty()) return false;
     handle_ = CreateFileW(wide_path.c_str(), GENERIC_WRITE, 0, nullptr,
                           CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    return handle_ != INVALID_HANDLE_VALUE;
+    if (handle_ == INVALID_HANDLE_VALUE) return false;
+    created_path_.swap(wide_path);
+    return true;
 #else
-    file_ = std::fopen(std::string(path).c_str(), "wbx");
-    return file_ != nullptr;
+    std::string file_path(path);
+    file_ = std::fopen(file_path.c_str(), "wbx");
+    if (!file_) return false;
+    created_path_.swap(file_path);
+    return true;
 #endif
   }
 
@@ -2055,10 +2070,17 @@ class DestinationFile {
 
   bool Finish() {
 #if defined(_WIN32)
-    return handle_ != INVALID_HANDLE_VALUE && FlushFileBuffers(handle_);
+    if (handle_ == INVALID_HANDLE_VALUE) return false;
+    const bool flushed = FlushFileBuffers(handle_) != 0;
+    const bool closed = CloseHandle(handle_) != 0;
+    handle_ = INVALID_HANDLE_VALUE;
+    finished_ = flushed && closed;
 #else
-    return file_ && std::fflush(file_) == 0;
+    if (!file_) return false;
+    finished_ = std::fclose(file_) == 0;
+    file_ = nullptr;
 #endif
+    return finished_;
   }
 
  private:
@@ -2078,9 +2100,12 @@ class DestinationFile {
 
 #if defined(_WIN32)
   HANDLE handle_ = INVALID_HANDLE_VALUE;
+  std::wstring created_path_;
 #else
   std::FILE* file_ = nullptr;
+  std::string created_path_;
 #endif
+  bool finished_ = false;
 };
 
 bool CopySourceToFile(Document* document, std::string_view destination) {
@@ -4193,6 +4218,63 @@ bool ValidateImportedPageFeatures(FPDF_DOCUMENT source, int page_index) {
   return true;
 }
 
+bool ObjectTreeHasStructureLink(CPDF_PageObject* object,
+                                size_t depth,
+                                bool* has_structure_link);
+
+bool ValidateExtractablePageFeatures(FPDF_DOCUMENT source, int page_index) {
+  if (!ValidateImportedPageFeatures(source, page_index)) return false;
+  ScopedPage parsed(FPDF_LoadPage(source, page_index));
+  if (!parsed.get()) { SetUnexpectedError(); return false; }
+  const int count = FPDFPage_CountObjects(parsed.get());
+  if (count < 0) { SetUnexpectedError(); return false; }
+  for (int index = 0; index < count; ++index) {
+    bool linked = false;
+    if (!ObjectTreeHasStructureLink(
+            CPDFPageObjectFromFPDFPageObject(FPDFPage_GetObject(parsed.get(), index)),
+            0, &linked)) return false;
+    if (linked) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "Tagged page content cannot be extracted without structure remapping.");
+      return false;
+    }
+  }
+  CPDF_Document* native = CPDFDocumentFromFPDFDocument(source);
+  const auto page = native ? native->GetPageDictionary(page_index) : nullptr;
+  if (!page) { SetUnexpectedError(); return false; }
+  if (page->KeyExist("StructParent") || page->KeyExist("AA")) {
+    SetError("UNSUPPORTED_CAPABILITY",
+             "Page structure links or actions cannot be extracted safely.");
+    return false;
+  }
+  const auto annotations = page->GetArrayFor("Annots");
+  if (page->KeyExist("Annots") && !annotations) {
+    SetError("UNSUPPORTED_CAPABILITY", "The page annotation list is malformed.");
+    return false;
+  }
+  if (!annotations) return true;
+  constexpr const char* kOrdinaryAnnotations[] = {
+      "Text", "FreeText", "Line", "Square", "Circle", "Polygon", "PolyLine",
+      "Highlight", "Underline", "Squiggly", "StrikeOut", "Stamp", "Caret", "Ink"};
+  for (size_t index = 0; index < annotations->size(); ++index) {
+    const auto annotation = annotations->GetDictAt(index);
+    const ByteString subtype = annotation ? annotation->GetNameFor("Subtype") : ByteString();
+    if (!annotation || !std::any_of(std::begin(kOrdinaryAnnotations),
+                                    std::end(kOrdinaryAnnotations),
+                                    [&](const char* allowed) { return subtype == allowed; }) ||
+        annotation->KeyExist("A") || annotation->KeyExist("AA") ||
+        annotation->KeyExist("Dest") || annotation->KeyExist("IRT") ||
+        annotation->KeyExist("Popup") || annotation->KeyExist("Parent") ||
+        (annotation->KeyExist("P") &&
+         annotation->GetDictFor("P").Get() != page.Get())) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "Interactive or cross-linked annotations cannot be extracted safely.");
+      return false;
+    }
+  }
+  return true;
+}
+
 bool AssignImportedAnnotationIds(const Document& document,
                                  FPDF_DOCUMENT pdf,
                                  size_t insertion_index,
@@ -4830,6 +4912,11 @@ bool ObjectTreeHasStructureLink(CPDF_PageObject* object,
   if (!form) {
     return true;
   }
+  if (form->form()->GetDict()->KeyExist("StructParent") ||
+      form->form()->GetDict()->KeyExist("StructParents")) {
+    *has_structure_link = true;
+    return true;
+  }
   for (const auto& child : *form->form()) {
     if (!ObjectTreeHasStructureLink(child.get(), depth + 1,
                                     has_structure_link)) {
@@ -5110,6 +5197,7 @@ bool ApplyCommand(
     case EditType::kAnnotationDelete:
     case EditType::kFormFill:
     case EditType::kFormCreate:
+    case EditType::kFormUpdate:
       return ApplyDocumentTool(document, pdf, metadata, command, resources, font_cache);
   }
   SetError("UNSUPPORTED_CAPABILITY", "The edit command type is not supported.");
@@ -5289,7 +5377,7 @@ bool ValidateRectValues(const EditCommand& command) {
 
 bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
   if (source.type < static_cast<uint32_t>(EditType::kTextReplace) ||
-      source.type > static_cast<uint32_t>(EditType::kObjectsUngroup)) {
+      source.type > static_cast<uint32_t>(EditType::kFormUpdate)) {
     SetError("UNSUPPORTED_CAPABILITY",
              "The edit command type is not supported.");
     return false;
@@ -5577,11 +5665,24 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
         return false;
       }
       return true;
+    case EditType::kFormUpdate:
+      if (!require_target() || !target->page_id.empty() ||
+          !target->resource_id.empty() || !target->font_id.empty() ||
+          !target->ids.empty() || !target->text.empty() ||
+          target->flags == 0 || (target->flags & ~7U) ||
+          ((target->flags & 1U) && target->values[0] != 0 && target->values[0] != 1) ||
+          ((target->flags & 2U) && target->values[1] != 0 && target->values[1] != 1) ||
+          ((target->flags & 4U) && target->values[2] != 0 && target->values[2] != 1)) {
+        if (g_error_code.empty()) SetError("INVALID_REQUEST", "The form attribute update is invalid.");
+        return false;
+      }
+      return true;
     case EditType::kFormCreate: {
       const bool choice = target->resource_id == "combo" || target->resource_id == "list";
       const bool radio = target->resource_id == "radio";
       if (!require_page() || !require_target() || !ValidateRectValues(*target) ||
-          (target->flags & ~1U) ||
+          (target->flags & ~15U) ||
+          ((target->flags & 8U) && target->resource_id != "list") ||
           (((target->flags & 1U) != 0) != !target->font_id.empty()) ||
           (target->resource_id != "text" && target->resource_id != "checkbox" && !choice && !radio) ||
           ((choice || radio) ? target->ids.empty() || (choice && target->font_id.empty()) : !target->ids.empty()) ||
@@ -5800,7 +5901,9 @@ void AppendChangedPages(std::string* output,
                         const CandidateMetadata& metadata) {
   const std::set<std::string> changed = ChangedPageSet(transaction);
   const bool forms_changed = std::any_of(transaction.commands.begin(), transaction.commands.end(),
-      [](const EditCommand& command) { return command.type == EditType::kFormFill; });
+      [](const EditCommand& command) {
+        return command.type == EditType::kFormFill || command.type == EditType::kFormUpdate;
+      });
   output->push_back('[');
   bool first = true;
   for (const PageIdentity& page : metadata.pages) {
@@ -6047,6 +6150,81 @@ bool SavePdfToFile(Document* document, std::string_view destination) {
     return false;
   }
   return true;
+}
+
+bool BuildExtractedPdf(Document* document,
+                       const char* const* page_ids,
+                       uint32_t page_count,
+                       FPDF_DOCUMENT* result) {
+  if (!page_ids || page_count == 0 || page_count > document->metadata.pages.size()) {
+    SetError("INVALID_REQUEST", "Select at least one distinct current page ID.");
+    return false;
+  }
+  const unsigned long permissions = FPDF_GetDocPermissions(document->pdf);
+  if (permissions != 0xffffffffUL &&
+      (!(permissions & (1UL << 4)) || !(permissions & (1UL << 10)))) {
+    SetError("UNSUPPORTED_CAPABILITY",
+             "PDF copy and document-assembly permissions are required for extraction.");
+    return false;
+  }
+  if (FPDF_GetSecurityHandlerRevision(document->pdf) >= 0) {
+    SetError("UNSUPPORTED_CAPABILITY",
+             "Extracting encrypted PDFs without preserving their protection is not supported.");
+    return false;
+  }
+  CPDF_Document* native = CPDFDocumentFromFPDFDocument(document->pdf);
+  const CPDF_Dictionary* catalog = native ? native->GetRoot() : nullptr;
+  if (!catalog) { SetUnexpectedError(); return false; }
+  for (const char* key : {"Outlines", "StructTreeRoot", "AcroForm", "Names",
+                          "Dests", "PageLabels", "OCProperties", "OpenAction",
+                          "AA", "AF", "Perms", "OutputIntents"}) {
+    if (catalog->KeyExist(key)) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "Document-level navigation, form, structure or appearance semantics cannot be extracted safely.");
+      return false;
+    }
+  }
+  std::vector<int> indices;
+  indices.reserve(page_count);
+  std::set<std::string> unique_ids;
+  for (uint32_t offset = 0; offset < page_count; ++offset) {
+    if (!ValidateId(page_ids[offset], "Page ID")) return false;
+    const std::string_view id(page_ids[offset]);
+    const auto index = FindPageIndex(document->metadata, id);
+    if (!index || !unique_ids.emplace(id).second) {
+      SetError("INVALID_REQUEST", "Page IDs must exist and be distinct.");
+      return false;
+    }
+    if (!ValidateExtractablePageFeatures(document->pdf, static_cast<int>(*index)))
+      return false;
+    indices.push_back(static_cast<int>(*index));
+  }
+  ScopedDocument extracted(FPDF_CreateNewDocument());
+  if (!extracted.get() ||
+      !FPDF_ImportPagesByIndex(extracted.get(), document->pdf, indices.data(),
+                               static_cast<unsigned long>(indices.size()), 0)) {
+    SetError("CORE_UNAVAILABLE", "The selected pages could not be copied to a new PDF.");
+    return false;
+  }
+  *result = extracted.release();
+  return true;
+}
+
+std::string SerializeExtractedPagesResult(const Document& document,
+                                          const char* const* page_ids,
+                                          uint32_t page_count,
+                                          std::string_view kind) {
+  std::string result = "{\"kind\":";
+  AppendJsonString(&result, kind);
+  result.append(",\"sourceRevision\":");
+  AppendJsonUnsigned(&result, document.revision);
+  result.append(",\"pageIds\":[");
+  for (uint32_t offset = 0; offset < page_count; ++offset) {
+    if (offset) result.push_back(',');
+    AppendJsonString(&result, page_ids[offset]);
+  }
+  result.append("]}");
+  return result;
 }
 
 bool RequireEditingAllowed(const Document& document) {
@@ -6681,6 +6859,63 @@ const char* pde_save_memory(uint32_t document) {
     const bool saved = value->transactions.empty() ? CopySourceToMemory(value)
                                                    : SavePdfToMemory(value);
     if (!saved) {
+      return nullptr;
+    }
+    g_result.swap(result);
+    return g_result.c_str();
+  });
+}
+
+const char* pde_extract_pages_memory(uint32_t document,
+                                     const char* const* page_ids,
+                                     uint32_t page_count) {
+  return Guard<const char*>(nullptr, [&]() -> const char* {
+    BeginOperation();
+    if (!RequireInitialized()) return nullptr;
+    Document* value = FindDocument(document);
+    if (!value) return nullptr;
+    FPDF_DOCUMENT pdf = nullptr;
+    if (!BuildExtractedPdf(value, page_ids, page_count, &pdf)) return nullptr;
+    ScopedDocument extracted(pdf);
+    BinaryPdfWriter writer;
+    if (!FPDF_SaveAsCopy(extracted.get(), &writer, SaveFlags(*value)) ||
+        writer.failed || writer.bytes.empty()) {
+      SetError("SAVE_FAILED", "The extracted PDF could not be serialized.");
+      return nullptr;
+    }
+    std::string result = SerializeExtractedPagesResult(
+        *value, page_ids, page_count, "bytes");
+    g_binary.swap(writer.bytes);
+    g_result.swap(result);
+    return g_result.c_str();
+  });
+}
+
+const char* pde_extract_pages_file_utf8(uint32_t document,
+                                        const char* const* page_ids,
+                                        uint32_t page_count,
+                                        const char* staging_path_utf8) {
+  return Guard<const char*>(nullptr, [&]() -> const char* {
+    BeginOperation();
+    if (!RequireInitialized() ||
+        !ValidateUtf8Argument(staging_path_utf8, "Staging path", false))
+      return nullptr;
+    Document* value = FindDocument(document);
+    if (!value) return nullptr;
+    FPDF_DOCUMENT pdf = nullptr;
+    if (!BuildExtractedPdf(value, page_ids, page_count, &pdf)) return nullptr;
+    ScopedDocument extracted(pdf);
+    std::string result = SerializeExtractedPagesResult(
+        *value, page_ids, page_count, "native-file");
+    DestinationFile output;
+    if (!output.Open(staging_path_utf8)) {
+      SetError("SAVE_FAILED", "The extraction staging file could not be created.");
+      return nullptr;
+    }
+    DestinationPdfWriter writer(&output);
+    if (!FPDF_SaveAsCopy(extracted.get(), &writer, SaveFlags(*value)) ||
+        writer.failed || !output.Finish()) {
+      SetError("SAVE_FAILED", "The extracted PDF could not be written.");
       return nullptr;
     }
     g_result.swap(result);

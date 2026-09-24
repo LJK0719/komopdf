@@ -71,6 +71,9 @@ struct FormFieldSpec {
   std::string initial_value_utf8;
   std::vector<std::string> options_utf8;
   bool checked = false;
+  bool read_only = false;
+  bool required = false;
+  bool multiple = false;  // Only list boxes support multiple selections.
   // Must be a font already loaded into `document`. Text fields without a font
   // reuse an existing valid AcroForm /DA and /DR; they never silently fall back
   // to Helvetica or a platform font.
@@ -106,5 +109,13 @@ bool FillFormField(FPDF_DOCUMENT document,
                    const std::string& field_name,
                    const FormValue& value,
                    std::string* error);
+
+// Unspecified attributes preserve their current PDF field flags.
+bool UpdateFormField(FPDF_DOCUMENT document,
+                     const std::string& field_name,
+                     std::optional<bool> read_only,
+                     std::optional<bool> required,
+                     std::optional<bool> multiple,
+                     std::string* error);
 
 }  // namespace pdf_editor

@@ -7,6 +7,7 @@ import {
   type EditTransaction,
   type EngineAdapter,
   type ExtractionRequest,
+  type ExtractPagesRequest, type ExtractPagesResult,
   type PageModel,
   type RenderRequest,
   type RenderResult,
@@ -170,6 +171,15 @@ export class WasmEngineAdapter implements EngineAdapter {
 
   save(request: SaveRequest): Promise<SaveResult> {
     return this.rpc.call<SaveResult>('save', [request]);
+  }
+
+  extractPages(request: ExtractPagesRequest): Promise<ExtractPagesResult> {
+    const pageOrder = this.pageOrders.get(request.docId);
+    if (!pageOrder || !Array.isArray(request.pageIds) || !request.pageIds.length ||
+      request.pageIds.some(id => !pageOrder.includes(id))) {
+      throw new EngineError('INVALID_REQUEST', 'Select existing PDF pages to extract');
+    }
+    return this.rpc.call<ExtractPagesResult>('extractPages', [request]);
   }
 
   exportRecovery(docId: string): Promise<RecoverySnapshot> {

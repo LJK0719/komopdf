@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import {
   EngineError, assertTextRange, graphemeBoundaries, type TextRange,
   type CommitResult,
   type DocumentInfo,
   type EngineAdapter,
   type PageModel,
+  type RenderResult,
   type TextLayoutResult,
   type TextStyle,
   type EditTransaction,
@@ -17,6 +19,10 @@ type Props = {
   page: PageModel | null;
   selectedIds: string[];
   searchSelection?: { docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null;
+  inlineTextId?: string | null;
+  inlineHost?: HTMLElement | null;
+  render?: RenderResult | null;
+  onInlineClose?(): void;
   engine: EngineAdapter;
   disabled?: boolean;
   onBusyChange?(busy: boolean): void;
@@ -24,7 +30,8 @@ type Props = {
   onCommitted(result: CommitResult): Promise<void>;
 };
 
-export function TextEditPanel({ document, page, selectedIds, searchSelection, engine, disabled = false, onBusyChange, onDraftChange, onCommitted }: Props) {
+export function TextEditPanel({ document, page, selectedIds, searchSelection, inlineTextId, inlineHost, render, onInlineClose,
+  engine, disabled = false, onBusyChange, onDraftChange, onCommitted }: Props) {
   const selectedObject = useMemo(() => {
     if (!page || selectedIds.length !== 1) return null;
     return page.objects.find((object) => object.id === selectedIds[0]) ?? null;
@@ -33,6 +40,8 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
   const originalText = block?.runs.map((run) => run.text).join('') ?? '';
   const selectionKey = `${document?.id ?? ''}\0${document?.revision ?? ''}\0${page?.id ?? ''}\0${block?.id ?? ''}`;
   const originalInput = useRef<HTMLTextAreaElement>(null);
+  const inlineInput = useRef<HTMLTextAreaElement>(null);
+  const composing = useRef(false);
   const [replacement, setReplacement] = useState(originalText);
   const [fontId, setFontId] = useState('');
   const [formatFontId, setFormatFontId] = useState('');
@@ -54,6 +63,14 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState('');
   const previewSequence = useRef(0);
+  const invalidatePreview = () => {
+    previewSequence.current += 1;
+    setPreview(null);
+    setPreviewing(false);
+    setError('');
+  };
+  const changeReplacement = (text: string) => { setReplacement(text); invalidatePreview(); };
+  const discardDraft = () => { setReplacement(targetText); setFontId(''); clearFormat(); invalidatePreview(); };
   const { fonts, error: fontError } = useFontResources(engine);
 
   useEffect(() => {
@@ -81,10 +98,26 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
     const next: TextRange = [start, end];
     setRange(next);
     setReplacement(originalText.slice(...next));
+    previewSequence.current += 1;
     setPreview(null);
+    setPreviewing(false);
     originalInput.current?.focus();
     originalInput.current?.setSelectionRange(...next);
   }, [searchSelection, selectionKey, originalText]);
+
+  useEffect(() => {
+    if (!inlineTextId || inlineTextId !== selectedObject?.id || !block) return;
+    setRange([0, originalText.length]);
+    setReplacement(originalText);
+    setFontId('');
+    clearFormat();
+    previewSequence.current += 1;
+    setPreview(null);
+    setPreviewing(false);
+    setError('');
+    inlineInput.current?.focus();
+    inlineInput.current?.setSelectionRange(0, originalText.length);
+  }, [inlineTextId]);
 
   const canReplace = Boolean(
     document
@@ -108,7 +141,7 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
   };
 
   const runPreview = async (): Promise<void> => {
-    if (!canReplace || previewing || applying) return;
+    if (!canReplace || previewing || applying || composing.current) return;
     const sequence = ++previewSequence.current;
     setPreviewing(true);
     setError('');
@@ -123,7 +156,7 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
   };
 
   const commit = async (): Promise<void> => {
-    if (!document || !page || !block || !preview || preview.overflow || applying) return;
+    if (!document || !page || !block || !preview || preview.overflow || applying || composing.current) return;
     setApplying(true);
     onBusyChange?.(true);
     setError('');
@@ -149,6 +182,7 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
         ...(fontId ? { fontIds: new Set([fontId]) } : {}),
       });
       await onCommitted(result);
+      onInlineClose?.();
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -191,6 +225,44 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
   }
 
   return <section className="text-edit-panel" aria-label="Manual text editing">
+    {inlineHost && render && page && selectedObject && inlineTextId === selectedObject.id && canReplace && createPortal(
+      <div className="inline-text-editor" role="group" aria-label="Edit text on page"
+        style={{ left: selectedObject.bounds.x * render.width / page.widthPt,
+          top: selectedObject.bounds.y * render.height / page.heightPt,
+          width: Math.max(190, selectedObject.bounds.width * render.width / page.widthPt) }}
+        onClick={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()}>
+        {preview && <div className={preview.overflow ? 'inline-preview-bounds inline-preview-overflow' : 'inline-preview-bounds'}
+          aria-hidden="true" style={{ left: (preview.bounds.x - selectedObject.bounds.x) * render.width / page.widthPt,
+            top: (preview.bounds.y - selectedObject.bounds.y) * render.height / page.heightPt,
+            width: preview.bounds.width * render.width / page.widthPt,
+            height: preview.bounds.height * render.height / page.heightPt }} />}
+        <label className="inline-text-label">Page text draft
+          <textarea ref={inlineInput} aria-label="Page text draft" value={replacement}
+            style={{ minHeight: Math.max(42, selectedObject.bounds.height * render.height / page.heightPt) }}
+            disabled={disabled || applying}
+            onChange={event => changeReplacement(event.currentTarget.value)}
+            onBeforeInput={event => { if (!composing.current) snapGraphemeSelection(event.currentTarget); }}
+            onSelect={event => { if (!composing.current) snapGraphemeSelection(event.currentTarget); }}
+            onCompositionStart={() => { composing.current = true; }}
+            onCompositionEnd={event => { composing.current = false; changeReplacement(event.currentTarget.value); snapGraphemeSelection(event.currentTarget); }}
+            onKeyDown={event => {
+              if (event.nativeEvent.isComposing || composing.current) return;
+              if (event.key === 'Escape') { event.preventDefault(); discardDraft(); onInlineClose?.(); return; }
+              moveEditableSelection(event, changeReplacement);
+            }} />
+        </label>
+        <div className="inline-text-toolbar">
+          <button type="button" disabled={disabled || previewing || applying} onClick={() => void runPreview()}>
+            {previewing ? 'Previewing…' : 'Preview page text'}</button>
+          <button type="button" disabled={disabled || !preview || preview.overflow || previewing || applying || !draftDirty || formatDirty}
+            onClick={() => void commit()}>Commit page text</button>
+          <button type="button" disabled={disabled || applying} onClick={() => { discardDraft(); onInlineClose?.(); }}>Cancel page text</button>
+        </div>
+        {preview && <span role="status" className={preview.overflow ? 'inline-text-status inline-text-overflow' : 'inline-text-status'}>
+          {preview.overflow ? 'Overflow detected — shorten the draft before committing' : 'Engine preview: fits current text bounds'}
+        </span>}
+        {error && <span role="alert" className="inline-text-status inline-text-overflow">{error}</span>}
+      </div>, inlineHost)}
     <span className="eyebrow">{block.isOcr ? 'Correct OCR Search Text' : block.isParagraph ? 'Paragraph Text Edit' : 'Manual Text Edit'}</span>
     {block.isOcr && <p>This is an invisible OCR search layer. Corrections update searchable and copied text inside the recognized box; they do not change the scanned image.</p>}
     {block.isParagraph && <p>This text block is a formatted paragraph. Text replacement (including newlines) reflows natively while preserving the block ID. If the document was reopened and the original font is not in the font registry, select an explicit Replacement font below.</p>}
@@ -205,24 +277,22 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
         if (draftDirty && !window.confirm('Discard the current replacement draft and edit this selection?')) {
           event.currentTarget.setSelectionRange(...range); return;
         }
-        previewSequence.current += 1;
-        setRange(next); setReplacement(originalText.slice(...next)); setFontId(''); clearFormat(); setPreview(null); setError('');
+        setRange(next); setReplacement(originalText.slice(...next)); setFontId(''); clearFormat(); invalidatePreview();
       }} /></label>
     <p>{wholeBlock ? 'Editing the whole text block. Highlight characters above to replace a range.'
       : `Editing characters ${range[0] + 1}–${range[1]}. Font changes require the whole block.`}</p>
     {!wholeBlock && <button type="button" disabled={disabled || previewing || applying} onClick={() => {
-      previewSequence.current += 1;
       setReplacement(originalText.slice(0, range[0]) + replacement + originalText.slice(range[1]));
-      setRange([0, originalText.length]); setPreview(null); setError('');
+      setRange([0, originalText.length]); invalidatePreview();
     }}>Use whole text block</button>}
     <label>Replacement<textarea
       value={replacement}
-      onChange={(event) => { setReplacement(event.target.value); setPreview(null); setError(''); }}
+      onChange={(event) => changeReplacement(event.target.value)}
       disabled={disabled || previewing || applying || !canReplace || formatDirty}
     /></label>
     <label>Replacement font<select
       value={fontId}
-      onChange={(event) => { setFontId(event.target.value); setPreview(null); setError(''); }}
+      onChange={(event) => { setFontId(event.target.value); invalidatePreview(); }}
       disabled={disabled || previewing || applying || !canReplace || !wholeBlock || formatDirty}
     >
       <option value="">Preserve original font</option>
@@ -254,10 +324,7 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, en
       <button type="button" onClick={() => void commit()} disabled={disabled || !preview || preview.overflow || previewing || applying || formatDirty}>
         {applying ? 'Committing…' : 'Commit replacement'}
       </button>
-      <button type="button" disabled={disabled || previewing || applying || !draftDirty} onClick={() => {
-        previewSequence.current += 1;
-        setReplacement(targetText); setFontId(''); clearFormat(); setPreview(null); setError('');
-      }}>Discard draft</button>
+      <button type="button" disabled={disabled || previewing || applying || !draftDirty} onClick={discardDraft}>Discard draft</button>
     </div>
     {preview ? <div className={preview.overflow ? 'layout-result layout-result-overflow' : 'layout-result'}>
       <strong>{preview.overflow ? 'Overflow detected' : 'Fits current text bounds'}</strong>
@@ -294,6 +361,40 @@ function moveReadOnlySelection(event: KeyboardEvent<HTMLTextAreaElement>): void 
   }
   if (shiftKey) element.setSelectionRange(Math.min(anchor, next), Math.max(anchor, next), next < anchor ? 'backward' : 'forward');
   else element.setSelectionRange(next, next);
+}
+
+function snapGraphemeSelection(element: HTMLTextAreaElement): void {
+  const boundaries = [...graphemeBoundaries(element.value)].sort((a, b) => a - b);
+  const { selectionStart: start, selectionEnd: end, selectionDirection } = element;
+  const before = (position: number) => boundaries.findLast(boundary => boundary <= position) ?? 0;
+  const after = (position: number) => boundaries.find(boundary => boundary >= position) ?? element.value.length;
+  const snappedStart = before(start);
+  const snappedEnd = start === end
+    ? (start - snappedStart < after(start) - start ? snappedStart : after(start))
+    : after(end);
+  if (start !== snappedStart || end !== snappedEnd) {
+    element.setSelectionRange(start === end ? snappedEnd : snappedStart, snappedEnd, selectionDirection);
+  }
+}
+
+function moveEditableSelection(event: KeyboardEvent<HTMLTextAreaElement>, onChange: (text: string) => void): void {
+  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+    moveReadOnlySelection(event);
+    return;
+  }
+  if (!['Backspace', 'Delete'].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+  const element = event.currentTarget;
+  snapGraphemeSelection(element);
+  const boundaries = [...graphemeBoundaries(element.value)].sort((a, b) => a - b);
+  let start = element.selectionStart;
+  let end = element.selectionEnd;
+  if (start === end) {
+    if (event.key === 'Backspace') start = boundaries.findLast(boundary => boundary < start) ?? 0;
+    else end = boundaries.find(boundary => boundary > end) ?? element.value.length;
+  }
+  event.preventDefault();
+  element.setRangeText('', start, end, 'start');
+  onChange(element.value);
 }
 
 function formatNumber(value: number): string {

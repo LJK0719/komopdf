@@ -20,6 +20,7 @@ export const ENGINE_METHODS = [
   'undo',
   'redo',
   'save',
+  'extractPages',
   'close',
   'exportRecovery',
   'restoreRecovery',

@@ -30,6 +30,7 @@ import { AiPanelExtraction } from './AiPanelExtraction.js';
 import { AiPanelBatch } from './AiPanelBatch.js';
 import { captureRegionImage } from './AiPanelImage.js';
 import { AiPanelForm, type FormSuggestionItem } from './AiPanelForm.js';
+import { buildCommandImpactPreview, type CommandImpactPreview } from './AiCommandPreview.js';
 import { analyzeFullDocument, collectDocumentPassages, isExhaustiveQuestion, restoreFullDocumentAnalysis, selectRelevantPassages,
   type DocumentAnalysis, type DocumentPassage } from './document-ai-context.js';
 
@@ -108,6 +109,8 @@ export function AiPanel(props: Props) {
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<Set<string>>(new Set());
 
   const [commandPlanPreview, setCommandPlanPreview] = useState<TransactionPreview<CommitResult> | null>(null);
+  const [commandImpact, setCommandImpact] = useState<CommandImpactPreview | null>(null);
+  const [manualConfirmed, setManualConfirmed] = useState(false);
 
   // A10 表单状态
   const [formItems, setFormItems] = useState<FormSuggestionItem[]>([]);
@@ -165,6 +168,8 @@ export function AiPanel(props: Props) {
     setCandidateItems([]);
     setSelectedEvidenceIds(new Set());
     setCommandPlanPreview(null);
+    setCommandImpact(null);
+    setManualConfirmed(false);
     setFormItems([]);
     setSelectedFormIds(new Set());
     setRawFormCommands([]);
@@ -318,7 +323,8 @@ export function AiPanel(props: Props) {
         effectiveScope = props.selectedIds.length ? 'selection' : 'page';
       }
 
-      if (feature !== 'image.explain' && feature !== 'form.suggest' && evidenceBlocks.length === 0 && !rankedPassages?.length) {
+      if (!['image.explain', 'form.suggest', 'commands.plan', 'blocks.organize'].includes(feature) &&
+        evidenceBlocks.length === 0 && !rankedPassages?.length) {
         throw new Error('No extractable text in current scope. For scanned documents, use desktop local OCR.');
       }
 
@@ -377,9 +383,11 @@ export function AiPanel(props: Props) {
 
       const availableCommands = feature === 'commands.plan'
         ? ['pages.rotate', 'pages.crop', 'pages.delete', 'pages.reorder', 'pages.insert', 'pages.duplicate',
-            'objects.delete', 'objects.copy', 'objects.align', 'objects.distribute', 'objects.transform', 'text.style']
+            'objects.delete', 'objects.copy', 'objects.group', 'objects.ungroup',
+            'objects.align', 'objects.distribute', 'objects.transform', 'text.style']
         : feature === 'blocks.organize'
-          ? ['text.style', 'text.reflow', 'objects.align', 'objects.distribute', 'objects.transform', 'objects.delete']
+          ? ['text.style', 'text.reflow', 'objects.align', 'objects.distribute', 'objects.group',
+              'objects.ungroup', 'objects.transform', 'objects.delete']
           : feature === 'form.suggest'
             ? ['form.fill']
             : undefined;
@@ -390,7 +398,7 @@ export function AiPanel(props: Props) {
         throw new Error('Select text blocks or other objects to organize before asking AI');
       }
       const objectsMetadata = (feature === 'commands.plan' || feature === 'blocks.organize')
-        ? currentPage.objects.filter(obj => feature !== 'blocks.organize' || props.selectedIds.includes(obj.id)).map(obj => ({
+        ? currentPage.objects.filter(obj => !props.selectedIds.length || props.selectedIds.includes(obj.id)).map(obj => ({
             id: obj.id,
             pageId: obj.pageId,
             type: obj.type,
@@ -539,8 +547,25 @@ export function AiPanel(props: Props) {
           setFormItems(items);
           setSelectedFormIds(new Set(items.map(i => i.fieldId)));
         } else if (rawResult.preview) {
-          await props.engine.previewTransaction(rawResult.preview.transaction);
-          setCommandPlanPreview(rawResult.preview);
+          const transaction = rawResult.preview.transaction;
+          const enginePreview = await props.engine.previewTransaction(transaction);
+          const pageIds = new Set<string>();
+          for (const command of transaction.commands) {
+            if ('pageId' in command && command.type !== 'pages.insert') pageIds.add(command.pageId);
+            if (command.type === 'pages.rotate' || command.type === 'pages.crop') {
+              command.pageIds.forEach(id => pageIds.add(id));
+            }
+          }
+          const pages = new Map(await Promise.all([...pageIds].map(async id => [
+            id, id === current.current.page?.id ? current.current.page : await props.engine.describePage(document.id, id),
+          ] as const)));
+          const forms = transaction.commands.some(command => command.type === 'form.fill') && props.engine.describeForms
+            ? await props.engine.describeForms(document.id) : [];
+          const info = current.current.document;
+          if (info?.id === transaction.docId && info.revision === transaction.baseRevision) {
+            setCommandImpact(buildCommandImpactPreview(transaction, info, pages, enginePreview, forms));
+            setCommandPlanPreview(rawResult.preview);
+          }
         }
       }
     } catch (caught) {
@@ -629,7 +654,7 @@ export function AiPanel(props: Props) {
   };
 
   const handleApplyCommandPlan = async () => {
-    if (!commandPlanPreview || applying || props.disabled) return;
+    if (!commandPlanPreview || !commandImpact || (commandImpact.requiresManualConfirmation && !manualConfirmed) || applying || props.disabled) return;
     setApplying(true);
     props.onBusyChange?.(true);
     setError('');
@@ -637,6 +662,8 @@ export function AiPanel(props: Props) {
       const res = await commandPlanPreview.accept();
       await props.onCommitted(res);
       setCommandPlanPreview(null);
+      setCommandImpact(null);
+      setManualConfirmed(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply command plan');
     } finally {
@@ -1110,6 +1137,7 @@ export function AiPanel(props: Props) {
         <div style={{ marginTop: '8px', display: 'grid', gap: '6px', border: '1px solid #c2c1ba', padding: '10px', background: '#fffdf6' }}>
           <strong>Proposed Command Plan</strong>
           <p style={{ fontSize: '11px', margin: 0 }}>{result.explanation}</p>
+          {stale && <p role="alert" style={{ color: '#963e1b', margin: 0 }}>Document revision changed. Regenerate this command plan before applying.</p>}
           <div style={{ display: 'grid', gap: '3px', marginTop: '4px' }}>
             <strong style={{ fontSize: '10px', color: '#666' }}>Commands to execute ({result.commands.length})</strong>
             {result.commands.map((cmd, i) => (
@@ -1121,18 +1149,41 @@ export function AiPanel(props: Props) {
               </div>
             ))}
           </div>
-          {commandPlanPreview?.transaction.commands.filter(cmd => cmd.type === 'text.reflow').map(cmd =>
-            <div key={cmd.objectId} style={{ fontSize: '10px' }}>
-              <strong>Merged text and target box (pt)</strong>
-              <p style={{ whiteSpace: 'pre-wrap' }}>{cmd.text}</p>
-              <p>{cmd.bounds.x}, {cmd.bounds.y} · {cmd.bounds.width} × {cmd.bounds.height}</p>
+          {commandImpact && <div style={{ display: 'grid', gap: '6px', fontSize: '10px' }}>
+            <strong>Before → after · structural preview</strong>
+            <p style={{ margin: 0 }}>Affected pages (engine-validated): {commandImpact.affectedPages.length
+              ? commandImpact.affectedPages.map(id => {
+                const before = commandImpact.beforeOrder.indexOf(id);
+                const after = commandImpact.afterOrder.indexOf(id);
+                return `Page ${before < 0 ? 'new' : before + 1}${after < 0 ? ' → removed' : before !== after ? ` → ${after + 1}` : ''} (${id})`;
+              }).join('; ') : 'No changed pages reported'}</p>
+            {!commandImpact.beforeOrder.every((id, index) => commandImpact.afterOrder[index] === id) &&
+              <details>
+                <summary>Page order before → after</summary>
+                <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>Before: {commandImpact.beforeOrder.join(' → ')}</p>
+                <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>After: {commandImpact.afterOrder.join(' → ')}</p>
+              </details>}
+            {commandImpact.commands.map((command, index) => <div key={index} style={{ borderTop: '1px solid #c2c1ba', paddingTop: '6px' }}>
+              <strong>{index + 1}. {command.type}</strong>
+              {command.changes.map((change, changeIndex) => <div key={changeIndex} style={{ padding: '4px 0', overflowWrap: 'anywhere' }}>
+                <span>{change.subject}</span>
+                {change.manual && <strong style={{ color: '#963e1b' }}> · Structural change needs manual confirmation</strong>}
+                <div style={{ whiteSpace: 'pre-wrap' }}>Before: {change.before}</div>
+                <div style={{ whiteSpace: 'pre-wrap' }}>After / requested: {change.after}</div>
+              </div>)}
             </div>)}
+            <p style={{ margin: 0, color: '#666' }}>This compares document data and requested commands, not rendered PDF pages. Final layout and appearance are not verified here.</p>
+            {commandImpact.requiresManualConfirmation && <label style={{ display: 'flex', gap: '5px', alignItems: 'start' }}>
+              <input type="checkbox" checked={manualConfirmed} onChange={event => setManualConfirmed(event.target.checked)} disabled={applying || stale || props.disabled} />
+              I reviewed the structural changes that cannot be previewed precisely.
+            </label>}
+          </div>}
 
           <button
             type="button"
             className="button-primary"
             onClick={() => void handleApplyCommandPlan()}
-            disabled={!commandPlanPreview || applying || stale || props.disabled}
+            disabled={!commandPlanPreview || !commandImpact || (commandImpact.requiresManualConfirmation && !manualConfirmed) || applying || stale || props.disabled}
             style={{ marginTop: '6px' }}
           >
             {applying ? 'Applying commands…' : 'Apply Command Plan'}

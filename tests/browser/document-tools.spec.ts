@@ -165,10 +165,6 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
-  page.once('dialog', async dialog => {
-    page.once('dialog', discard => discard.accept());
-    await dialog.dismiss();
-  });
   const reopen = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await reopen).setFiles({ name: 'group-saved.pdf', mimeType: 'application/pdf', buffer: saved });
@@ -186,10 +182,12 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   const copiedDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   const copied = await readFile((await (await copiedDownload).path())!);
+  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: /^group-source\.pdf/ }).click();
   page.once('dialog', async dialog => {
     page.once('dialog', discard => discard.accept());
     await dialog.dismiss();
   });
+  await page.getByRole('button', { name: 'Close PDF', exact: true }).click();
   const copiedChooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await copiedChooser).setFiles({ name: 'group-copied.pdf', mimeType: 'application/pdf', buffer: copied });
@@ -229,15 +227,54 @@ test('real WASM saves a multi-stroke handwritten visual signature as one undoabl
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
-  page.once('dialog', async dialog => {
-    page.once('dialog', discard => discard.accept());
-    await dialog.dismiss();
-  });
   const reopen = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await reopen).setFiles({ name: 'signature-saved.pdf', mimeType: 'application/pdf', buffer: saved });
   await expect(list.locator('li')).toHaveCount(2);
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
+});
+
+test('real WASM persists a required multi-select List and atomic read-only changes', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'form-flags.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
+  const forms = page.getByRole('region', { name: 'Annotations and forms' });
+  await forms.getByRole('textbox', { name: 'Field name' }).fill('ManyChoices');
+  await forms.getByRole('combobox', { name: 'Field type' }).selectOption('list');
+  await forms.getByRole('textbox', { name: 'Options (one per line)' }).fill('Alpha\nBeta\nGamma');
+  await forms.getByRole('combobox', { name: 'Field font' }).selectOption('noto-sans-cjk-sc-regular');
+  await forms.getByRole('checkbox', { name: 'Required field' }).check();
+  await forms.getByRole('checkbox', { name: 'Allow multiple selections' }).check();
+  await forms.getByRole('button', { name: 'Create field' }).click();
+  const field = page.locator('.document-field').filter({ hasText: 'ManyChoices' });
+  await expect(field).toContainText('multi-select');
+  const value = field.getByRole('listbox', { name: 'Value' });
+  await value.selectOption(['Alpha', 'Gamma']);
+  await field.getByRole('button', { name: 'Apply value' }).click();
+  await expect.poll(() => value.evaluate(element => Array.from((element as HTMLSelectElement).selectedOptions, option => option.value)))
+    .toEqual(['Alpha', 'Gamma']);
+  const properties = field.getByRole('group', { name: 'Properties for ManyChoices' });
+  await properties.getByRole('checkbox', { name: 'Read-only', exact: true }).check();
+  await properties.getByRole('button', { name: 'Apply field properties' }).click();
+  await expect(value).toBeDisabled();
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(value).toBeEnabled();
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(value).toBeDisabled();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const saved = await readFile((await (await download).path())!);
+  const reopen = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await reopen).setFiles({ name: 'form-flags-saved.pdf', mimeType: 'application/pdf', buffer: saved });
+  const reopened = page.locator('.document-field').filter({ hasText: 'ManyChoices' });
+  await expect(reopened).toContainText('required');
+  await expect(reopened).toContainText('multi-select');
+  await expect(reopened.getByRole('listbox', { name: 'Value' })).toBeDisabled();
+  await expect.poll(() => reopened.getByRole('listbox', { name: 'Value' }).evaluate(element =>
+    Array.from((element as HTMLSelectElement).selectedOptions, option => option.value)))
+    .toEqual(['Alpha', 'Gamma']);
 });
 
 function syntheticPdf(pageAttributes = '/MediaBox [0 0 300 300]'): Buffer {

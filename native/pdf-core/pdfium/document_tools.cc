@@ -891,6 +891,9 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
     return Fail(error, "A radio field selects an option via "
                        "initial_value_utf8, not checked.");
   }
+  if (spec.multiple && spec.type != FormFieldType::kListBox) {
+    return Fail(error, "Only a list field supports multiple selections.");
+  }
   if (spec.rotation != 0 && spec.rotation != 90 && spec.rotation != 180 &&
       spec.rotation != 270) {
     return Fail(error, "Form field rotation must be 0, 90, 180, or 270.");
@@ -1001,6 +1004,9 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
                   : ByteString("0 g"));
   }
 
+  const uint32_t common_flags =
+      (spec.read_only ? pdfium::form_flags::kReadOnly : 0) |
+      (spec.required ? pdfium::form_flags::kRequired : 0);
   if (radio) {
     // /Opt holds Unicode export values; PDFium uses each control's index as
     // its /AP/N on-state and the field's /V when /Opt is present.
@@ -1009,7 +1015,7 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
     group->SetNewFor<CPDF_String>("T", name.AsStringView());
     group->SetNewFor<CPDF_String>(kFieldIdKey, persistent_id.AsStringView());
     group->SetNewFor<CPDF_Number>(
-        "Ff", static_cast<int>(pdfium::form_flags::kButtonRadio |
+        "Ff", static_cast<int>(common_flags | pdfium::form_flags::kButtonRadio |
                                pdfium::form_flags::kButtonNoToggleToOff));
     group->SetNewFor<CPDF_String>("DA", "0 g");
     auto options = group->SetNewFor<CPDF_Array>("Opt");
@@ -1080,19 +1086,26 @@ bool CreateFormField(FPDF_DOCUMENT document_handle,
     return Fail(error, "PDFium could not create an indirect Widget field.");
   }
 
+  widget->SetNewFor<CPDF_Number>("Ff", static_cast<int>(
+      common_flags |
+      (spec.type == FormFieldType::kComboBox ? pdfium::form_flags::kChoiceCombo : 0) |
+      (spec.multiple ? pdfium::form_flags::kChoiceMultiSelect : 0)));
   if (spec.type == FormFieldType::kText) {
     widget->SetNewFor<CPDF_String>(
         "DA", MakeDefaultAppearance(font_alias, spec.font_size, spec.text_color));
     widget->SetNewFor<CPDF_String>("V", initial_value.AsStringView());
   } else if (choice) {
-    widget->SetNewFor<CPDF_Number>("Ff", spec.type == FormFieldType::kComboBox
-        ? static_cast<int>(pdfium::form_flags::kChoiceCombo) : 0);
     widget->SetNewFor<CPDF_String>(
         "DA", MakeDefaultAppearance(font_alias, spec.font_size, spec.text_color));
     auto options = widget->SetNewFor<CPDF_Array>("Opt");
     for (const auto& option : choices)
       options->AppendNew<CPDF_String>(option.AsStringView());
-    widget->SetNewFor<CPDF_String>("V", choices[selected_index].AsStringView());
+    if (spec.multiple) {
+      widget->SetNewFor<CPDF_Array>("V")->AppendNew<CPDF_String>(
+          choices[selected_index].AsStringView());
+    } else {
+      widget->SetNewFor<CPDF_String>("V", choices[selected_index].AsStringView());
+    }
     widget->SetNewFor<CPDF_Array>("I")->AppendNew<CPDF_Number>(selected_index);
   } else {
     widget->SetNewFor<CPDF_String>("DA", "0 g");
@@ -1281,6 +1294,82 @@ bool FillFormField(FPDF_DOCUMENT document_handle,
                   "Only text, checkbox, radio, combo, and list fields are "
                   "supported.");
   }
+}
+
+bool UpdateFormField(FPDF_DOCUMENT document_handle,
+                     const std::string& field_name,
+                     std::optional<bool> read_only,
+                     std::optional<bool> required,
+                     std::optional<bool> multiple,
+                     std::string* error) {
+  if (error) error->clear();
+  CPDF_Document* document = CPDFDocumentFromFPDFDocument(document_handle);
+  if (!document || !document->GetRoot()) {
+    return Fail(error, "The form document is invalid.");
+  }
+  if (!read_only && !required && !multiple) {
+    return Fail(error, "At least one field attribute is required.");
+  }
+  WideString name;
+  if (!DecodeUtf8(field_name, false, &name, error, "Form field_name")) {
+    return false;
+  }
+  CPDF_InteractiveForm form(document);
+  size_t matches = 0;
+  CPDF_FormField* field = FindExactField(&form, name, &matches);
+  if (!field) {
+    return Fail(error, matches ? "The full field name is ambiguous."
+                               : "No form field has this full name.");
+  }
+  if (field->GetType() != CPDF_FormField::kText &&
+      field->GetType() != CPDF_FormField::kCheckBox &&
+      field->GetType() != CPDF_FormField::kRadioButton &&
+      field->GetType() != CPDF_FormField::kComboBox &&
+      field->GetType() != CPDF_FormField::kListBox) {
+    return Fail(error, "This form field type is not supported.");
+  }
+  if (multiple && field->GetType() != CPDF_FormField::kListBox) {
+    return Fail(error, "Only a list field supports multiple selections.");
+  }
+  const uint32_t old_flags = field->GetFieldFlags();
+  uint32_t flags = old_flags;
+  const auto set_flag = [&](std::optional<bool> value, uint32_t bit) {
+    if (value) flags = *value ? flags | bit : flags & ~bit;
+  };
+  set_flag(read_only, pdfium::form_flags::kReadOnly);
+  set_flag(required, pdfium::form_flags::kRequired);
+  set_flag(multiple, pdfium::form_flags::kChoiceMultiSelect);
+  const bool selection_mode_changed =
+      ((flags ^ old_flags) & pdfium::form_flags::kChoiceMultiSelect) != 0;
+  int selected_index = -1;
+  if (selection_mode_changed) {
+    if (field->CountSelectedItems() > 1 && !*multiple) {
+      return Fail(error, "Select at most one option before disabling multiple selections.");
+    }
+    selected_index = field->GetSelectedIndex(0);
+    if (field->CountSelectedItems() > 0 && selected_index < 0) {
+      return Fail(error, "The existing choice selection is invalid.");
+    }
+    if (!ValidateAppearanceFonts(document, field, ChoiceAppearanceTexts(field),
+                                 error)) {
+      return false;
+    }
+  }
+  if (flags == old_flags) return true;
+  field->SetFieldFlags(flags);
+  if (!selection_mode_changed) return true;
+
+  // PDFium caches multi-select on field construction. Re-index after /Ff
+  // changes so SetItemSelection writes /V and /I using the new mode.
+  CPDF_InteractiveForm updated_form(document);
+  CPDF_FormField* updated = FindExactField(&updated_form, name);
+  if (!updated || !updated->ClearSelection(NotificationOption::kDoNotNotify)) {
+    return Fail(error, "PDFium could not update the list field selection.");
+  }
+  if (selected_index >= 0) {
+    updated->SetItemSelection(selected_index, NotificationOption::kDoNotNotify);
+  }
+  return ResetFieldAppearances(document, name, error);
 }
 
 }  // namespace pdf_editor

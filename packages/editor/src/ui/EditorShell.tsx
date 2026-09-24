@@ -27,7 +27,7 @@ import { SignaturePanel } from './SignaturePanel.js';
 import { OcrPanel } from './OcrPanel.js';
 import { PdfSearchPanel } from './PdfSearchPanel.js';
 import { PageThumbnail } from './PageThumbnail.js';
-import { drawRender } from './draw-render.js';
+import { drawRender, mountVisiblePageTiles, renderPage } from './draw-render.js';
 import { ObjectSelectionLayer as SelectionLayer } from './ObjectSelectionLayer.js';
 import { addImportedFont } from './font-resources.js';
 import {
@@ -84,6 +84,9 @@ type WebDocumentSession = { loaded: LoadedDocument; history: { canUndo: boolean;
 export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, renderAiPanel,
   source: externalSource, onSourceConsumed, onDocumentChange, closeDocumentRef, externalBusy = false, onActivityChange }: EditorShellProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const tileLayerRef = useRef<HTMLDivElement>(null);
+  const pageWrapRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLElement>(null);
   const documentRef = useRef<LoadedDocument | null>(null);
   const inactiveWebDocuments = useRef(new Map<string, WebDocumentSession>());
   const [webTabs, setWebTabs] = useState<{ id: string; name: string }[]>([]);
@@ -91,7 +94,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [activity, setActivity] = useState<Activity>('idle');
   const [notice, setNotice] = useState('PDF processed only on this device');
   const [error, setError] = useState<string | null>(null);
+  const [tileViewportLimited, setTileViewportLimited] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [inlineTextId, setInlineTextId] = useState<string | null>(null);
   const [searchSelection, setSearchSelection] = useState<{ docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null>(null);
   const searchLocationSequence = useRef(0);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
@@ -133,11 +138,20 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   useEffect(() => {
     documentRef.current = document;
   }, [document]);
+  useEffect(() => { setInlineTextId(null); }, [document?.info.id, document?.info.revision, document?.page.id]);
 
   useEffect(() => {
+    setTileViewportLimited(false);
     if (!document) return;
-    drawRender(canvasRef.current, document.render);
-  }, [document]);
+    if (document.render.pixels.byteLength) {
+      drawRender(canvasRef.current, document.render);
+      return;
+    }
+    if (!tileLayerRef.current || !stageRef.current) return;
+    return mountVisiblePageTiles(tileLayerRef.current, stageRef.current, engine,
+      document.info.id, document.page, zoom, document.render,
+      caught => setError(formatError(caught)), setTileViewportLimited);
+  }, [engine, document?.info.id, document?.page, document?.render, zoom]);
 
   useEffect(() => {
     const info = document?.info;
@@ -192,7 +206,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         const info = await restoreRecoveryRecord(engine, host, targetSession, password);
         const firstPageId = info.pageOrder[0];
         if (!firstPageId) throw new EngineError('INVALID_REQUEST', 'Restored PDF has no displayable pages');
-        const loaded = await loadPage(engine, info, targetSession.name, firstPageId, zoom);
+        const loaded = await loadPage(engine, info, targetSession.name, firstPageId);
         if (engine.describeFonts) {
           try {
             const restoredFonts = await engine.describeFonts(info.id);
@@ -458,6 +472,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         const latest = documentRef.current;
         if (!latest || latest.info.id !== current.info.id || latest.info.revision !== current.info.revision) return;
         const target = loaded.page.objects.find((object) => object.textBlock?.id === blockId);
+        setInlineTextId(null);
         setSelectedIds(target ? [target.id] : []);
         setSearchSelection(target && range ? { docId: latest.info.id, revision: latest.info.revision,
           pageId, blockId, start: range.start, end: range.end, key: ++searchLocationSequence.current } : null);
@@ -472,6 +487,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
   const selectObject = (objectId: string, additive: boolean): void => {
     if (isDraftDirty) { setError('Apply or discard the current text draft before changing selection'); return; }
+    setInlineTextId(null);
     setSearchSelection(null);
     setSelectedIds((current) => {
       if (!additive) return [objectId];
@@ -486,7 +502,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     if (!current || isDraftDirty || activity !== 'idle' || editPending || externalBusy) return;
     setActivity('rendering'); setError(null);
     try {
-      const render = await engine.render({ docId: current.info.id, pageId: current.page.id, scale });
+      const render = await renderPage(engine, current.info.id, current.page, scale, current.info.revision);
       const latest = documentRef.current;
       if (!latest || latest.info.id !== current.info.id || latest.page.id !== current.page.id || latest.info.revision !== current.info.revision) return;
       const updated = { ...latest, render };
@@ -756,7 +772,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           </nav>}
         </aside>
 
-        <section className="canvas-stage" aria-label="PDF Canvas">
+        <section ref={stageRef} className="canvas-stage" aria-label="PDF Canvas">
+          {tileViewportLimited && document && !document.render.pixels.byteLength &&
+            <div className="tile-limit-warning" role="alert"><span>
+              This viewport exceeds the web bitmap budget. Some page edges are not rendered; zoom out or reduce the window size to see the full visible page.
+            </span></div>}
           {pendingRecovery && !document ? (
             <aside className="recovery-banner" role="alert" aria-label="Recoverable session notice">
               <div className="recovery-info">
@@ -788,17 +808,27 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           {!document ? (
             <EmptyCanvas busy={activity === 'opening'} isWeb={host.capabilities.platform === 'web'} onOpen={() => void openDocument()} />
           ) : (
-            <div className="page-wrap" onClick={() => {
-              if (isDraftDirty) setError('Apply or discard the current text draft before changing selection');
-              else { setSelectedIds([]); setSearchSelection(null); }
-            }}>
-              <canvas ref={canvasRef} className="pdf-canvas" aria-label={`Page ${currentPageIndex + 1}`} />
+            <div ref={pageWrapRef} className={document.render.pixels.byteLength ? 'page-wrap' : 'page-wrap page-wrap-tiled'}
+              style={{ width: document.render.width, height: document.render.height }}
+              onClick={() => {
+                if (isDraftDirty) setError('Apply or discard the current text draft before changing selection');
+                else { setSelectedIds([]); setSearchSelection(null); setInlineTextId(null); }
+              }}>
+              {document.render.pixels.byteLength
+                ? <canvas ref={canvasRef} className="pdf-canvas" aria-label={`Page ${currentPageIndex + 1}`} />
+                : <div ref={tileLayerRef} className="pdf-tile-layer" role="img" aria-label={`Page ${currentPageIndex + 1}`} />}
               <SelectionLayer
                 page={document.page}
                 render={document.render}
                 selectedIds={selectedIds}
                 onSelect={selectObject}
-                onBoxSelect={ids => { setSelectedIds(ids); setSearchSelection(null); }}
+                onBoxSelect={ids => { setSelectedIds(ids); setSearchSelection(null); setInlineTextId(null); }}
+                onEditText={id => {
+                  const object = document.page.objects.find(item => item.id === id);
+                  if (isBusy || !object?.textBlock || object.textBlock.editability === 'geometry-only' ||
+                    !document.info.permissions.modify || !document.info.capabilities.includes('text.replace')) return;
+                  setSelectedIds([id]); setSearchSelection(null); setInlineTextId(id);
+                }}
                 disabled={isBusy}
                 canTransform={document.info.capabilities.includes('objects.transform')}
                 onMove={moveObjects}
@@ -856,6 +886,10 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
             page={document?.page ?? null}
             selectedIds={selectedIds}
             searchSelection={searchSelection}
+            inlineTextId={inlineTextId}
+            inlineHost={inlineTextId ? pageWrapRef.current : null}
+            render={document?.render ?? null}
+            onInlineClose={() => setInlineTextId(null)}
             engine={engine}
             disabled={operationBusy || paragraphDraftDirty}
             onBusyChange={setEditPending}
@@ -950,7 +984,7 @@ async function loadPage(
   scale = RENDER_SCALE,
 ): Promise<LoadedDocument> {
   const page = await engine.describePage(info.id, pageId);
-  const render = await engine.render({ docId: info.id, pageId, scale });
+  const render = await renderPage(engine, info.id, page, scale, info.revision);
   return { info, name, page, render };
 }
 

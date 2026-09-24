@@ -59,8 +59,15 @@ std::string SerializeForms(const Document& document) {
     result += "{\"id\":"; AppendJsonString(&result, FormFieldId(document, *field));
     result += ",\"name\":"; AppendJsonString(&result, FormUtf8(field->GetFullName()));
     result += ",\"type\":"; AppendJsonString(&result, kind);
+    if (type == FormFieldType::kComboBox || type == FormFieldType::kListBox) {
+      result += ",\"choiceKind\":";
+      AppendJsonString(&result, type == FormFieldType::kComboBox ? "combo" : "list");
+    }
     result += ",\"readOnly\":"; result += (field->GetFieldFlags() & 1U) ? "true" : "false";
     result += ",\"required\":"; result += field->IsRequired() ? "true" : "false";
+    result += ",\"multiple\":";
+    result += (type == FormFieldType::kListBox &&
+               (field->GetFieldFlags() & (1U << 21))) ? "true" : "false";
     result += ",\"value\":";
     if (type == FormFieldType::kCheckBox) {
       bool checked = false;
@@ -257,10 +264,21 @@ bool ApplyDocumentTool(
     const std::map<std::string, std::shared_ptr<const FontResource>>& fonts,
     CandidateFontCache* font_cache) {
   std::string error;
-  if (command.type == EditType::kFormFill) {
+  if (command.type == EditType::kFormFill || command.type == EditType::kFormUpdate) {
     CPDF_InteractiveForm form(CPDFDocumentFromFPDFDocument(pdf));
     CPDF_FormField* field = FindFormField(document, &form, command.target_id);
     if (!field) return false;
+    if (command.type == EditType::kFormUpdate) {
+      const auto property = [&](uint32_t bit, size_t index) -> std::optional<bool> {
+        return command.flags & bit ? std::optional<bool>(command.values[index] != 0)
+                                   : std::nullopt;
+      };
+      if (!pdf_editor::UpdateFormField(pdf, FormUtf8(field->GetFullName()),
+              property(1U, 0), property(2U, 1), property(4U, 2), &error)) {
+        SetError("UNSUPPORTED_CAPABILITY", std::move(error)); return false;
+      }
+      return true;
+    }
     pdf_editor::FormValue value;
     if (command.flags & 1U) value.checked = command.values[0] != 0;
     else if (command.flags & 2U) value.selected_values = command.ids;
@@ -302,6 +320,9 @@ bool ApplyDocumentTool(
     spec.persistent_id = command.target_id;
     spec.name_utf8 = command.text;
     spec.options_utf8 = command.ids;
+    spec.read_only = (command.flags & 2U) != 0;
+    spec.required = (command.flags & 4U) != 0;
+    spec.multiple = (command.flags & 8U) != 0;
     spec.rect = pdf_rect;
     spec.font_size = command.values[4];
     spec.rotation = FPDFPage_GetRotation(page.get()) * 90;

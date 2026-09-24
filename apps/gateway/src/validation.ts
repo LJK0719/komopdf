@@ -53,8 +53,19 @@ function validateCommand(request: AiRequest, command: ProposedCommand, allowedCo
     case 'objects.copy':
     case 'objects.align':
     case 'objects.distribute':
+    case 'objects.group':
       assert(pageIds.has(command.pageId), 'Object command page is not in request context');
-      for (const objectId of command.objectIds) assert(objectPage.get(objectId) === command.pageId, 'Object command target does not match page');
+      for (const objectId of command.objectIds) {
+        assert(objectPage.get(objectId) === command.pageId, 'Object command target does not match page');
+        if (command.type === 'objects.group') {
+          assert(['text', 'path', 'image'].includes(request.context.objects!.find(object => object.id === objectId)!.type),
+            'Object group contains unsupported object type');
+        }
+      }
+      return;
+    case 'objects.ungroup':
+      assert(request.context.objects?.some(object => object.id === command.groupId && object.pageId === command.pageId && object.type === 'group'),
+        'Group target is not in request context');
       return;
     case 'pages.rotate':
     case 'pages.crop':

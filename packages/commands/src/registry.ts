@@ -13,12 +13,13 @@ const labels: Record<CommandType, string> = {
   'content.insert': 'Insert PDF Content',
   'image.insert': 'Insert Image', 'image.replace': 'Replace Image', 'image.crop': 'Crop Image',
   'annotation.add': 'Add Annotation', 'annotation.update': 'Edit Annotation', 'annotation.delete': 'Delete Annotation',
-  'form.fill': 'Fill Form', 'form.create': 'Create Form Field',
+  'form.fill': 'Fill Form', 'form.create': 'Create Form Field', 'form.update': 'Update Form Field Properties',
 };
 export type CommandContext = {
   document: DocumentInfo;
   pages: ReadonlyMap<string, PageModel>;
-  fields?: ReadonlyMap<string, { pageId: string; type: 'text' | 'checkbox' | 'radio' | 'choice'; options?: readonly string[]; readOnly?: boolean }>;
+  fields?: ReadonlyMap<string, { pageId: string; type: 'text' | 'checkbox' | 'radio' | 'choice';
+    options?: readonly string[]; readOnly?: boolean; choiceKind?: 'combo' | 'list'; multiple?: boolean }>;
   annotations?: ReadonlyMap<string, { pageId: string; subtype: string }>;
   resourceIds?: ReadonlySet<string>;
   fontIds?: ReadonlySet<string>;
@@ -256,10 +257,12 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
           invalid('Choice and radio fields require distinct options; choices also need an embedded font');
         }
         if (!optionField && command.options !== undefined) invalid('Only choice and radio fields accept options');
+        if (command.multiple && command.fieldType !== 'list') invalid('Only list fields support multiple choices');
         addId(command.fieldId);
         fields.set(command.fieldId, { pageId: command.pageId,
           type: command.fieldType === 'combo' || command.fieldType === 'list' ? 'choice' : command.fieldType,
-          options: command.options ?? [], readOnly: false });
+          ...(choice ? { choiceKind: command.fieldType === 'list' ? 'list' as const : 'combo' as const } : {}),
+          options: command.options ?? [], readOnly: command.readOnly ?? false, multiple: command.multiple ?? false });
         break;
       }
       case 'form.fill': {
@@ -272,7 +275,17 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         if (field.type === 'choice') {
           const values = Array.isArray(command.value) ? command.value : [command.value];
           if (values.some(value => typeof value !== 'string' || !field.options?.includes(value))) invalid('Choice value is not among field options');
+          if (values.length > 1 && !field.multiple) invalid('Multiple values require a multi-select list field');
         }
+        break;
+      }
+      case 'form.update': {
+        const field = fields.get(command.fieldId);
+        if (!field || !pageIds.has(field.pageId)) invalid('Form field does not exist or page was deleted');
+        if (command.multiple !== undefined && field.choiceKind !== 'list') invalid('Only list fields support multiple choices');
+        fields.set(command.fieldId, { ...field,
+          readOnly: command.readOnly ?? field.readOnly ?? false,
+          multiple: command.multiple ?? field.multiple ?? false });
         break;
       }
     }
