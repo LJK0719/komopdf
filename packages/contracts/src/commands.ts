@@ -70,6 +70,7 @@ export type EditTransaction = z.infer<typeof editTransactionSchema>;
 export const proposedCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text.replace'), targetEvidenceId: idSchema, text: z.string() }).strict(),
   z.object({ type: z.literal('text.style'), pageId: idSchema, blockIds: idsSchema, style: textStyleSchema }).strict(),
+  z.object({ type: z.literal('text.reflow'), pageId: idSchema, blockIds: idsSchema.min(2) }).strict(),
   z.object({ type: z.literal('objects.transform'), pageId: idSchema, objectIds: idsSchema, matrix: matrixSchema }).strict(),
   z.object({ type: z.literal('objects.delete'), pageId: idSchema, objectIds: idsSchema }).strict(),
   z.object({ type: z.literal('objects.align'), pageId: idSchema, objectIds: idsSchema, axis: z.enum(['left', 'center', 'right', 'top', 'middle', 'bottom']) }).strict(),

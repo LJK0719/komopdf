@@ -111,6 +111,22 @@ describe('feature templates and output validation', () => {
     ]), formRequest, 'commandPlan', prepared.allowedCommands, 1024 * 1024).kind).toBe('commandPlan');
   });
 
+  it('allows only selected text blocks in AI paragraph merge plans', () => {
+    const base = request('blocks.organize');
+    const scoped: AiRequest = { ...base, context: { ...base.context,
+      availableCommands: ['text.reflow'],
+      objects: [{ id: 'o1', pageId: 'p1', type: 'text', blockId: 'b1' },
+        { id: 'o2', pageId: 'p1', type: 'text', blockId: 'b2' }] } };
+    const prepared = prepareProviderInput(scoped, 8192);
+    expect(prepared.allowedCommands.has('text.reflow')).toBe(true);
+    const plan = (blockIds: string[]) => JSON.stringify({ kind: 'commandPlan', explanation: 'Merge',
+      commands: [{ type: 'text.reflow', pageId: 'p1', blockIds }] });
+    expect(parseAndValidateResult(plan(['b1', 'b2']), scoped, prepared.expectedKind,
+      prepared.allowedCommands, 1024 * 1024).kind).toBe('commandPlan');
+    expect(() => parseAndValidateResult(plan(['b1', 'unselected']), scoped, prepared.expectedKind,
+      prepared.allowedCommands, 1024 * 1024)).toThrow(/block does not match page/);
+  });
+
   it('requires document answers to carry verified evidence citations', () => {
     const prepared = prepareProviderInput(request('document.ask'), 8192);
     const noCitation = JSON.stringify({ kind: 'answer', text: 'unsupported', citations: [] });

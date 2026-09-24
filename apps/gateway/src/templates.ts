@@ -83,9 +83,7 @@ const style = {
   type: 'OBJECT',
   properties: {
     fontId: id, fontSize: { type: 'NUMBER' }, color: { type: 'ARRAY', items: { type: 'NUMBER' }, minItems: 3, maxItems: 3 },
-    weight: { type: 'INTEGER' }, italic: { type: 'BOOLEAN' }, underline: { type: 'BOOLEAN' },
-    characterSpacing: { type: 'NUMBER' }, lineHeight: { type: 'NUMBER' },
-    alignment: { type: 'STRING', enum: ['left', 'center', 'right', 'justify'] },
+    characterSpacing: { type: 'NUMBER' },
   },
 } as const;
 
@@ -97,6 +95,10 @@ const commandSchemas: Record<string, JsonSchema> = {
   'text.style': {
     type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['text.style'] }, pageId: id, blockIds: idArray, style },
     required: ['type', 'pageId', 'blockIds', 'style'],
+  },
+  'text.reflow': {
+    type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['text.reflow'] }, pageId: id, blockIds: idArray },
+    required: ['type', 'pageId', 'blockIds'],
   },
   'objects.transform': {
     type: 'OBJECT', properties: {
@@ -157,7 +159,7 @@ export const SERVER_COMMAND_TYPES = Object.freeze(Object.keys(commandSchemas));
 const featureCommands: Partial<Record<AiFeature, ReadonlySet<string>>> = {
   'commands.plan': new Set(SERVER_COMMAND_TYPES),
   'form.suggest': new Set(['form.fill']),
-  'blocks.organize': new Set(['text.style', 'objects.transform', 'objects.delete', 'objects.align', 'objects.distribute']),
+  'blocks.organize': new Set(['text.style', 'text.reflow', 'objects.transform', 'objects.delete', 'objects.align', 'objects.distribute']),
 };
 
 const featureInstructions: Record<AiFeature, string> = {
@@ -171,7 +173,7 @@ const featureInstructions: Record<AiFeature, string> = {
   'document.translate': 'Translate every supplied evidence block, retaining each evidence ID.',
   'document.extract': 'Extract only fields supported by the supplied evidence. Each extracted value must include citations, with exact quotes when practical.',
   'form.suggest': 'Suggest form values only for supplied field IDs using form.fill: text, radio and single-choice values must be strings (never one-item arrays); checkbox values must be booleans. Radio and choice values must exactly match a supplied option.',
-  'blocks.organize': 'Propose layout changes only for supplied page/object IDs and only through the explicitly available command types.',
+  'blocks.organize': 'Propose layout changes only for supplied page/object IDs. To merge adjacent text blocks, use text.reflow with their block IDs in the desired reading order. Do not invent replacement text, coordinates, or fonts; the client reconstructs them from the PDF.',
   'image.explain': 'Explain the supplied local image using only visible image content and supplied evidence. Do not claim facts that are not visible or evidenced.',
 };
 

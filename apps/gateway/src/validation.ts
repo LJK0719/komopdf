@@ -44,6 +44,10 @@ function validateCommand(request: AiRequest, command: ProposedCommand, allowedCo
       for (const blockId of command.blockIds) assert(blockPage.get(blockId) === command.pageId, 'Text style block does not match page');
       if (command.style.fontId !== undefined) assert(fontIds.has(command.style.fontId), 'Result used unauthorized font');
       return;
+    case 'text.reflow':
+      assert(pageIds.has(command.pageId), 'Paragraph merge page is not in request context');
+      for (const blockId of command.blockIds) assert(blockPage.get(blockId) === command.pageId, 'Paragraph block does not match page');
+      return;
     case 'objects.transform':
     case 'objects.delete':
     case 'objects.align':
