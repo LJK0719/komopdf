@@ -69,7 +69,7 @@ PDE_QPDF_EXPORT int pde_qpdf_transform(
     size_t* output_size);
 
 /* Explicit lossy export on a copy only. Quality is 1..95. Reports an error
- * instead of returning an unchanged PDF when no supported opaque RGB/gray
+ * instead of returning an unchanged PDF when no supported opaque RGB/gray/CMYK
  * images were actually reduced. Masks/alpha and unsupported formats are kept.
  */
 PDE_QPDF_EXPORT int pde_qpdf_optimize_images(
@@ -80,7 +80,7 @@ PDE_QPDF_EXPORT int pde_qpdf_optimize_images(
     unsigned char** output_data,
     size_t* output_size);
 
-/* Separate explicit lossy export on a copy: only opaque 8-bit DeviceRGB/Gray
+/* Separate explicit lossy export on a copy: only opaque 8-bit DeviceRGB/Gray/CMYK
  * page images whose longer side exceeds max_edge (positive pixels) are area-
  * resampled to that maximum, with aspect ratio preserved and encoded at quality
  * 1..95. Returns an error with no output when no image dimensions shrink.

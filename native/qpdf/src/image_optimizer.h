@@ -8,7 +8,7 @@
 struct NoImagesOptimized final: std::runtime_error
 {
     NoImagesOptimized(): std::runtime_error(
-        "No supported opaque RGB/grayscale images became smaller at this JPEG quality; "
+        "No supported opaque RGB/grayscale/CMYK images became smaller at this JPEG quality; "
         "transparent, masked and other image formats were kept unchanged") {}
     explicit NoImagesOptimized(char const* message): std::runtime_error(message) {}
 };

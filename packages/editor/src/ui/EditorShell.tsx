@@ -593,17 +593,36 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     return () => { if (closeDocumentRef.current === request) closeDocumentRef.current = null; };
   }, [closeDocumentRef]);
 
-  const moveObjects = async (objectIds: string[], dx: number, dy: number): Promise<void> => {
+  const transformObjects = async (
+    objectIds: string[],
+    matrix: [number, number, number, number, number, number],
+  ): Promise<void> => {
     const current = documentRef.current;
     if (!current || isDraftDirty || activity !== 'idle' || editPending || externalBusy) return;
     setActivity('editing'); setError(null);
     try {
-      const result = await new CommandRegistry(engine).execute({ id: crypto.randomUUID(), docId: current.info.id,
-        baseRevision: current.info.revision, source: 'manual', commands: [{ type: 'objects.transform', pageId: current.page.id,
-          objectIds, matrix: [1, 0, 0, 1, dx, dy] }] }, { document: current.info, pages: new Map([[current.page.id, current.page]]) });
+      const result = await new CommandRegistry(engine).execute({
+        id: crypto.randomUUID(),
+        docId: current.info.id,
+        baseRevision: current.info.revision,
+        source: 'manual',
+        commands: [{
+          type: 'objects.transform',
+          pageId: current.page.id,
+          objectIds,
+          matrix,
+        }],
+      }, {
+        document: current.info,
+        pages: new Map([[current.page.id, current.page]]),
+      });
       await handleCommitted(result);
     } catch (caught) { setError(formatError(caught)); }
     finally { setActivity('idle'); }
+  };
+
+  const moveObjects = async (objectIds: string[], dx: number, dy: number): Promise<void> => {
+    return transformObjects(objectIds, [1, 0, 0, 1, dx, dy]);
   };
 
   const currentPageIndex = document ? document.info.pageOrder.indexOf(document.page.id) : -1;
@@ -861,6 +880,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                 disabled={isBusy}
                 canTransform={document.info.capabilities.includes('objects.transform')}
                 onMove={moveObjects}
+                onTransform={transformObjects}
               />
               <PdfLinkLayer
                 annotations={pageAnnotations}

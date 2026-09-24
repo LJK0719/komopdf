@@ -7,12 +7,24 @@ import {
   type EngineAdapter,
   type PageModel,
   type RenderResult,
+  type TextBlock,
   type TextLayoutResult,
   type TextStyle,
   type EditTransaction,
 } from '@pdf-editor/contracts';
 import { CommandRegistry } from '@pdf-editor/commands';
-import { useFontResources } from './font-resources.js';
+import {
+  useFontResources,
+  resolveExactFontFace,
+  findSelectionFontInfo,
+  getFontWeight,
+  getFontItalic,
+  getAvailableWeightsForFamily,
+  familySupportsItalic,
+  isFontEmbeddable,
+  STANDARD_WEIGHT_OPTIONS,
+  type EditorFont,
+} from './font-resources.js';
 
 type Props = {
   document: DocumentInfo | null;
@@ -45,12 +57,22 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
   const [replacement, setReplacement] = useState(originalText);
   const [fontId, setFontId] = useState('');
   const [formatFontId, setFormatFontId] = useState('');
+  const [formatWeight, setFormatWeight] = useState<number | ''>('');
+  const [formatItalic, setFormatItalic] = useState<'' | 'on' | 'off'>('');
   const [formatSize, setFormatSize] = useState('');
   const [formatColor, setFormatColor] = useState('');
   const [formatSpacing, setFormatSpacing] = useState('');
   const [formatUnderline, setFormatUnderline] = useState<'' | 'on' | 'off'>('');
-  const formatDirty = Boolean(formatFontId || formatSize || formatColor || formatSpacing || formatUnderline);
-  const clearFormat = () => { setFormatFontId(''); setFormatSize(''); setFormatColor(''); setFormatSpacing(''); setFormatUnderline(''); };
+  const formatDirty = Boolean(formatFontId || formatWeight !== '' || formatItalic !== '' || formatSize || formatColor || formatSpacing || formatUnderline);
+  const clearFormat = () => {
+    setFormatFontId('');
+    setFormatWeight('');
+    setFormatItalic('');
+    setFormatSize('');
+    setFormatColor('');
+    setFormatSpacing('');
+    setFormatUnderline('');
+  };
   const [range, setRange] = useState<TextRange>([0, originalText.length]);
   const wholeBlock = range[0] === 0 && range[1] === originalText.length;
   const targetText = originalText.slice(range[0], range[1]);
@@ -196,22 +218,25 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
     if (!document || !page || !block || (selectedObject?.locator.containerPath.length && !wholeBlock) || applying || !formatDirty) return;
     setApplying(true); onBusyChange?.(true); setError('');
     try {
-      const style: TextStyle = {};
-      if (formatFontId) style.fontId = formatFontId;
-      if (formatSize) style.fontSize = Number(formatSize);
-      if (formatSpacing) style.characterSpacing = Number(formatSpacing);
-      if (block.isParagraph && formatUnderline) style.underline = formatUnderline === 'on';
-      if (formatColor) {
-        if (!/^#[0-9a-f]{6}$/i.test(formatColor)) throw new EngineError('INVALID_REQUEST', 'Color must use #RRGGBB');
-        style.color = [1, 3, 5].map(offset => parseInt(formatColor.slice(offset, offset + 2), 16) / 255) as [number, number, number];
-      }
+      const { style, resolvedFontId } = resolveSelectionFormatStyle({
+        block,
+        range,
+        fonts,
+        formatFontId,
+        formatWeight,
+        formatItalic,
+        formatSize,
+        formatSpacing,
+        formatColor,
+        formatUnderline,
+      });
       const transaction: EditTransaction = {
         id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision, source: 'manual',
         commands: [{ type: 'text.style', pageId: page.id, blockIds: [block.id], range, style }],
       };
       const registry = new CommandRegistry(engine);
       const context = { document, pages: new Map([[page.id, page]]),
-        ...(formatFontId ? { fontIds: new Set([formatFontId]) } : {}) };
+        ...(resolvedFontId ? { fontIds: new Set([resolvedFontId]) } : {}) };
       await engine.previewTransaction(transaction);
       await onCommitted(await registry.execute(transaction, context));
       clearFormat();
@@ -300,6 +325,61 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
       <option value="">Preserve original font</option>
       {fonts.map((font) => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
     </select></label>
+    {fontId && wholeBlock && (() => {
+      const selectedFont = fonts.find(f => f.id === fontId);
+      if (!selectedFont) return null;
+      const availableWeights = getAvailableWeightsForFamily(fonts, selectedFont.family);
+      const hasItalic = familySupportsItalic(fonts, selectedFont.family);
+      return (
+        <div className="document-tools-grid">
+          <label>Replacement weight<select
+            value={getFontWeight(selectedFont)}
+            onChange={event => {
+              const targetWeight = Number(event.target.value);
+              const match = resolveExactFontFace(fonts, {
+                family: selectedFont.family,
+                weight: targetWeight,
+                italic: getFontItalic(selectedFont),
+              });
+              if (match.success) {
+                setFontId(match.font.id);
+                invalidatePreview();
+              } else {
+                setError(match.reason);
+              }
+            }}
+            disabled={disabled || previewing || applying || !canReplace || formatDirty}
+          >
+            {availableWeights.map(w => (
+              <option key={w} value={w}>
+                {STANDARD_WEIGHT_OPTIONS.find(o => o.value === w)?.label ?? `Weight ${w}`}
+              </option>
+            ))}
+          </select></label>
+          <label>Replacement posture<select
+            value={getFontItalic(selectedFont) ? 'italic' : 'normal'}
+            onChange={event => {
+              const targetItalic = event.target.value === 'italic';
+              const match = resolveExactFontFace(fonts, {
+                family: selectedFont.family,
+                weight: getFontWeight(selectedFont),
+                italic: targetItalic,
+              });
+              if (match.success) {
+                setFontId(match.font.id);
+                invalidatePreview();
+              } else {
+                setError(match.reason);
+              }
+            }}
+            disabled={disabled || previewing || applying || !canReplace || formatDirty}
+          >
+            <option value="normal">Regular (Upright)</option>
+            <option value="italic">Italic{!hasItalic ? ' (Unavailable)' : ''}</option>
+          </select></label>
+        </div>
+      );
+    })()}
     {document?.capabilities.includes('text.style') && <fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId) || (Boolean(selectedObject?.locator.containerPath.length) && !wholeBlock)}>
       <legend>Format selected text</legend>
       <p>{selectedObject?.locator.containerPath.length
@@ -307,10 +387,35 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
         : block.isParagraph
           ? 'Format the selected characters in this logical paragraph. The native preview rejects changes that overflow its box.'
           : 'Applies only to the selected characters. Blank fields preserve existing formatting. Font or size changes move the remaining text on this line; they do not wrap the paragraph.'}</p>
-      <label>Selection font<select value={formatFontId} onChange={event => setFormatFontId(event.target.value)}>
+      <label>Selection font<select value={formatFontId} onChange={event => { setFormatFontId(event.target.value); setError(''); }}>
         <option value="">Preserve font</option>
         {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
       </select></label>
+      <div className="document-tools-grid">
+        <label>Selection weight<select
+          value={formatWeight}
+          onChange={event => {
+            setFormatWeight(event.target.value ? Number(event.target.value) : '');
+            setError('');
+          }}
+        >
+          <option value="">Preserve weight</option>
+          {STANDARD_WEIGHT_OPTIONS.map(opt => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select></label>
+        <label>Selection posture<select
+          value={formatItalic}
+          onChange={event => {
+            setFormatItalic(event.target.value as '' | 'on' | 'off');
+            setError('');
+          }}
+        >
+          <option value="">Preserve posture</option>
+          <option value="off">Regular (Upright)</option>
+          <option value="on">Italic</option>
+        </select></label>
+      </div>
       <label>Selection font size<input type="number" min="0.1" max="1000" step="0.1" value={formatSize} onChange={event => setFormatSize(event.target.value)} placeholder="Preserve size" /></label>
       <label>Selection color<input value={formatColor} onChange={event => setFormatColor(event.target.value)} placeholder="#RRGGBB" /></label>
       <label>Selection character spacing<input type="number" step="0.1" value={formatSpacing} onChange={event => setFormatSpacing(event.target.value)} placeholder="Preserve spacing" /></label>
@@ -411,4 +516,91 @@ function formatNumber(value: number): string {
 function formatError(error: unknown): string {
   if (error instanceof EngineError) return `${error.code} · ${error.message}`;
   return error instanceof Error ? error.message : 'Operation failed';
+}
+
+export type SelectionFormatOptions = {
+  block: TextBlock;
+  range: TextRange;
+  fonts: readonly EditorFont[];
+  formatFontId?: string;
+  formatWeight?: number | '';
+  formatItalic?: '' | 'on' | 'off';
+  formatSize?: string;
+  formatSpacing?: string;
+  formatColor?: string;
+  formatUnderline?: '' | 'on' | 'off';
+};
+
+export function resolveSelectionFormatStyle({
+  block,
+  range,
+  fonts,
+  formatFontId = '',
+  formatWeight = '',
+  formatItalic = '',
+  formatSize = '',
+  formatSpacing = '',
+  formatColor = '',
+  formatUnderline = '',
+}: SelectionFormatOptions): { style: TextStyle; resolvedFontId?: string } {
+  let resolvedFontId = formatFontId;
+  if (formatWeight !== '' || formatItalic !== '') {
+    let targetFamily = '';
+    let baseWeight = 400;
+    let baseItalic = false;
+
+    if (formatFontId) {
+      const chosen = fonts.find(f => f.id === formatFontId);
+      if (chosen) {
+        targetFamily = chosen.family;
+        baseWeight = getFontWeight(chosen);
+        baseItalic = getFontItalic(chosen);
+      }
+    } else {
+      const selectionInfo = findSelectionFontInfo(block, range, fonts);
+      if (!selectionInfo) {
+        throw new EngineError(
+          'INVALID_REQUEST',
+          'Cannot apply weight or italic without selecting a registered font: the selected text uses an unregistered or mixed font. Please select a registered Selection font first.'
+        );
+      }
+      targetFamily = selectionInfo.family;
+      baseWeight = selectionInfo.weight;
+      baseItalic = selectionInfo.italic;
+    }
+
+    const targetWeight = formatWeight !== '' ? formatWeight : baseWeight;
+    const targetItalic = formatItalic !== '' ? formatItalic === 'on' : baseItalic;
+
+    const match = resolveExactFontFace(fonts, {
+      family: targetFamily,
+      weight: targetWeight,
+      italic: targetItalic,
+    });
+
+    if (!match.success) {
+      throw new EngineError('UNSUPPORTED_CAPABILITY', match.reason);
+    }
+
+    resolvedFontId = match.font.id;
+  }
+
+  if (resolvedFontId) {
+    const targetFont = fonts.find(f => f.id === resolvedFontId);
+    if (targetFont && !isFontEmbeddable(targetFont)) {
+      throw new EngineError('INVALID_REQUEST', `Font face "${targetFont.family} · ${targetFont.style}" is restricted from editable embedding by font flags.`);
+    }
+  }
+
+  const style: TextStyle = {};
+  if (resolvedFontId) style.fontId = resolvedFontId;
+  if (formatSize) style.fontSize = Number(formatSize);
+  if (formatSpacing) style.characterSpacing = Number(formatSpacing);
+  if (block.isParagraph && formatUnderline) style.underline = formatUnderline === 'on';
+  if (formatColor) {
+    if (!/^#[0-9a-f]{6}$/i.test(formatColor)) throw new EngineError('INVALID_REQUEST', 'Color must use #RRGGBB');
+    style.color = [1, 3, 5].map(offset => parseInt(formatColor.slice(offset, offset + 2), 16) / 255) as [number, number, number];
+  }
+
+  return { style, ...(resolvedFontId ? { resolvedFontId } : {}) };
 }

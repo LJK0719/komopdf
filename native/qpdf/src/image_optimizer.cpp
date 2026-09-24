@@ -59,6 +59,9 @@ bool eligible(QPDFObjectHandle const& image, std::set<QPDFObjGen> const& masks,
     } else if (cs.isNameAndEquals("/DeviceGray")) {
         components = 1;
         color_space = JCS_GRAYSCALE;
+    } else if (cs.isNameAndEquals("/DeviceCMYK")) {
+        components = 4;
+        color_space = JCS_CMYK;
     } else {
         return false;
     }
@@ -84,7 +87,7 @@ std::vector<unsigned char> resample(
         auto y0 = static_cast<uint64_t>(dy) * height;
         auto y1 = static_cast<uint64_t>(dy + 1) * height;
         for (int dx = 0; dx < target_width; ++dx) {
-            uint64_t sums[3]{};
+            uint64_t sums[4]{};
             auto x0 = static_cast<uint64_t>(dx) * width;
             auto x1 = static_cast<uint64_t>(dx + 1) * width;
             for (uint64_t sy = y0 / target_height; sy <= (y1 - 1) / target_height; ++sy) {
@@ -234,7 +237,7 @@ int process_images(QPDF& pdf, int quality, int max_edge)
     if (changed == 0) {
         if (max_edge != 0) {
             throw NoImagesOptimized(
-                "No supported opaque RGB/grayscale image exceeded the maximum edge and was "
+                "No supported opaque RGB/grayscale/CMYK image exceeded the maximum edge and was "
                 "resampled; unchanged dimensions, masks and unsupported formats were kept");
         }
         throw NoImagesOptimized();

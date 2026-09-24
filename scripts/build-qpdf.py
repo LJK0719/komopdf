@@ -698,9 +698,8 @@ def package_wasm(build: Path, smoke: dict[str, object], env: dict[str, str]) -> 
     }
     files = sorted(path for path in destination.rglob("*") if path.is_file())
     manifest["files"] = [file_record(path, destination) for path in files]
-    (destination / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    with (destination / "manifest.json").open("w", encoding="utf-8", newline="\n") as output:
+        output.write(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     return manifest
 
 
