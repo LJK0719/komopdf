@@ -34,7 +34,8 @@ int main(int argc, char** argv)
         if (dict.getKey("/Width").getIntValue() == 40 &&
             dict.getKey("/Height").getIntValue() == 20 &&
             dict.getKey("/Filter").isNameAndEquals("/DCTDecode")) {
-            auto components = dict.getKey("/ColorSpace").isNameAndEquals("/DeviceRGB") ? 3 : 1;
+            auto components = dict.getKey("/ColorSpace").isNameAndEquals("/DeviceRGB") ? 3 :
+                              dict.getKey("/ColorSpace").isNameAndEquals("/DeviceCMYK") ? 4 : 1;
             auto pixels = object.getStreamData(qpdf_dl_all);
             if (!pixels || pixels->getSize() != static_cast<size_t>(40 * 20 * components)) {
                 return 7;
@@ -43,7 +44,7 @@ int main(int argc, char** argv)
         }
     }
     pde_qpdf_free(output);
-    if (resized != 2) return 4;
+    if (resized != 3) return 4;
 
     output = nullptr;
     size = 0;
