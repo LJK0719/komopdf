@@ -1,5 +1,5 @@
 import { aiRequestSchema, aiResponseEnvelopeSchema, EngineError, assertTextRange,
-  type AiRequest, type AiResponseEnvelope, type EditCommand, type EditTransaction, type EvidenceBlock } from '@pdf-editor/contracts';
+  type AiRequest, type AiResponseEnvelope, type EditCommand, type EditTransaction, type EvidenceBlock, type ProposedCommand } from '@pdf-editor/contracts';
 import { validateTransaction, type CommandContext } from './registry.js';
 
 function reject(message: string): never { throw new EngineError('INVALID_REQUEST', message); }
@@ -65,6 +65,45 @@ function insertBlankPage(referencePageId: string, position: 'before' | 'after', 
     widthPt: reference.widthPt, heightPt: reference.heightPt };
 }
 
+function groupObjects(command: { pageId: string; objectIds: string[] }, context: CommandContext): EditCommand {
+  const page = context.pages.get(command.pageId);
+  if (!page || command.objectIds.length < 2) reject('Grouping requires at least two objects on a loaded page');
+  const indices = command.objectIds.map(id => {
+    const object = page.objects.find(item => item.id === id);
+    if (!object || object.locator.containerPath.length || !['text', 'path', 'image'].includes(object.type)) {
+      reject('Grouping requires top-level text, path, or image objects from the current PDF');
+    }
+    return object.locator.objectIndex;
+  }).sort((a, b) => a - b);
+  if (indices.some((index, position) => position > 0 && index !== indices[position - 1]! + 1)) {
+    reject('Grouping requires adjacent objects in PDF drawing order');
+  }
+  return { type: 'objects.group', pageId: command.pageId, objectIds: command.objectIds, groupId: crypto.randomUUID() };
+}
+
+function ungroupObject(command: { pageId: string; groupId: string }, context: CommandContext): EditCommand {
+  const group = context.pages.get(command.pageId)?.objects.find(object => object.id === command.groupId);
+  if (!group || group.type !== 'group' || group.locator.containerPath.length) {
+    reject('Ungrouping requires a top-level group from the current PDF');
+  }
+  return { type: 'objects.ungroup', pageId: command.pageId, groupId: command.groupId };
+}
+
+function resolveProposal(command: ProposedCommand, request: AiRequest, context: CommandContext, preferredFontId?: string): EditCommand {
+  switch (command.type) {
+    case 'text.replace': return replacement(command.targetEvidenceId, command.text, request, context);
+    case 'text.reflow': return mergeTextBlocks(command, context, preferredFontId);
+    case 'pages.insert': return insertBlankPage(command.referencePageId, command.position, request, context);
+    case 'pages.duplicate': return { type: 'pages.duplicate', pageIds: command.pageIds,
+      newPageIds: command.pageIds.map(() => crypto.randomUUID()), afterPageId: command.afterPageId };
+    case 'objects.copy': return { type: 'objects.copy', pageId: command.pageId, objectIds: command.objectIds,
+      newObjectIds: command.objectIds.map(() => crypto.randomUUID()), offset: command.offset ?? { x: 12, y: 12 } };
+    case 'objects.group': return groupObjects(command, context);
+    case 'objects.ungroup': return ungroupObject(command, context);
+    default: return command;
+  }
+}
+
 function assertScope(command: EditCommand, request: AiRequest): void {
   const pageIds = new Set([...(request.context.pages ?? []).map(page => page.id), ...request.context.evidence.map(item => item.pageId), ...(request.context.objects ?? []).map(object => object.pageId)]);
   if ('pageIds' in command && command.pageIds.some(id => !pageIds.has(id))) reject('Candidate page is outside request scope');
@@ -72,6 +111,10 @@ function assertScope(command: EditCommand, request: AiRequest): void {
   if (command.type === 'pages.duplicate' && command.afterPageId !== null && !pageIds.has(command.afterPageId)) reject('Candidate insertion position is outside request scope');
   if ('objectIds' in command) {
     for (const id of command.objectIds) if (!request.context.objects?.some(object => object.id === id && object.pageId === command.pageId)) reject('Candidate object is outside request scope');
+  }
+  if (command.type === 'objects.ungroup' && !request.context.objects?.some(object =>
+    object.id === command.groupId && object.pageId === command.pageId && object.type === 'group')) {
+    reject('Candidate group is outside request scope');
   }
   if (command.type === 'text.style' || command.type === 'text.reflow') {
     for (const id of command.blockIds) {
@@ -106,15 +149,7 @@ export function createAiTransaction(requestInput: AiRequest, responseInput: AiRe
   } else if (result.kind === 'commandPlan') {
     commands = result.commands.map(command => {
       if (!request.context.availableCommands?.includes(command.type)) reject('Candidate command is not allowed in this request');
-      const local: EditCommand = command.type === 'text.replace'
-        ? replacement(command.targetEvidenceId, command.text, request, context)
-        : command.type === 'text.reflow' ? mergeTextBlocks(command, context, preferredFontId)
-          : command.type === 'pages.insert' ? insertBlankPage(command.referencePageId, command.position, request, context)
-            : command.type === 'pages.duplicate' ? { type: 'pages.duplicate', pageIds: command.pageIds,
-              newPageIds: command.pageIds.map(() => crypto.randomUUID()), afterPageId: command.afterPageId }
-              : command.type === 'objects.copy' ? { type: 'objects.copy', pageId: command.pageId,
-                objectIds: command.objectIds, newObjectIds: command.objectIds.map(() => crypto.randomUUID()),
-                offset: command.offset ?? { x: 12, y: 12 } } : command;
+      const local = resolveProposal(command, request, context, preferredFontId);
       assertScope(local, request);
       return local;
     });

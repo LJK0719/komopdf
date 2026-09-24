@@ -116,6 +116,14 @@ const commandSchemas: Record<string, JsonSchema> = {
       offset: { type: 'OBJECT', properties: { x: { type: 'NUMBER' }, y: { type: 'NUMBER' } }, required: ['x', 'y'] },
     }, required: ['type', 'pageId', 'objectIds'],
   },
+  'objects.group': {
+    type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['objects.group'] }, pageId: id,
+      objectIds: { type: 'ARRAY', items: id, minItems: 2 } }, required: ['type', 'pageId', 'objectIds'],
+  },
+  'objects.ungroup': {
+    type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['objects.ungroup'] }, pageId: id, groupId: id },
+    required: ['type', 'pageId', 'groupId'],
+  },
   'objects.align': {
     type: 'OBJECT', properties: {
       type: { type: 'STRING', enum: ['objects.align'] }, pageId: id, objectIds: idArray,
@@ -176,7 +184,7 @@ export const SERVER_COMMAND_TYPES = Object.freeze(Object.keys(commandSchemas));
 const featureCommands: Partial<Record<AiFeature, ReadonlySet<string>>> = {
   'commands.plan': new Set(SERVER_COMMAND_TYPES),
   'form.suggest': new Set(['form.fill']),
-  'blocks.organize': new Set(['text.style', 'text.reflow', 'objects.transform', 'objects.delete', 'objects.align', 'objects.distribute']),
+  'blocks.organize': new Set(['text.style', 'text.reflow', 'objects.transform', 'objects.delete', 'objects.align', 'objects.distribute', 'objects.group', 'objects.ungroup']),
 };
 
 const featureInstructions: Record<AiFeature, string> = {
@@ -184,13 +192,13 @@ const featureInstructions: Record<AiFeature, string> = {
   'text.proofread': 'Proofread the supplied evidence. Preserve meaning, numbers, and names unless the instruction explicitly says otherwise. Return only changed replacement candidates.',
   'text.rewrite': 'Rewrite the supplied evidence according to the user instruction and return replacement candidates bound to evidence IDs.',
   'text.fit': 'Rewrite the supplied evidence to fit the target character count while preserving essential meaning. Return replacement candidates.',
-  'commands.plan': 'Propose a short PDF edit plan using only the command types explicitly listed as available. For pages.insert, select an existing referencePageId and before/after; the editor uses that page size. For pages.duplicate, select existing source pageIds and an existing afterPageId (or null for the start). For objects.copy, specify an offset only when the user explicitly requests a numeric displacement; otherwise omit it and the editor uses a small default. The editor generates all new page and object IDs; never return them.',
+  'commands.plan': 'Propose a short PDF edit plan using only the command types explicitly listed as available. For pages.insert, select an existing referencePageId and before/after; the editor uses that page size. For pages.duplicate, select existing source pageIds and an existing afterPageId (or null for the start). For objects.copy, specify an offset only when the user explicitly requests a numeric displacement; otherwise omit it and the editor uses a small default. For objects.group, select at least two existing adjacent top-level text, path, or image objects; for objects.ungroup, select an existing group object. The editor generates all new page and object/group IDs; never return them.',
   'document.ask': 'Answer only from the supplied evidence. Every answer must include one or more exact evidence citations; if evidence is insufficient, return clarification instead of an unsupported answer.',
   'document.summarize': 'Summarize only the supplied evidence and attach citations for the main claims.',
   'document.translate': 'Translate every supplied evidence block, retaining each evidence ID.',
   'document.extract': 'Extract only fields supported by the supplied evidence. Each extracted value must include citations, with exact quotes when practical.',
   'form.suggest': 'Suggest form values only for supplied field IDs using form.fill: text, radio and single-choice values must be strings (never one-item arrays); checkbox values must be booleans. Radio and choice values must exactly match a supplied option.',
-  'blocks.organize': 'Propose layout changes only for supplied page/object IDs. To merge adjacent text blocks, use text.reflow with their block IDs in the desired reading order. Do not invent replacement text, coordinates, or fonts; the client reconstructs them from the PDF.',
+  'blocks.organize': 'Propose layout changes only for supplied page/object IDs. To merge adjacent text blocks, use text.reflow with their block IDs in the desired reading order. To group, select two or more adjacent top-level text, path, or image objects; to ungroup, select an existing group object. Do not invent a new group ID, replacement text, coordinates, or fonts; the client reconstructs them from the PDF.',
   'image.explain': 'Explain the supplied local image using only visible image content and supplied evidence. Do not claim facts that are not visible or evidenced.',
 };
 

@@ -3,10 +3,10 @@ import type { PageModel, RenderResult } from '@pdf-editor/contracts';
 
 type Props = { page: PageModel; render: RenderResult; selectedIds: string[]; disabled: boolean; canTransform: boolean;
   onSelect(id: string, additive: boolean): void; onBoxSelect(ids: string[]): void;
-  onMove(ids: string[], dx: number, dy: number): Promise<void> };
+  onEditText(id: string): void; onMove(ids: string[], dx: number, dy: number): Promise<void> };
 type Gesture = { pointerId: number; startX: number; startY: number; ids: string[] | null; additive: boolean };
 
-export function ObjectSelectionLayer({ page, render, selectedIds, disabled, canTransform, onSelect, onBoxSelect, onMove }: Props) {
+export function ObjectSelectionLayer({ page, render, selectedIds, disabled, canTransform, onSelect, onBoxSelect, onEditText, onMove }: Props) {
   const scaleX = render.width / page.widthPt, scaleY = render.height / page.heightPt;
   const gesture = useRef<Gesture | null>(null);
   const moved = useRef(false);
@@ -80,6 +80,12 @@ export function ObjectSelectionLayer({ page, render, selectedIds, disabled, canT
           if (disabled) return;
           if (moved.current) { moved.current = false; return; }
           onSelect(object.id, event.ctrlKey || event.metaKey || event.shiftKey);
+        }}
+        onDoubleClick={event => {
+          event.stopPropagation();
+          if (!disabled && object.type === 'text' && object.textBlock && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+            onEditText(object.id);
+          }
         }}
         aria-pressed={selected} aria-label={`Select ${names[object.type]} object`} />;
     })}

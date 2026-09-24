@@ -26,7 +26,13 @@ export function attachEngineWorker(
   };
 
   const onMessage = (event: RpcMessageEvent): void => {
-    if (!isRpcRequest(event.data)) return;
+    if (!isRpcRequest(event.data)) {
+      if (isRecord(event.data) && event.data.kind === 'engine-request' && typeof event.data.requestId === 'string') {
+        endpoint.postMessage({ kind: 'engine-error', requestId: event.data.requestId,
+          error: { code: 'UNSUPPORTED_CAPABILITY', message: 'PDF worker does not recognize this engine method' } });
+      }
+      return;
+    }
     const request = event.data;
     executionQueue = executionQueue.then(
       () => handleRequest(endpoint, getBinding, request),
@@ -75,7 +81,7 @@ async function invokeEngine(engine: EngineAdapter, method: EngineMethod, args: u
 
 function responseTransferables(method: EngineMethod, result: unknown): Transferable[] {
   if (method === 'render' && isRecord(result) && result.pixels instanceof ArrayBuffer) return [result.pixels];
-  if (method === 'save' && isRecord(result) && result.kind === 'bytes' && result.bytes instanceof ArrayBuffer) {
+  if ((method === 'save' || method === 'extractPages') && isRecord(result) && result.kind === 'bytes' && result.bytes instanceof ArrayBuffer) {
     return [result.bytes];
   }
   if (method === 'exportRecovery' && isRecord(result) && result.kind === 'bytes' && result.bytes instanceof ArrayBuffer) {

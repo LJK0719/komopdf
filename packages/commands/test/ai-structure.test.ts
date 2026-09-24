@@ -14,14 +14,14 @@ const page: PageModel = {
 const document: DocumentInfo = {
   id: 'doc', revision: 1, savedRevision: 1, pageOrder: ['p1', 'p2'], sourceIds: ['source'],
   permissions: { modify: true, copy: true, annotate: true, fillForms: true, encrypted: false, signed: false },
-  capabilities: ['pages.insert', 'pages.duplicate', 'objects.copy'],
+  capabilities: ['pages.insert', 'pages.duplicate', 'objects.copy', 'objects.group', 'objects.ungroup'],
 };
 const context: CommandContext = { document, pages: new Map([['p1', page]]) };
 const request: AiRequest = {
   protocolVersion: 1, requestId: 'request', feature: 'commands.plan', document: { id: 'doc', revision: 1 },
   context: { scope: 'pages', evidence: [], pages: [{ id: 'p1', pageNumber: 1 }, { id: 'p2', pageNumber: 2 }],
     objects: [{ id: 'o1', pageId: 'p1', type: 'image' }, { id: 'o2', pageId: 'p1', type: 'path' }],
-    availableCommands: ['pages.insert', 'pages.duplicate', 'objects.copy'] },
+    availableCommands: ['pages.insert', 'pages.duplicate', 'objects.copy', 'objects.group', 'objects.ungroup'] },
   instruction: 'Edit pages and objects', options: {},
 };
 type PlanCommands = Extract<AiResult, { kind: 'commandPlan' }>['commands'];
@@ -72,6 +72,49 @@ describe('AI page and object structure plans', () => {
       .toMatchObject({ offset: { x: 4, y: -6 } });
     expect(() => transaction([{ type: 'objects.copy', pageId: 'p1', objectIds: ['foreign'] }]))
       .toThrow('Candidate object is outside request scope');
+  });
+
+  it('groups only adjacent top-level objects in the loaded PDF and generates group ID locally', () => {
+    const command = transaction([{ type: 'objects.group', pageId: 'p1', objectIds: ['o2', 'o1'] }]).commands[0]!;
+    expect(command).toMatchObject({ type: 'objects.group', pageId: 'p1', objectIds: ['o2', 'o1'] });
+    if (command.type !== 'objects.group') throw new Error('Expected group command');
+    expect(command.groupId).not.toBe('o1');
+    expect(command.groupId).not.toBe('o2');
+
+    const gap = { ...page, objects: [page.objects[0]!, { ...page.objects[1]!,
+      locator: { pageId: 'p1', containerPath: [], objectIndex: 2 } }] };
+    expect(() => transaction([{ type: 'objects.group', pageId: 'p1', objectIds: ['o1', 'o2'] }], request,
+      { ...context, pages: new Map([['p1', gap]]) })).toThrow(/adjacent objects/);
+    const nested = { ...page, objects: [page.objects[0]!, { ...page.objects[1]!,
+      locator: { pageId: 'p1', containerPath: [0], objectIndex: 1 } }] };
+    expect(() => transaction([{ type: 'objects.group', pageId: 'p1', objectIds: ['o1', 'o2'] }], request,
+      { ...context, pages: new Map([['p1', nested]]) })).toThrow(/top-level/);
+    expect(() => transaction([{ type: 'objects.group', pageId: 'p1', objectIds: ['o1', 'foreign'] }]))
+      .toThrow(/current PDF/);
+    const narrowed: AiRequest = { ...request, context: { ...request.context,
+      objects: [{ id: 'o1', pageId: 'p1', type: 'image' }] } };
+    expect(() => transaction([{ type: 'objects.group', pageId: 'p1', objectIds: ['o1', 'o2'] }], narrowed))
+      .toThrow('Candidate object is outside request scope');
+  });
+
+  it('ungroups only an existing selected top-level PDF group', () => {
+    const group = { ...page.objects[1]!, id: 'group-1', type: 'group' as const };
+    const groupedContext: CommandContext = { ...context,
+      pages: new Map([['p1', { ...page, objects: [...page.objects, group] }]]) };
+    const scoped: AiRequest = { ...request, context: { ...request.context,
+      objects: [...request.context.objects!, { id: 'group-1', pageId: 'p1', type: 'group' }] } };
+    expect(transaction([{ type: 'objects.ungroup', pageId: 'p1', groupId: 'group-1' }], scoped,
+      groupedContext).commands[0]).toEqual({ type: 'objects.ungroup', pageId: 'p1', groupId: 'group-1' });
+    expect(() => transaction([{ type: 'objects.ungroup', pageId: 'p1', groupId: 'group-1' }]))
+      .toThrow(/current PDF/);
+    expect(() => transaction([{ type: 'objects.ungroup', pageId: 'p1', groupId: 'o1' }]))
+      .toThrow(/top-level group/);
+    expect(() => transaction([{ type: 'objects.ungroup', pageId: 'p1', groupId: 'group-1' }], request, groupedContext))
+      .toThrow('Candidate group is outside request scope');
+    const nestedGroup = { ...group, locator: { ...group.locator, containerPath: [0] } };
+    expect(() => transaction([{ type: 'objects.ungroup', pageId: 'p1', groupId: 'group-1' }], scoped,
+      { ...context, pages: new Map([['p1', { ...page, objects: [...page.objects, nestedGroup] }]]) }))
+      .toThrow(/top-level group/);
   });
 
   it('keeps actual engine capability and permission gates before preview', () => {

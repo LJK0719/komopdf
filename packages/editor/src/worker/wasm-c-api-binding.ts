@@ -8,6 +8,7 @@ import {
   type EngineAdapter,
   type EngineErrorCode,
   type ExtractionRequest,
+  type ExtractPagesRequest, type ExtractPagesResult,
   type PageModel,
   type RenderRequest,
   type RenderResult,
@@ -80,6 +81,7 @@ export interface PdfCoreEmscriptenModule {
     fullHeight: number,
   ): number;
   _pde_save_memory(document: number): number;
+  _pde_extract_pages_memory?(document: number, pageIds: number, pageCount: number): number;
   _pde_save_file_utf8(document: number, destination: number): number;
   _pde_binary_data(): number;
   _pde_binary_size(): number;
@@ -522,6 +524,32 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
       ...(inputPassword === undefined ? {} : { inputPassword }),
     });
     return { kind: 'bytes', docId: request.docId, savedRevision: metadata.savedRevision, bytes };
+  }
+
+  async extractPages(request: ExtractPagesRequest): Promise<ExtractPagesResult> {
+    const session = this.document(request.docId);
+    if (!this.module._pde_extract_pages_memory) throw unsupported('Page extraction is unavailable in this PDF core');
+    if (!Array.isArray(request.pageIds) || !request.pageIds.length ||
+      new Set(request.pageIds).size !== request.pageIds.length ||
+      request.pageIds.some(id => !session.pageIndices.has(id))) {
+      throw new EngineError('INVALID_REQUEST', 'Select distinct existing pages to extract');
+    }
+    const allocations = new WasmAllocations(this.module);
+    try {
+      const pointers = request.pageIds.map(id => allocations.string(id));
+      const table = allocations.raw(pointers.length * 4);
+      const view = new DataView(this.module.HEAPU8.buffer, table, pointers.length * 4);
+      pointers.forEach((pointer, index) => view.setUint32(index * 4, pointer, true));
+      const metadata = this.readJson(() => this.module._pde_extract_pages_memory!(session.handle, table, pointers.length),
+        'Unable to extract PDF pages');
+      if (!isRecord(metadata) || metadata.kind !== 'bytes' || metadata.sourceRevision !== session.info.revision ||
+        !Array.isArray(metadata.pageIds) || metadata.pageIds.length !== request.pageIds.length ||
+        metadata.pageIds.some((id, index) => id !== request.pageIds[index])) {
+        throw new EngineError('CORE_UNAVAILABLE', 'PDF core returned invalid page extraction metadata');
+      }
+      return { kind: 'bytes', docId: request.docId, sourceRevision: session.info.revision,
+        pageIds: [...request.pageIds], bytes: this.copyBinary('Unable to read extracted PDF bytes') };
+    } finally { allocations.free(); }
   }
 
   async registerResource(request: RegisterResourceRequest): Promise<ResourceInfo> {
@@ -1224,6 +1252,9 @@ function validateFormFieldInfo(value: unknown, document: DocumentInfo): FormFiel
         || !isFormValue(field.value)
         || typeof field.readOnly !== 'boolean'
         || typeof field.required !== 'boolean'
+        || (field.multiple !== undefined && typeof field.multiple !== 'boolean')
+        || (field.choiceKind !== undefined && (field.type !== 'choice' || !['combo', 'list'].includes(field.choiceKind as string)))
+        || (field.multiple === true && field.choiceKind !== 'list')
         || !Array.isArray(field.options) || field.options.some(option => typeof option !== 'string')
         || !Array.isArray(field.widgets)
         || field.widgets.some(widget => !isRecord(widget)

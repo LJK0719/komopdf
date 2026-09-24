@@ -10,7 +10,7 @@ export const ABI3_CAPABILITIES: CommandType[] = [...ABI3_BASE_CAPABILITIES,
   'pages.duplicate', 'pages.import', 'image.replace', 'image.crop', 'objects.copy',
   'annotation.add', 'form.fill', 'form.create', 'text.reflow', 'objects.align',
   'annotation.update', 'annotation.delete', 'objects.distribute', 'pages.crop',
-  'objects.group', 'objects.ungroup'];
+  'objects.group', 'objects.ungroup', 'form.update'];
 
 type Allocator = { string(value: string): number; bytes(value: Uint8Array): number };
 type PackedCommand = { fields: number[]; values: number[] };
@@ -170,7 +170,16 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       fields[4] = allocations.string(command.name); bounds(command.bounds);
       values[4] = command.fontSize ?? 12;
       if (command.fontId !== undefined) { fields[10] = 1; string(5, command.fontId); }
+      if (command.readOnly) fields[10]! |= 2;
+      if (command.required) fields[10]! |= 4;
+      if (command.multiple) fields[10]! |= 8;
       if (command.options) ids(command.options);
+      break;
+    case 'form.update':
+      fields[0] = 28; string(2, command.fieldId);
+      if (command.readOnly !== undefined) { fields[10]! |= 1; values[0] = command.readOnly ? 1 : 0; }
+      if (command.required !== undefined) { fields[10]! |= 2; values[1] = command.required ? 1 : 0; }
+      if (command.multiple !== undefined) { fields[10]! |= 4; values[2] = command.multiple ? 1 : 0; }
       break;
     default: throw new EngineError('UNSUPPORTED_CAPABILITY', 'Command is not connected to this core');
   }

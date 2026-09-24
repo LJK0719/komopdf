@@ -2,9 +2,11 @@
 #include "native_file_path.h"
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -170,6 +172,7 @@ void TestNativeLongPath() {
     directories.push_back(directory);
   }
   const std::string path = directory + "/\xE4\xB8\xAD\xE6\x96\x87.pdf";
+  const std::string extract_path = directory + "/\xE6\x8F\x90\xE5\x8F\x96.pdf";
   const std::string recovery_path = path + ".recovery";
   Require(path.size() > 260, "fixture genuinely exceeds MAX_PATH");
   const std::string pdf = Pdf({
@@ -180,13 +183,23 @@ void TestNativeLongPath() {
   const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
       static_cast<uint32_t>(pdf.size()), "long-path", "long-path-source", nullptr);
   Require(doc != 0 && pde_save_file_utf8(doc, path.c_str()) == 1, "save beyond MAX_PATH");
+  const std::string page_id = PageIdFromDescription(pde_describe_page(doc, 0));
+  const char* ids[]{page_id.c_str()};
+  Require(pde_extract_pages_file_utf8(doc, ids, 1, extract_path.c_str()) != nullptr &&
+              pde_binary_size() == 0,
+          "extract staging PDF at UTF-8 path beyond MAX_PATH without copying bytes");
   Require(pde_export_recovery_file_utf8(doc, recovery_path.c_str()) != nullptr, "snapshot beyond MAX_PATH");
   Require(pde_close(doc) == 1, "close long-path source");
   const uint32_t reopened = pde_open_file_utf8(path.c_str(), "long-reopen", "long-file", nullptr);
   Require(reopened != 0 && pde_close(reopened) == 1, "open Unicode PDF beyond MAX_PATH");
+  const uint32_t extracted = pde_open_file_utf8(
+      extract_path.c_str(), "long-extract", "long-extract-file", nullptr);
+  Require(extracted != 0 && pde_close(extracted) == 1,
+          "open extracted Unicode PDF beyond MAX_PATH");
   const uint32_t restored = pde_restore_recovery_file_utf8(recovery_path.c_str(), nullptr);
   Require(restored != 0 && pde_close(restored) == 1, "restore snapshot beyond MAX_PATH");
   Require(DeleteFileW(pdf_editor::NativeWidePath(path).c_str()) != 0 &&
+          DeleteFileW(pdf_editor::NativeWidePath(extract_path).c_str()) != 0 &&
           DeleteFileW(pdf_editor::NativeWidePath(recovery_path).c_str()) != 0,
           "remove only owned long-path fixture files");
   for (auto it = directories.rbegin(); it != directories.rend(); ++it)
@@ -1868,6 +1881,388 @@ void TestChoiceFields(const std::string& font_id) {
           "close Choice field fixtures");
 }
 
+void TestFormFieldAttributes(const std::string& font_id) {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R >>",
+      Stream(""),
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "form-attributes", "form-attributes-source", nullptr);
+  Require(doc != 0, "open form attribute fixture");
+  const std::string page_id = PageIdFromDescription(pde_describe_page(doc, 0));
+  const char* options[]{"First", "Second", "Third"};
+  PdeEditCommand create[4]{};
+  for (size_t index = 0; index < 4; ++index) {
+    create[index].type = 19;
+    create[index].page_id = page_id.c_str();
+    create[index].target_id = index == 0 ? "attrs-text" : index == 1 ? "attrs-list" :
+                              index == 2 ? "attrs-check" : "attrs-radio";
+    create[index].text_utf8 = index == 0 ? "Text" : index == 1 ? "List" :
+                              index == 2 ? "Check" : "Radio";
+    create[index].resource_id = index == 0 ? "text" : index == 1 ? "list" :
+                                index == 2 ? "checkbox" : "radio";
+    create[index].values[0] = 20;
+    create[index].values[1] = 20 + 65 * index;
+    create[index].values[2] = 180;
+    create[index].values[3] = 40;
+    create[index].values[4] = 12;
+  }
+  create[0].font_id = font_id.c_str(); create[0].flags = 1 | 2 | 4;
+  create[1].font_id = font_id.c_str(); create[1].flags = 1 | 4 | 8;
+  create[1].ids = options; create[1].id_count = 3;
+  create[2].flags = 2;
+  create[3].flags = 4; create[3].ids = options; create[3].id_count = 3;
+  Require(pde_preview_commands(doc, 0, create, 4) != nullptr &&
+              std::string(pde_describe_forms(doc)) == "[]",
+          "field attribute preview does not mutate active PDF");
+  Require(pde_apply_commands(doc, 0, "create-field-attributes", create, 4) != nullptr,
+          "create text, list, checkbox and radio with persistent field flags");
+  const std::string initial = RequireResult(pde_describe_forms(doc), "describe field attributes");
+  Require(Count(initial, "\"multiple\":true") == 1 &&
+              Count(initial, "\"readOnly\":true") == 2 &&
+              Count(initial, "\"required\":true") == 3 &&
+              initial.find("\"value\":[\"First\"]") != std::string::npos,
+          "created field flags and multi-select array are exposed from AcroForm");
+  PdeEditCommand fill{};
+  fill.type = 18; fill.target_id = "attrs-text"; fill.text_utf8 = "Editable";
+  Require(pde_apply_commands(doc, 1, "readonly-reject", &fill, 1) == nullptr &&
+              std::string(pde_describe_forms(doc)) == initial && pde_document_revision(doc) == 1,
+          "read-only field rejects fill without changing committed PDF");
+  PdeEditCommand update{};
+  update.type = 28; update.target_id = "attrs-text";
+  update.flags = 1 | 2; update.values[0] = 0; update.values[1] = 0;
+  PdeEditCommand edit_text[]{update, fill};
+  Require(pde_apply_commands(doc, 1, "enable-and-fill", edit_text, 2) != nullptr,
+          "attribute update and fill share one atomic transaction");
+  const std::string edited = RequireResult(pde_describe_forms(doc), "describe editable text");
+  Require(edited.find("\"value\":\"Editable\"") != std::string::npos &&
+              Count(edited, "\"readOnly\":true") == 1 &&
+              Count(edited, "\"required\":true") == 2,
+          "editing a field changes only requested flags and preserves values");
+  Require(pde_undo(doc) != nullptr && std::string(pde_describe_forms(doc)) == initial &&
+              pde_redo(doc) != nullptr && std::string(pde_describe_forms(doc)) == edited,
+          "undo and redo restore field flags and text value together");
+  uint32_t revision = pde_document_revision(doc);
+
+  fill = {}; fill.type = 18; fill.target_id = "attrs-list";
+  fill.flags = 2; fill.ids = options; fill.id_count = 2;
+  Require(pde_apply_commands(doc, revision++, "select-two-options", &fill, 1) != nullptr,
+          "fill created multi-select list with two export values");
+  const std::string selected = RequireResult(pde_describe_forms(doc), "describe two selections");
+  Require(selected.find("\"value\":[\"First\",\"Second\"]") != std::string::npos,
+          "two selections are persisted as an ordered PDF array");
+  update = {}; update.type = 28; update.target_id = "attrs-list";
+  update.flags = 4; update.values[2] = 0;
+  Require(pde_apply_commands(doc, revision, "reject-two-to-one", &update, 1) == nullptr &&
+              std::string(pde_describe_forms(doc)) == selected && pde_document_revision(doc) == revision,
+          "disabling multiple with two selections refuses the candidate");
+  update.flags = 1 | 2; update.values[0] = 1; update.values[1] = 0;
+  Require(pde_apply_commands(doc, revision++, "lock-multiselect", &update, 1) != nullptr,
+          "update flags without discarding multi-select state");
+  const std::string locked = RequireResult(pde_describe_forms(doc), "describe locked list");
+  Require(locked.find("\"multiple\":true,\"value\":[\"First\",\"Second\"]") != std::string::npos &&
+              Count(locked, "\"readOnly\":true") == 2,
+          "list remains selected and its read-only flag is visible");
+  Require(pde_apply_commands(doc, revision, "readonly-list-reject", &fill, 1) == nullptr &&
+              std::string(pde_describe_forms(doc)) == locked,
+          "updated read-only list rejects subsequent fill");
+  update = {}; update.type = 28; update.target_id = "attrs-list";
+  update.flags = 1; update.values[0] = 0;
+  Require(pde_apply_commands(doc, revision++, "unlock-multiselect", &update, 1) != nullptr,
+          "clear read-only without changing other field flags");
+  fill.id_count = 1;
+  Require(pde_apply_commands(doc, revision++, "select-one-option", &fill, 1) != nullptr,
+          "reduce multi-select selection to one option");
+  update.flags = 4; update.values[2] = 0;
+  Require(pde_apply_commands(doc, revision++, "make-single-select", &update, 1) != nullptr,
+          "switch list to single-select and normalize its value");
+  const std::string single = RequireResult(pde_describe_forms(doc), "describe single-select list");
+  Require(single.find("\"multiple\":false,\"value\":\"First\"") != std::string::npos,
+          "single-select uses a scalar PDF value");
+  update.values[2] = 1;
+  Require(pde_apply_commands(doc, revision++, "restore-multiselect", &update, 1) != nullptr,
+          "switch list back to multi-select and normalize its value");
+  const std::string restored = RequireResult(pde_describe_forms(doc), "describe restored list");
+  Require(restored.find("\"multiple\":true,\"value\":[\"First\"]") != std::string::npos,
+          "re-enabled multi-select uses an array PDF value");
+  const auto rendered = RenderPixels(doc, 0, 400, 300);
+  Require(pde_save_memory(doc) != nullptr, "save field attributes and appearances");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "attributes-reopen", "attributes-saved", nullptr);
+  Require(reopened != 0, "reopen field attributes after save");
+  const std::string saved_forms = RequireResult(pde_describe_forms(reopened),
+                                               "describe saved field attributes");
+  Require(Count(saved_forms, "\"multiple\":true") == 1 &&
+              Count(saved_forms, "\"required\":true") == 1 &&
+              Count(saved_forms, "\"readOnly\":true") == 1 &&
+              saved_forms.find("\"id\":\"attrs-list\"") != std::string::npos &&
+              saved_forms.find("\"multiple\":true,\"value\":[\"First\"]") != std::string::npos &&
+              saved_forms.find("\"value\":\"Editable\"") != std::string::npos,
+          "field flags and selections survive save/reopen");
+  Require(RenderPixels(reopened, 0, 400, 300) == rendered,
+          "widget appearances survive save/reopen");
+  Require(pde_close(reopened) == 1, "close reopened attributes fixture");
+  Require(pde_undo(doc) != nullptr && std::string(pde_describe_forms(doc)) == single &&
+              pde_redo(doc) != nullptr && std::string(pde_describe_forms(doc)) == restored,
+          "multi-select conversion remains undoable and redoable");
+  revision = pde_document_revision(doc);
+
+  update = {}; update.type = 28; update.target_id = "attrs-check";
+  update.flags = 2; update.values[1] = 1;
+  PdeEditCommand invalid_fill{};
+  invalid_fill.type = 18; invalid_fill.target_id = "missing-field";
+  PdeEditCommand rejected[]{update, invalid_fill};
+  Require(pde_apply_commands(doc, revision, "rollback-attributes", rejected, 2) == nullptr &&
+              std::string(pde_describe_forms(doc)) == restored && pde_document_revision(doc) == revision,
+          "failed second command rolls back the earlier attribute update");
+  update.target_id = "attrs-text"; update.flags = 4; update.values[2] = 1;
+  Require(pde_apply_commands(doc, revision, "reject-text-multiple", &update, 1) == nullptr &&
+              std::string(pde_describe_forms(doc)) == restored,
+          "multi-select is rejected for a non-list field");
+  PdeEditCommand invalid_create = create[1];
+  invalid_create.target_id = "invalid-combo"; invalid_create.resource_id = "combo";
+  Require(pde_apply_commands(doc, revision, "reject-combo-multiple", &invalid_create, 1) == nullptr &&
+              std::string(pde_describe_forms(doc)) == restored,
+          "multi-select is rejected at creation for combo fields");
+  fill = {}; fill.type = 18; fill.target_id = "attrs-list"; fill.flags = 2;
+  Require(pde_apply_commands(doc, revision, "clear-multiselect", &fill, 1) != nullptr,
+          "clear multi-select list to an empty value");
+  const std::string empty = RequireResult(pde_describe_forms(doc), "describe empty multi-select");
+  Require(empty.find("\"choiceKind\":\"list\"") != std::string::npos &&
+              empty.find("\"multiple\":true,\"value\":[]") != std::string::npos,
+          "empty list still advertises its list type and multiple flag");
+  Require(pde_save_memory(doc) != nullptr, "save empty multi-select list");
+  const std::vector<uint8_t> empty_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t empty_reopen = pde_open_memory(empty_bytes.data(),
+      static_cast<uint32_t>(empty_bytes.size()), "empty-list-reopen", "empty-list-saved", nullptr);
+  Require(empty_reopen != 0 &&
+              std::string(pde_describe_forms(empty_reopen)).find(
+                  "\"multiple\":true,\"value\":[]") != std::string::npos,
+          "empty multi-select flag and value survive save/reopen");
+  Require(pde_close(empty_reopen) == 1 && pde_close(doc) == 1,
+          "close form attribute fixtures");
+}
+
+void TestExtractPagesMemory() {
+  std::filesystem::create_directories("tmp");
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /Font << /F1 9 0 R >> >> /Contents 6 0 R >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /Font << /F1 9 0 R >> >> /Contents 7 0 R >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /Font << /F1 9 0 R >> >> /Contents 8 0 R >>",
+      Stream("BT /F1 20 Tf 30 200 Td (FIRST) Tj ET"),
+      Stream("BT /F1 20 Tf 30 200 Td (SECOND) Tj ET"),
+      Stream("BT /F1 20 Tf 30 200 Td (THIRD) Tj ET"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const uint32_t doc = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(pdf.data()), static_cast<uint32_t>(pdf.size()),
+      "extract-source", "extract-input", nullptr);
+  Require(doc != 0, "open extractable three-page PDF");
+  const std::string first_id = PageIdFromDescription(pde_describe_page(doc, 0));
+  const std::string second_id = PageIdFromDescription(pde_describe_page(doc, 1));
+  const std::string third_desc = RequireResult(pde_describe_page(doc, 2), "describe third page");
+  const std::string third_id = PageIdFromDescription(third_desc);
+  const auto blocks = TextBlockIds(third_desc);
+  Require(blocks.size() == 1, "resolve text on extracted source page");
+  PdeEditCommand annotation{};
+  annotation.type = 17;
+  annotation.page_id = second_id.c_str();
+  annotation.target_id = "extract-note";
+  annotation.resource_id = "text";
+  annotation.text_utf8 = "Keep annotation on extracted page";
+  annotation.values[0] = 30;
+  annotation.values[1] = 30;
+  annotation.values[2] = 30;
+  annotation.values[3] = 30;
+  Require(pde_apply_commands(doc, 0, "add-extract-note", &annotation, 1) != nullptr,
+          "add ordinary annotation to source page");
+  PdeTextEdit edit{2, blocks[0].c_str(), 0, 5, "REVISED", nullptr};
+  Require(pde_apply_text(doc, 1, "edit-extracted-text", &edit, 1) != nullptr,
+          "commit text edit before extracting selected pages");
+  const std::string source_info = RequireResult(pde_document_info(doc),
+                                                "document state before extraction");
+  const std::string source_annotations = RequireResult(pde_describe_annotations(doc, 1),
+                                                       "source annotation before extraction");
+  const auto expected_third = RenderPixels(doc, 2, 300, 300);
+  const auto expected_second = RenderPixels(doc, 1, 300, 300);
+  const char* ids[] = {third_id.c_str(), second_id.c_str()};
+  const std::string response = RequireResult(pde_extract_pages_memory(doc, ids, 2),
+                                              "extract selected pages into new PDF");
+  Require(response == "{\"kind\":\"bytes\",\"sourceRevision\":2,\"pageIds\":[\"" +
+                      third_id + "\",\"" + second_id + "\"]}" &&
+              pde_binary_size() > 0,
+          "extraction returns exact source page ID order and committed revision");
+  const std::vector<uint8_t> extracted_bytes(pde_binary_data(),
+                                               pde_binary_data() + pde_binary_size());
+  Require(std::string(pde_document_info(doc)) == source_info &&
+              PageIdFromDescription(pde_describe_page(doc, 0)) == first_id &&
+              std::string(pde_describe_annotations(doc, 1)) == source_annotations,
+          "extraction does not mutate original page identities or annotation state");
+  const uint32_t result = pde_open_memory(
+      extracted_bytes.data(), static_cast<uint32_t>(extracted_bytes.size()),
+      "extracted-doc", "new-pdf", nullptr);
+  Require(result != 0 &&
+              std::string(pde_extract_page(result, 0)).find("REVISED") != std::string::npos &&
+              std::string(pde_extract_page(result, 1)).find("SECOND") != std::string::npos &&
+              pde_describe_page(result, 2) == nullptr,
+          "new PDF contains only selected pages in requested order");
+  Require(RenderPixels(result, 0, 300, 300) == expected_third &&
+              RenderPixels(result, 1, 300, 300) == expected_second &&
+              std::string(pde_describe_annotations(result, 1)).find(
+                  "Keep annotation on extracted page") != std::string::npos &&
+              std::string(pde_describe_annotations(result, 1)).find(
+                  "\"id\":\"extract-note\"") != std::string::npos &&
+              PageIdFromDescription(pde_describe_page(result, 0)) != third_id,
+          "saved PDF retains pixels and ordinary annotation but has fresh session IDs");
+  Require(pde_close(result) == 1, "close extracted PDF");
+
+  const std::string staging_path = "tmp/pde-extract-" + std::to_string(
+      std::chrono::steady_clock::now().time_since_epoch().count()) + ".pdf";
+  const std::string file_response = RequireResult(
+      pde_extract_pages_file_utf8(doc, ids, 2, staging_path.c_str()),
+      "extract selected pages directly to staging file");
+  Require(file_response == "{\"kind\":\"native-file\",\"sourceRevision\":2,\"pageIds\":[\"" +
+                      third_id + "\",\"" + second_id + "\"]}" &&
+              pde_binary_size() == 0 &&
+              std::string(pde_document_info(doc)) == source_info,
+          "native file extraction reports ordered IDs without returning PDF bytes or changing source");
+  const uint32_t file_doc = pde_open_file_utf8(
+      staging_path.c_str(), "extracted-file-doc", "new-native-file", nullptr);
+  Require(file_doc != 0 &&
+              RenderPixels(file_doc, 0, 300, 300) == expected_third &&
+              RenderPixels(file_doc, 1, 300, 300) == expected_second &&
+              std::string(pde_describe_annotations(file_doc, 1)).find(
+                  "Keep annotation on extracted page") != std::string::npos,
+          "native staging PDF keeps current text, order, pixels and annotations");
+  Require(pde_close(file_doc) == 1, "close extracted staging PDF");
+  Require(pde_extract_pages_file_utf8(doc, ids, 2, staging_path.c_str()) == nullptr &&
+              std::string(pde_error_code()) == "SAVE_FAILED" &&
+              pde_binary_size() == 0,
+          "existing staging file is never overwritten");
+  const uint32_t intact = pde_open_file_utf8(
+      staging_path.c_str(), "existing-file-doc", "existing-native-file", nullptr);
+  Require(intact != 0 &&
+              std::string(pde_extract_page(intact, 0)).find("REVISED") != std::string::npos,
+          "failed overwrite preserves the existing staging PDF");
+  Require(pde_close(intact) == 1, "close preserved staging PDF");
+#if defined(_WIN32)
+  Require(DeleteFileW(pdf_editor::NativeWidePath(staging_path).c_str()) != 0,
+          "remove owned extraction staging file");
+#else
+  Require(std::remove(staging_path.c_str()) == 0,
+          "remove owned extraction staging file");
+#endif
+
+  const char* repeated[] = {second_id.c_str(), second_id.c_str()};
+  Require(pde_extract_pages_memory(doc, repeated, 2) == nullptr &&
+              std::string(pde_error_code()) == "INVALID_REQUEST" &&
+              pde_binary_size() == 0,
+          "duplicate page IDs fail without leaving prior export bytes");
+  const char* missing[] = {"missing-page"};
+  Require(pde_extract_pages_memory(doc, missing, 1) == nullptr &&
+              std::string(pde_error_code()) == "INVALID_REQUEST" &&
+              pde_binary_size() == 0 &&
+              std::string(pde_document_info(doc)) == source_info,
+          "unknown page ID fails without modifying committed state");
+  Require(pde_extract_pages_memory(doc, nullptr, 0) == nullptr &&
+              std::string(pde_error_code()) == "INVALID_REQUEST" &&
+              pde_binary_size() == 0,
+          "empty page selection fails explicitly");
+  Require(pde_undo(doc) != nullptr &&
+              std::string(pde_extract_page(doc, 2)).find("THIRD") != std::string::npos &&
+              pde_redo(doc) != nullptr &&
+              std::string(pde_extract_page(doc, 2)).find("REVISED") != std::string::npos,
+          "extraction leaves source undo/redo history intact");
+  Require(pde_close(doc) == 1, "close original extracted source");
+}
+
+void TestExtractPageAnnotationBacklink() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+      "/Annots [5 0 R] /Contents 4 0 R >>",
+      Stream("0 0 20 20 re f"),
+      "<< /Type /Annot /Subtype /Text /P 3 0 R /NM (backlink-note) "
+      "/Contents (Backlinked note) /Rect [10 10 40 40] >>",
+  });
+  const uint32_t doc = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(pdf.data()), static_cast<uint32_t>(pdf.size()),
+      "extract-backlink", "extract-backlink-source", nullptr);
+  Require(doc != 0, "open annotation with page backlink");
+  const std::string page_id = PageIdFromDescription(pde_describe_page(doc, 0));
+  const char* ids[]{page_id.c_str()};
+  Require(pde_extract_pages_memory(doc, ids, 1) != nullptr,
+          "extract ordinary annotation pointing to selected page");
+  const std::vector<uint8_t> bytes(pde_binary_data(),
+                                    pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(
+      bytes.data(), static_cast<uint32_t>(bytes.size()),
+      "extracted-backlink", "new-backlink-source", nullptr);
+  Require(reopened != 0 &&
+              std::string(pde_describe_annotations(reopened, 0)).find(
+                  "Backlinked note") != std::string::npos,
+          "annotation backlink does not prevent ordinary note from surviving save");
+  Require(pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close backlink annotation fixtures");
+}
+
+void TestExtractPagesUnsupported() {
+  const auto check = [](const std::string& pdf, const char* label) {
+    const uint32_t doc = pde_open_memory(
+        reinterpret_cast<const uint8_t*>(pdf.data()), static_cast<uint32_t>(pdf.size()),
+        label, label, nullptr);
+    Require(doc != 0, "open unsupported extraction fixture");
+    const std::string page_id = PageIdFromDescription(pde_describe_page(doc, 0));
+    const char* ids[] = {page_id.c_str()};
+    Require(pde_extract_pages_memory(doc, ids, 1) == nullptr &&
+                std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+                pde_binary_size() == 0 && pde_document_revision(doc) == 0,
+            "unsupported structural extraction fails without PDF bytes");
+    const std::string staging_path = "tmp/pde-extract-refused-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+        ".pdf";
+    Require(pde_extract_pages_file_utf8(doc, ids, 1, staging_path.c_str()) == nullptr &&
+                std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+                pde_binary_size() == 0 && std::fopen(staging_path.c_str(), "rb") == nullptr,
+            "unsupported structural extraction never creates a staging file");
+    Require(pde_close(doc) == 1, "close unsupported extraction fixture");
+  };
+  check(Pdf({"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>",
+             Stream("0 0 20 20 re f"),
+             "<< /Type /Outlines /Count 0 >>"}), "extract-bookmark");
+  for (const char* subtype : {"Link", "Widget", "FileAttachment"}) {
+    check(Pdf({"<< /Type /Catalog /Pages 2 0 R >>",
+               "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+               "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+               "/Contents 4 0 R /Annots [5 0 R] >>",
+               Stream("0 0 20 20 re f"),
+               std::string("<< /Type /Annot /Subtype /") + subtype +
+                   " /Rect [10 10 40 40] >>"}), subtype);
+  }
+  check(Pdf({"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot << /Type /StructTreeRoot >> >>",
+             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+             "/StructParents 0 /Contents 4 0 R >>",
+             Stream("0 0 20 20 re f")}), "extract-tagged");
+  check(Pdf({"<< /Type /Catalog /Pages 2 0 R >>",
+             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+             "/Contents 4 0 R >>",
+             Stream("/Span << /MCID 0 >> BDC 0 0 20 20 re f EMC")}),
+        "extract-marked-content-id");
+}
+
 void TestAnnotationPageDuplicate() {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -2361,6 +2756,7 @@ void TestFontRuntime(const FontTestOptions& options) {
   TestOcrSearchLayer("runtime-otf", true);
   TestDocumentTools("runtime-otf");
   TestChoiceFields("runtime-otf");
+  TestFormFieldAttributes("runtime-otf");
   TestDocumentTools("runtime-otf", "/MediaBox [-10 -20 300 500] /CropBox [10 20 160 220] /Rotate 90 /UserUnit 2");
   TestMultilineTextInsert("runtime-otf");
   const std::string chinese =
@@ -2444,7 +2840,7 @@ int main(int argc, char** argv) {
                     "\"pages.rotate\",\"pages.delete\",\"pages.reorder\","
                     "\"pages.insert\",\"image.insert\",\"content.insert\","
                     "\"pages.duplicate\",\"pages.import\",\"image.replace\","
-                    "\"image.crop\",\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\"]") != std::string::npos,
+                    "\"image.crop\",\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\",\"form.update\"]") != std::string::npos,
           "real ABI3 editing capabilities");
   Require(std::string(pde_capabilities()).find("\"objects.copy\"") !=
               std::string::npos,
@@ -2586,6 +2982,9 @@ int main(int argc, char** argv) {
   TestObjectGroup();
   TestPageCrop();
   TestOutlineNavigation();
+  TestExtractPagesMemory();
+  TestExtractPageAnnotationBacklink();
+  TestExtractPagesUnsupported();
   TestAnnotationPageDuplicate();
   TestRadioFields();
   TestP1bTransactions();

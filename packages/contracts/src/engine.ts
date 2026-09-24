@@ -13,7 +13,8 @@ export type DocumentInfo = {
 };
 export type FormFieldInfo = {
   id: string; name: string; type: 'text' | 'checkbox' | 'radio' | 'choice';
-  value: string | boolean | string[]; readOnly: boolean; required: boolean; options: string[];
+  value: string | boolean | string[]; readOnly: boolean; required: boolean;
+  multiple?: boolean; choiceKind?: 'combo' | 'list'; options: string[];
   widgets: { pageId: string; bounds: Rect }[];
 };
 export type OutlineEntry = { title: string; pageId: string | null; level: number };
@@ -48,6 +49,11 @@ export type CommitResult = { docId: string; revision: number; changedPageIds: st
 export type SaveRequest = { docId: string; target?: string; protection: 'preserve' | 'remove' | 'set'; password?: string;
   optimize?: boolean; imageOptimization?: { quality: number; maxEdge?: number } };
 export type SaveResult = { docId: string; savedRevision: number } & (
+  | { kind: 'bytes'; bytes: ArrayBuffer }
+  | { kind: 'native-file'; handle: string }
+);
+export type ExtractPagesRequest = { docId: string; pageIds: string[] };
+export type ExtractPagesResult = { docId: string; sourceRevision: number; pageIds: string[] } & (
   | { kind: 'bytes'; bytes: ArrayBuffer }
   | { kind: 'native-file'; handle: string }
 );
@@ -101,6 +107,7 @@ export interface EngineAdapter {
   undo(docId: string): Promise<CommitResult>;
   redo(docId: string): Promise<CommitResult>;
   save(request: SaveRequest): Promise<SaveResult>;
+  extractPages?(request: ExtractPagesRequest): Promise<ExtractPagesResult>;
   close(docId: string): Promise<void>;
   exportRecovery?(docId: string): Promise<RecoverySnapshot>;
   restoreRecovery?(request: RestoreRecoveryRequest): Promise<DocumentInfo>;

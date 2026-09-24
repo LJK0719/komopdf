@@ -40,6 +40,10 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   const [fieldOptions, setFieldOptions] = useState('Option A\nOption B');
   const [fieldFontId, setFieldFontId] = useState('');
   const [fieldFontSize, setFieldFontSize] = useState('12');
+  const [fieldReadOnly, setFieldReadOnly] = useState(false);
+  const [fieldRequired, setFieldRequired] = useState(false);
+  const [fieldMultiple, setFieldMultiple] = useState(false);
+  const [fieldPropertyDrafts, setFieldPropertyDrafts] = useState<Record<string, { readOnly: boolean; required: boolean; multiple: boolean }>>({});
   const [annotations, setAnnotations] = useState<PdfAnnotationInfo[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [fields, setFields] = useState<FormFieldInfo[]>([]);
@@ -64,9 +68,10 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   const canUpdateAnnotation = document.capabilities.includes('annotation.update');
   const canDeleteAnnotation = document.capabilities.includes('annotation.delete');
   const supportsFormCreate = document.capabilities.includes('form.create');
+  const supportsFormUpdate = document.capabilities.includes('form.update');
   const supportsFormFill = document.capabilities.includes('form.fill');
   const canReadAnnotations = supportsAnnotations && Boolean(engine.describeAnnotations);
-  const canReadForms = (supportsFormCreate || supportsFormFill) && Boolean(engine.describeForms);
+  const canReadForms = (supportsFormCreate || supportsFormUpdate || supportsFormFill) && Boolean(engine.describeForms);
 
   const selectedBounds = useMemo(() => {
     const objects = page.objects.filter(object => selectedIds.includes(object.id));
@@ -97,6 +102,8 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
       setAnnotations(nextAnnotations);
       setFields(nextFields);
       setFieldDrafts(Object.fromEntries(nextFields.map(field => [field.id, copyFormValue(field.value)])));
+      setFieldPropertyDrafts(Object.fromEntries(nextFields.map(field => [field.id,
+        { readOnly: field.readOnly, required: field.required, multiple: field.multiple ?? false }])));
       setDataScope(expectedScope);
     }).catch(caught => {
       if (loadSequence.current === sequence && scopeRef.current === expectedScope) {
@@ -231,6 +238,9 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
       name,
       fieldType,
       bounds: readBounds(boundsDraft),
+      readOnly: fieldReadOnly,
+      required: fieldRequired,
+      ...(fieldType === 'list' ? { multiple: fieldMultiple } : {}),
       ...(needsFont ? {
         fontId: chosenFont!.id,
         fontSize: readPositive(fieldFontSize, 'Font size'),
@@ -242,6 +252,14 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   async function fillField(field: FormFieldInfo): Promise<void> {
     const value = fieldDrafts[field.id] ?? field.value;
     await execute({ type: 'form.fill', fieldId: field.id, value });
+  }
+
+  async function updateField(field: FormFieldInfo): Promise<void> {
+    const draft = fieldPropertyDrafts[field.id];
+    if (!draft) return;
+    await execute({ type: 'form.update', fieldId: field.id,
+      readOnly: draft.readOnly, required: draft.required,
+      ...(field.choiceKind === 'list' ? { multiple: draft.multiple } : {}) });
   }
 
   function useSelectionBounds(): void {
@@ -315,23 +333,40 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
 
     <details open>
       <summary>Forms on this page</summary>
-      {!supportsFormCreate && !supportsFormFill ? <p role="status">The current PDF core does not advertise form editing.</p> : <>
+      {!supportsFormCreate && !supportsFormUpdate && !supportsFormFill ? <p role="status">The current PDF core does not advertise form editing.</p> : <>
         {!engine.describeForms ? <p role="alert">Form inspection is unavailable in this adapter.</p> : null}
         {loading ? <p role="status">Loading fields…</p> : null}
         {!loading && canReadForms && currentFields.length === 0 ? <p>No form fields on this page.</p> : null}
         {currentFields.length > 0 ? <div className="document-fields-list">
           {currentFields.map(field => {
             const draft = fieldDrafts[field.id] ?? field.value;
+            const properties = fieldPropertyDrafts[field.id] ?? { readOnly: field.readOnly, required: field.required, multiple: field.multiple ?? false };
+            const propertiesChanged = properties.readOnly !== field.readOnly || properties.required !== field.required ||
+              (field.choiceKind === 'list' && properties.multiple !== (field.multiple ?? false));
             return <div className="document-field" key={field.id}>
               <div className="document-field-heading">
                 <strong>{field.name}</strong>
-                <span>{field.type}{field.required ? ' · required' : ''}{field.readOnly ? ' · read-only' : ''}</span>
+                <span>{field.choiceKind ?? field.type}{field.required ? ' · required' : ''}{field.readOnly ? ' · read-only' : ''}{field.multiple ? ' · multi-select' : ''}</span>
               </div>
               {fieldEditor(field, draft, locked || field.readOnly || !supportsFormFill, value => {
                 setFieldDrafts(current => ({ ...current, [field.id]: value }));
               })}
               <button type="button" disabled={locked || field.readOnly || !supportsFormFill || !document.permissions.fillForms}
                 onClick={() => void run(() => fillField(field))}>Apply value</button>
+              {supportsFormUpdate && <div role="group" aria-label={`Properties for ${field.name}`}>
+                <label><input type="checkbox" checked={properties.readOnly} disabled={locked || !document.permissions.modify}
+                  onChange={event => setFieldPropertyDrafts(current => ({ ...current,
+                    [field.id]: { ...properties, readOnly: event.target.checked } }))} />Read-only</label>
+                <label><input type="checkbox" checked={properties.required} disabled={locked || !document.permissions.modify}
+                  onChange={event => setFieldPropertyDrafts(current => ({ ...current,
+                    [field.id]: { ...properties, required: event.target.checked } }))} />Required</label>
+                {field.choiceKind === 'list' && <label><input type="checkbox" checked={properties.multiple}
+                  disabled={locked || !document.permissions.modify}
+                  onChange={event => setFieldPropertyDrafts(current => ({ ...current,
+                    [field.id]: { ...properties, multiple: event.target.checked } }))} />Multiple selections</label>}
+                <button type="button" disabled={locked || !document.permissions.modify || !propertiesChanged}
+                  onClick={() => void run(() => updateField(field))}>Apply field properties</button>
+              </div>}
             </div>;
           })}
         </div> : null}
@@ -356,6 +391,10 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
               onChange={event => setFieldFontSize(event.target.value)} /></label>
             {fontError ? <p role="alert">{fontError}</p> : null}
           </> : null}
+          <label><input type="checkbox" checked={fieldReadOnly} onChange={event => setFieldReadOnly(event.target.checked)} />Read-only field</label>
+          <label><input type="checkbox" checked={fieldRequired} onChange={event => setFieldRequired(event.target.checked)} />Required field</label>
+          {fieldType === 'list' && <label><input type="checkbox" checked={fieldMultiple}
+            onChange={event => setFieldMultiple(event.target.checked)} />Allow multiple selections</label>}
           <button type="button" disabled={fieldType !== 'checkbox' && fieldType !== 'radio' && !chosenFont} onClick={() => void run(createField)}>Create field</button>
         </fieldset> : null}
         {supportsFormCreate && !document.permissions.modify ? <p role="alert">This document does not permit creating fields.</p> : null}
@@ -391,8 +430,8 @@ function fieldEditor(field: FormFieldInfo, value: FormValue, disabled: boolean, 
     </select></label>;
   }
   if (field.type === 'choice') {
-    const multiple = Array.isArray(value);
-    return <label>Value<select multiple={multiple} value={multiple ? value : typeof value === 'string' ? value : ''} disabled={disabled}
+    const multiple = field.multiple ?? Array.isArray(value);
+    return <label>Value<select multiple={multiple} value={multiple ? Array.isArray(value) ? value : [] : typeof value === 'string' ? value : ''} disabled={disabled}
       onChange={event => onChange(multiple
         ? Array.from(event.currentTarget.selectedOptions, option => option.value)
         : event.currentTarget.value)}>
@@ -411,6 +450,8 @@ function buildFieldContext(fields: FormFieldInfo[], currentPageId: string) {
       type: field.type,
       options: field.options,
       readOnly: field.readOnly,
+      ...(field.choiceKind ? { choiceKind: field.choiceKind } : {}),
+      ...(field.multiple !== undefined ? { multiple: field.multiple } : {}),
     }] as const]
     : []));
 }

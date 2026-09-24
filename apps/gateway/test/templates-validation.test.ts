@@ -53,7 +53,7 @@ describe('feature templates and output validation', () => {
   it('accepts only scoped page insertion, duplication and object copy proposals without generated IDs', () => {
     const base = request('commands.plan');
     const scoped: AiRequest = { ...base, context: { ...base.context,
-      availableCommands: ['pages.insert', 'pages.duplicate', 'objects.copy', 'objects.group'] } };
+      availableCommands: ['pages.insert', 'pages.duplicate', 'objects.copy'] } };
     const prepared = prepareProviderInput(scoped, 8192);
     expect([...prepared.allowedCommands]).toEqual(['objects.copy', 'pages.insert', 'pages.duplicate']);
     const schema = JSON.stringify(prepared.input.responseSchema);
@@ -79,6 +79,35 @@ describe('feature templates and output validation', () => {
       .toThrow(/output contract/);
     expect(() => validate([{ type: 'objects.copy', pageId: 'p1', objectIds: ['o1'], newObjectIds: ['fake'] }]))
       .toThrow(/output contract/);
+  });
+
+  it('gates group/ungroup proposals for A05 and A11 to supplied objects without model-created IDs', () => {
+    for (const feature of ['commands.plan', 'blocks.organize'] as const) {
+      const base = request(feature);
+      const scoped: AiRequest = { ...base, context: { ...base.context,
+        objects: [...base.context.objects!, { id: 'group-1', pageId: 'p1', type: 'group' }],
+        availableCommands: ['objects.group', 'objects.ungroup'] } };
+      const prepared = prepareProviderInput(scoped, 8192);
+      expect([...prepared.allowedCommands]).toEqual(['objects.group', 'objects.ungroup']);
+      const schema = JSON.stringify(prepared.input.responseSchema);
+      expect(schema).toContain('objects.group');
+      expect(schema).not.toContain('newGroupId');
+      const plan = (commands: unknown[]) => JSON.stringify({ kind: 'commandPlan', explanation: 'Group objects', commands });
+      const validate = (commands: unknown[]) => parseAndValidateResult(plan(commands), scoped, 'commandPlan',
+        prepared.allowedCommands, 1024 * 1024);
+      expect(validate([
+        { type: 'objects.group', pageId: 'p1', objectIds: ['o1', 'image-object'] },
+        { type: 'objects.ungroup', pageId: 'p1', groupId: 'group-1' },
+      ]).kind).toBe('commandPlan');
+      expect(() => validate([{ type: 'objects.group', pageId: 'p1', objectIds: ['o1'], groupId: 'invented' }]))
+        .toThrow(/output contract/);
+      expect(() => validate([{ type: 'objects.group', pageId: 'p1', objectIds: ['o1', 'group-1'] }]))
+        .toThrow(/unsupported object type/);
+      expect(() => validate([{ type: 'objects.group', pageId: 'p1', objectIds: ['o1', 'foreign'] }]))
+        .toThrow(/does not match page/);
+      expect(() => validate([{ type: 'objects.ungroup', pageId: 'p1', groupId: 'o1' }]))
+        .toThrow(/Group target is not in request context/);
+    }
   });
 
   it('requires document translation to cover every evidence ID exactly once', () => {

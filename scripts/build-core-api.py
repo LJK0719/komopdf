@@ -24,6 +24,7 @@ EXPORTS = [
     'pde_abi_version', 'pde_capabilities', 'pde_initialize', 'pde_shutdown', 'pde_open_memory',
     'pde_open_file_utf8', 'pde_close', 'pde_document_info', 'pde_describe_page',
     'pde_extract_page', 'pde_render', 'pde_save_memory', 'pde_save_file_utf8',
+    'pde_extract_pages_memory', 'pde_extract_pages_file_utf8',
     'pde_binary_data', 'pde_binary_size', 'pde_error_code', 'pde_error_message',
     'pde_text_edit_stride', 'pde_register_truetype_font', 'pde_font_faces', 'pde_register_font', 'pde_preview_text',
     'pde_apply_text', 'pde_undo', 'pde_redo',

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aiRequestSchema, assertTextRange, proposedCommandSchema, encodeFrameHeader, decodeFrameHeader } from '../src/index.js';
+import { aiRequestSchema, assertTextRange, editCommandSchema, proposedCommandSchema, encodeFrameHeader, decodeFrameHeader } from '../src/index.js';
 
 describe('共享数据契约', () => {
   it('native 帧协议与 C++ 使用相同固定字节', () => {
@@ -23,6 +23,15 @@ describe('共享数据契约', () => {
     expect(proposedCommandSchema.safeParse({ type: 'text.replace', targetEvidenceId: 'e1', text: '修改' }).success).toBe(true);
     expect(proposedCommandSchema.safeParse({ type: 'text.replace', targetEvidenceId: 'e1', text: '修改', range: [0, 1] }).success).toBe(false);
     expect(proposedCommandSchema.safeParse({ type: 'shell', command: 'anything' }).success).toBe(false);
+  });
+  it('表单属性更新要求显式值，多选只允许列表字段', () => {
+    expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1' }).success).toBe(false);
+    expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', readOnly: false }).success).toBe(true);
+    expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', multiple: true, required: true }).success).toBe(true);
+    const create = { type: 'form.create', pageId: 'p1', fieldId: 'f2', name: 'List',
+      fieldType: 'list', bounds: { x: 0, y: 0, width: 40, height: 40 }, options: ['A'], fontId: 'font' };
+    expect(editCommandSchema.safeParse({ ...create, multiple: true }).success).toBe(true);
+    expect(editCommandSchema.safeParse({ ...create, fieldType: 'combo', multiple: true }).success).toBe(false);
   });
   it('请求拒绝跨文档证据与任意 provider 参数', () => {
     const request = { protocolVersion: 1, requestId: 'request', feature: 'text.rewrite', document: { id: 'doc', revision: 1 },

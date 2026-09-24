@@ -135,6 +135,17 @@ describe('Worker RPC', () => {
     client.dispose();
     detach();
   });
+
+  it('rejects an unrecognized method instead of leaving a pending worker call forever', async () => {
+    const pair = createLinkedEndpoints();
+    const detach = attachEngineWorker(pair.server, async () => ({ handshake: HANDSHAKE, engine: {} as EngineAdapter }));
+    const response = new Promise<EngineRpcResponse>(resolve => pair.client.addEventListener('message', event =>
+      resolve(event.data as EngineRpcResponse)));
+    pair.client.postMessage({ kind: 'engine-request', requestId: 'future-method', method: 'new-method', args: [] } as unknown as EngineRpcRequest);
+    await expect(response).resolves.toMatchObject({ kind: 'engine-error', requestId: 'future-method',
+      error: { code: 'UNSUPPORTED_CAPABILITY' } });
+    detach();
+  });
 });
 
 class ManualClientEndpoint implements EngineWorkerClientEndpoint {

@@ -19,6 +19,7 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
   const [lineHeight, setLineHeight] = useState(1.2);
   const [alignment, setAlignment] = useState<'left' | 'center' | 'right'>('left');
   const [pageRange, setPageRange] = useState('current');
+  const [extractRange, setExtractRange] = useState('current');
   const [decoration, setDecoration] = useState<'number' | 'header' | 'footer' | 'watermark'>('number');
   const [decorationText, setDecorationText] = useState('komopdf');
   const [textPreview, setTextPreview] = useState<{ key: string; layout: TextLayoutResult } | null>(null);
@@ -134,6 +135,16 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
     await execute(commands, new Set(), false, loaded);
   }
 
+  async function extractSelectedPages() {
+    if (!engine.extractPages) throw new Error('This PDF core does not support page extraction');
+    const result = await engine.extractPages({ docId: document.id,
+      pageIds: parsePageRange(extractRange, document.pageOrder, page.id) });
+    if (result.docId !== document.id || result.sourceRevision !== document.revision) {
+      throw new Error('The PDF changed during page extraction; start again from the current revision');
+    }
+    await host.saveDocument({ ...result, savedRevision: result.sourceRevision }, 'komopdf-extracted-pages.pdf');
+  }
+
   async function insertResource(kind: 'image' | 'pdf', mode: 'insert' | 'replace' | 'pages' = 'insert') {
     if (mode === 'insert' && (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0)) throw new Error('Enter valid positive insertion dimensions');
     const source = await host.pickResource?.(kind);
@@ -207,6 +218,13 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
         ]))}>Delete selected objects</button>}
       </div>
     </details>
+    {engine.extractPages && <details><summary>Extract pages to a new PDF</summary>
+      <label>Pages to extract<input value={extractRange} disabled={locked}
+        placeholder="current, all, or 1-3,5" onChange={event => setExtractRange(event.target.value)} /></label>
+      <button type="button" disabled={locked || !document.permissions.copy || document.permissions.encrypted}
+        onClick={() => void run(extractSelectedPages)}>Extract PDF copy</button>
+      <p>The active document and undo history are unchanged. Encrypted or structurally linked pages may not be extractable.</p>
+    </details>}
     {supports('text.insert') && <details><summary>Page numbers, headers, footers & watermark</summary>
       <label>Pages<input value={pageRange} disabled={locked} placeholder="current, all, or 1-3,5"
         onChange={event => setPageRange(event.target.value)} /></label>
