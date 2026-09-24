@@ -589,6 +589,21 @@ test('internal PDF link click navigates to target page and ignores unsupported e
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });
 
+test('deleting a page targeted by a surviving PDF link leaves the document unchanged', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'linked-pages.pdf', mimeType: 'application/pdf', buffer: linkedPdf() });
+  await expect(page.locator('.page-chip')).toHaveCount(2, { timeout: 60_000 });
+  await page.getByRole('button', { name: 'Open page 2' }).click();
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Delete page' }).click();
+  await expect(page.locator('.page-chip')).toHaveCount(2);
+  await expect(page.getByText('Deleting pages referenced by surviving link annotations is not supported.')).toBeVisible();
+  await page.getByRole('button', { name: 'Open page 1' }).click();
+  await expect(page.getByRole('link', { name: 'Go to page 2' })).toBeVisible();
+});
+
 function linkedPdf(): Buffer {
   const first = 'q 1 0 0 rg 20 20 50 50 re f Q\nBT /F1 18 Tf 20 200 Td (Page One Link) Tj ET';
   const second = 'q 0 0 1 rg 30 30 60 60 re f Q\nBT /F1 18 Tf 20 200 Td (Page Two Destination) Tj ET';

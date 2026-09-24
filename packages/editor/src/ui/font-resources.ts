@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react';
 import type { EngineAdapter, RegisteredFontInfo } from '@pdf-editor/contracts';
 
-export type EditorFont = { id: string; family: string; style: string; format: 'ttf' | 'otf'; weight?: number; italic?: boolean };
+export type EditorFont = {
+  id: string;
+  family: string;
+  style: string;
+  format: 'ttf' | 'otf';
+  weight?: number;
+  italic?: boolean;
+  editableEmbedding?: boolean;
+};
 const importedFonts = new WeakMap<EngineAdapter, EditorFont[]>();
 const listeners = new WeakMap<EngineAdapter, Set<() => void>>();
 
@@ -89,3 +97,18 @@ function isFontResource(value: unknown): value is WebFontResource {
     && typeof item.url === 'string' && item.url.length > 0
     && typeof item.sha256 === 'string' && /^[0-9a-f]{64}$/.test(item.sha256);
 }
+
+export {
+  type FontFaceCriteria,
+  type FontFaceMatchResult,
+  type SelectionFontInfo,
+  STANDARD_WEIGHT_OPTIONS,
+  getFontWeight,
+  getFontItalic,
+  isFontEmbeddable,
+  getAvailableFontFamilies,
+  getAvailableWeightsForFamily,
+  familySupportsItalic,
+  resolveExactFontFace,
+  findSelectionFontInfo,
+} from './font-face-matcher.js';

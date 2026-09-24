@@ -163,6 +163,29 @@ test('real WASM inserts a justified paragraph and undoes it as one edit', async 
   await expect(objects).toHaveCount(2);
 });
 
+test('real WASM inserts text using the exact bold italic font face', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'font-faces.pdf', mimeType: 'application/pdf', buffer: syntheticParagraphPdf() });
+  await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(2, { timeout: 60_000 });
+  const paragraph = page.getByRole('region', { name: 'Paragraph reflow and insertion' });
+  await paragraph.getByRole('textbox', { name: 'Paragraph text' }).fill('Real bold italic face');
+  const font = paragraph.getByRole('combobox', { name: 'Font', exact: true });
+  await font.selectOption('liberation-sans-regular');
+  await paragraph.getByRole('combobox', { name: 'Font weight' }).selectOption('700');
+  await paragraph.getByRole('combobox', { name: 'Font posture' }).selectOption('italic');
+  await expect(font).toHaveValue('liberation-sans-bold-italic');
+  await paragraph.getByRole('button', { name: 'Preview paragraph' }).click();
+  await expect(paragraph.getByText('Fits paragraph bounds', { exact: true })).toBeVisible();
+  await paragraph.getByRole('button', { name: 'Insert paragraph' }).click();
+  await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(3);
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const saved = await readFile((await (await download).path())!);
+  expect(saved.toString('latin1')).toContain('LiberationSans-BoldItalic');
+});
+
 function syntheticParagraphPdf(pageAttributes = '/MediaBox [0 0 400 400]'): Buffer {
   const stream = 'BT /F1 14 Tf 36 340 Td (First line) Tj ET\nBT /F1 14 Tf 36 300 Td (Second line) Tj ET';
   const objects = [

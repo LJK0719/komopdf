@@ -54,6 +54,7 @@
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -4112,6 +4113,104 @@ bool ApplyPagesCrop(FPDF_DOCUMENT pdf,
   return true;
 }
 
+void MigrateNumericDestination(CPDF_Document* doc, FPDF_DEST dest) {
+  if (!doc || !dest) return;
+  CPDF_Array* array = CPDFArrayFromFPDFDest(dest);
+  if (!array || array->IsEmpty()) return;
+  RetainPtr<const CPDF_Object> first = array->GetDirectObjectAt(0);
+  if (first && first->IsNumber()) {
+    const int page_index = first->GetInteger();
+    if (page_index >= 0 && page_index < doc->GetPageCount()) {
+      auto page_dict = doc->GetPageDictionary(page_index);
+      if (page_dict && page_dict->GetObjNum() != 0) {
+        array->SetNewAt<CPDF_Reference>(0, doc, page_dict->GetObjNum());
+      }
+    }
+  }
+}
+
+FPDF_DEST ResolveAndMigrateDest(FPDF_DOCUMENT pdf,
+                                CPDF_Document* doc,
+                                FPDF_DEST direct_dest,
+                                FPDF_ACTION action) {
+  FPDF_DEST dest = direct_dest;
+  if (!dest && action && FPDFAction_GetType(action) == PDFACTION_GOTO) {
+    dest = FPDFAction_GetDest(pdf, action);
+  }
+  if (dest) {
+    MigrateNumericDestination(doc, dest);
+  }
+  return dest;
+}
+
+bool OutlineTargetsDeletedPages(FPDF_DOCUMENT pdf,
+                                CPDF_Document* doc,
+                                const std::set<size_t>& deleted_indices) {
+  std::set<FPDF_BOOKMARK> visited;
+  std::vector<FPDF_BOOKMARK> pending;
+  if (FPDF_BOOKMARK first = FPDFBookmark_GetFirstChild(pdf, nullptr)) {
+    pending.push_back(first);
+  }
+  while (!pending.empty()) {
+    FPDF_BOOKMARK bookmark = pending.back();
+    pending.pop_back();
+    if (!visited.insert(bookmark).second) continue;
+    FPDF_DEST dest = ResolveAndMigrateDest(
+        pdf, doc, FPDFBookmark_GetDest(pdf, bookmark),
+        FPDFBookmark_GetAction(bookmark));
+    if (dest) {
+      const int target_index = FPDFDest_GetDestPageIndex(pdf, dest);
+      if (target_index >= 0 &&
+          deleted_indices.contains(static_cast<size_t>(target_index))) {
+        return true;
+      }
+    }
+    if (FPDF_BOOKMARK sibling = FPDFBookmark_GetNextSibling(pdf, bookmark)) {
+      pending.push_back(sibling);
+    }
+    if (FPDF_BOOKMARK child = FPDFBookmark_GetFirstChild(pdf, bookmark)) {
+      pending.push_back(child);
+    }
+  }
+  return false;
+}
+
+bool SurvivingPageLinksTargetDeletedPages(
+    FPDF_DOCUMENT pdf,
+    CPDF_Document* doc,
+    size_t page_count,
+    const std::set<size_t>& deleted_indices) {
+  for (size_t p = 0; p < page_count; ++p) {
+    if (deleted_indices.contains(p)) continue;
+    ScopedPage page(FPDF_LoadPage(pdf, static_cast<int>(p)));
+    if (!page.get()) continue;
+    int link_pos = 0;
+    FPDF_LINK link = nullptr;
+    while (FPDFLink_Enumerate(page.get(), &link_pos, &link)) {
+      if (!link) continue;
+      FPDF_DEST dest = ResolveAndMigrateDest(
+          pdf, doc, FPDFLink_GetDest(pdf, link),
+          FPDFLink_GetAction(link));
+      if (dest) {
+        const int target_index = FPDFDest_GetDestPageIndex(pdf, dest);
+        if (target_index >= 0 &&
+            deleted_indices.contains(static_cast<size_t>(target_index))) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+void MigrateAllDestinations(FPDF_DOCUMENT pdf) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(pdf);
+  if (!doc) return;
+  std::set<size_t> empty_set;
+  OutlineTargetsDeletedPages(pdf, doc, empty_set);
+  SurvivingPageLinksTargetDeletedPages(pdf, doc, static_cast<size_t>(doc->GetPageCount()), empty_set);
+}
+
 bool ApplyPagesDelete(FPDF_DOCUMENT pdf,
                       CandidateMetadata* metadata,
                       const EditCommand& command) {
@@ -4120,15 +4219,54 @@ bool ApplyPagesDelete(FPDF_DOCUMENT pdf,
              "A PDF document must retain at least one page.");
     return false;
   }
+  CPDF_Document* native_doc = CPDFDocumentFromFPDFDocument(pdf);
+  if (!native_doc) {
+    SetUnexpectedError();
+    return false;
+  }
+  const auto* root = native_doc->GetRoot();
+  if (root && root->KeyExist("StructTreeRoot")) {
+    SetError("UNSUPPORTED_CAPABILITY",
+             "Deleting pages from a tagged PDF is not supported without structure remapping.");
+    return false;
+  }
+
   std::vector<size_t> indices;
+  std::set<size_t> deleted_set;
   for (const std::string& page_id : command.ids) {
     const std::optional<size_t> index = FindPageIndex(*metadata, page_id);
     if (!index) {
       SetError("INVALID_REQUEST", "A page deletion target does not exist.");
       return false;
     }
+    if (!deleted_set.insert(*index).second) {
+      SetError("INVALID_REQUEST", "Page deletion request contains duplicate page IDs.");
+      return false;
+    }
     indices.push_back(*index);
   }
+
+  for (size_t index : indices) {
+    const auto page_dict = native_doc->GetPageDictionary(static_cast<int>(index));
+    if (page_dict && page_dict->KeyExist("StructParents")) {
+      SetError("UNSUPPORTED_CAPABILITY",
+               "Deleting tagged pages is not supported without structure remapping.");
+      return false;
+    }
+  }
+
+  if (OutlineTargetsDeletedPages(pdf, native_doc, deleted_set)) {
+    SetError("UNSUPPORTED_CAPABILITY",
+             "Deleting pages referenced by document bookmarks is not supported.");
+    return false;
+  }
+
+  if (SurvivingPageLinksTargetDeletedPages(pdf, native_doc, metadata->pages.size(), deleted_set)) {
+    SetError("UNSUPPORTED_CAPABILITY",
+             "Deleting pages referenced by surviving link annotations is not supported.");
+    return false;
+  }
+
   std::sort(indices.rbegin(), indices.rend());
   for (size_t index : indices) {
     FPDFPage_Delete(pdf, static_cast<int>(index));
@@ -4146,6 +4284,7 @@ bool ApplyPagesReorder(FPDF_DOCUMENT pdf,
              "Page reordering must include every current page exactly once.");
     return false;
   }
+  MigrateAllDestinations(pdf);
   std::set<std::string> requested(command.ids.begin(), command.ids.end());
   if (requested.size() != command.ids.size()) {
     SetError("INVALID_REQUEST", "Page reordering contains duplicate IDs.");

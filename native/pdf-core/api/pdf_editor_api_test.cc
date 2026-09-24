@@ -1334,6 +1334,146 @@ void TestLinkAnnotationNavigation() {
   Require(pde_close(doc) == 1, "close link navigation fixture");
 }
 
+void TestPageDeleteDestinationIntegrity() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+      // Page 0
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+      "/Resources << >> /Contents 9 0 R /Annots [10 0 R 11 0 R] >>",
+      // Page 1
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+      "/Resources << >> /Contents 9 0 R /Annots [12 0 R] >>",
+      // Page 2
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+      "/Resources << >> /Contents 9 0 R >>",
+      // Outlines root
+      "<< /Type /Outlines /First 7 0 R /Last 8 0 R /Count 2 >>",
+      // Bookmark 1: targets Page 0
+      "<< /Title (Book 0) /Parent 6 0 R /Next 8 0 R /Dest [3 0 R /Fit] >>",
+      // Bookmark 2: targets Page 2 via numeric index [2 /Fit]
+      "<< /Title (Book 2) /Parent 6 0 R /Prev 7 0 R /Dest [2 /Fit] >>",
+      // Page content
+      Stream("10 10 20 20 re f"),
+      // 10 0 obj: Link on Page 0 to Page 2 via numeric [2 /Fit]
+      "<< /Type /Annot /Subtype /Link /Rect [10 10 50 30] /Dest [2 /Fit] >>",
+      // 11 0 obj: Link on Page 0 to Page 1 via [4 0 R /Fit]
+      "<< /Type /Annot /Subtype /Link /Rect [10 40 50 60] /Dest [4 0 R /Fit] >>",
+      // 12 0 obj: Link on Page 1 to Page 0 via [3 0 R /Fit]
+      "<< /Type /Annot /Subtype /Link /Rect [10 10 50 30] /Dest [3 0 R /Fit] >>",
+  });
+
+  const uint32_t doc = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(pdf.data()), static_cast<uint32_t>(pdf.size()),
+      "delete-dest-doc", "delete-dest-source", nullptr);
+  Require(doc != 0, "open 3-page destination integrity fixture");
+
+  const std::string p0_desc = RequireResult(pde_describe_page(doc, 0), "p0");
+  const std::string p1_desc = RequireResult(pde_describe_page(doc, 1), "p1");
+  const std::string p2_desc = RequireResult(pde_describe_page(doc, 2), "p2");
+  const std::string p0_id = PageIdFromDescription(p0_desc);
+  const std::string p1_id = PageIdFromDescription(p1_desc);
+  const std::string p2_id = PageIdFromDescription(p2_desc);
+
+  // Test A: Attempt to delete Page 1 while Page 0 still has a link (11 0 R) to Page 1
+  const char* del_p1[] = {p1_id.c_str()};
+  PdeEditCommand cmd_del_p1{};
+  cmd_del_p1.type = 7; cmd_del_p1.ids = del_p1; cmd_del_p1.id_count = 1;
+
+  Require(pde_apply_commands(doc, 0, "del-p1-refused", &cmd_del_p1, 1) == nullptr &&
+          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+          pde_document_revision(doc) == 0,
+          "deleting page 1 is rejected because surviving page 0 has a link to it");
+
+  // Test B: Attempt to delete Page 2 while Book 2 points to Page 2
+  const char* del_p2[] = {p2_id.c_str()};
+  PdeEditCommand cmd_del_p2{};
+  cmd_del_p2.type = 7; cmd_del_p2.ids = del_p2; cmd_del_p2.id_count = 1;
+
+  Require(pde_apply_commands(doc, 0, "del-p2-refused", &cmd_del_p2, 1) == nullptr &&
+          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+          pde_document_revision(doc) == 0,
+          "deleting page 2 is rejected because surviving bookmark and page 0 link point to it");
+
+  Require(pde_close(doc) == 1, "close first destination fixture");
+
+  // Test C: Deleting Page 1 when NO surviving bookmark or link targets Page 1
+  const std::string pdf_clean = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+      // Page 0
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+      "/Resources << >> /Contents 9 0 R /Annots [10 0 R] >>",
+      // Page 1 (to be deleted; has a link to Page 0)
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+      "/Resources << >> /Contents 9 0 R /Annots [11 0 R] >>",
+      // Page 2
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+      "/Resources << >> /Contents 9 0 R >>",
+      // Outlines root
+      "<< /Type /Outlines /First 7 0 R /Last 8 0 R /Count 2 >>",
+      // Bookmark 1: targets Page 0
+      "<< /Title (Book 0) /Parent 6 0 R /Next 8 0 R /Dest [3 0 R /Fit] >>",
+      // Bookmark 2: targets Page 2 via numeric index [2 /Fit]
+      "<< /Title (Book 2) /Parent 6 0 R /Prev 7 0 R /Dest [2 /Fit] >>",
+      Stream("10 10 20 20 re f"),
+      // 10 0 obj: Link on Page 0 to Page 2 via numeric [2 /Fit]
+      "<< /Type /Annot /Subtype /Link /Rect [10 10 50 30] /Dest [2 /Fit] >>",
+      // 11 0 obj: Link on Page 1 to Page 0 via [3 0 R /Fit] (deleted with Page 1)
+      "<< /Type /Annot /Subtype /Link /Rect [10 10 50 30] /Dest [3 0 R /Fit] >>",
+  });
+
+  const uint32_t doc2 = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(pdf_clean.data()), static_cast<uint32_t>(pdf_clean.size()),
+      "delete-clean-doc", "delete-clean-source", nullptr);
+  Require(doc2 != 0, "open clean deletion fixture");
+
+  const std::string c_p0_id = PageIdFromDescription(RequireResult(pde_describe_page(doc2, 0), "c_p0"));
+  const std::string c_p1_id = PageIdFromDescription(RequireResult(pde_describe_page(doc2, 1), "c_p1"));
+  const std::string c_p2_id = PageIdFromDescription(RequireResult(pde_describe_page(doc2, 2), "c_p2"));
+
+  const char* del_clean_p1[] = {c_p1_id.c_str()};
+  PdeEditCommand cmd_del_clean_p1{};
+  cmd_del_clean_p1.type = 7; cmd_del_clean_p1.ids = del_clean_p1; cmd_del_clean_p1.id_count = 1;
+
+  Require(pde_apply_commands(doc2, 0, "del-p1-success", &cmd_del_clean_p1, 1) != nullptr &&
+          pde_document_revision(doc2) == 1,
+          "deleting page 1 succeeds because all surviving links/bookmarks target surviving pages");
+
+  // Verify that on the remaining 2 pages (old p0 and old p2):
+  // Old p0 (now index 0) has a link pointing to old p2 (now index 1, id c_p2_id)!
+  const std::string p0_annots = RequireResult(pde_describe_annotations(doc2, 0), "p0 annots after del");
+  Require(p0_annots.find("\"targetPageId\":\"" + c_p2_id + "\"") != std::string::npos,
+          "numeric link destination on page 0 migrated cleanly to target page 2");
+
+  // Verify bookmarks: Book 0 points to c_p0_id, Book 2 points to c_p2_id!
+  const std::string outline = RequireResult(pde_describe_outline(doc2), "outline after del");
+  Require(outline.find("\"title\":\"Book 0\",\"pageId\":\"" + c_p0_id + "\"") != std::string::npos &&
+          outline.find("\"title\":\"Book 2\",\"pageId\":\"" + c_p2_id + "\"") != std::string::npos,
+          "numeric bookmark destination migrated cleanly and resolves to target page 2");
+
+  // Save and reopen
+  Require(pde_save_memory(doc2) != nullptr, "save after clean page deletion");
+  const std::vector<uint8_t> saved_del(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened_del = pde_open_memory(
+      saved_del.data(), static_cast<uint32_t>(saved_del.size()),
+      "reopened-del-doc", "saved-del-source", nullptr);
+  Require(reopened_del != 0, "reopen PDF after page deletion");
+
+  const std::string r_p1_desc = RequireResult(pde_describe_page(reopened_del, 1), "r_p1");
+  const std::string r_p1_id = PageIdFromDescription(r_p1_desc);
+
+  const std::string reopened_annots = RequireResult(pde_describe_annotations(reopened_del, 0), "reopened annots");
+  Require(reopened_annots.find("\"targetPageId\":\"" + r_p1_id + "\"") != std::string::npos,
+          "migrated link target persists through save and reopen");
+  const std::string reopened_outline = RequireResult(pde_describe_outline(reopened_del), "reopened outline");
+  Require(reopened_outline.find("\"title\":\"Book 2\",\"pageId\":\"" + r_p1_id + "\"") != std::string::npos,
+          "migrated bookmark target persists through save and reopen");
+
+  Require(pde_close(reopened_del) == 1 && pde_close(doc2) == 1,
+          "close clean deletion fixtures");
+}
+
 void TestP1bTransactions() {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -3724,6 +3864,7 @@ int main(int argc, char** argv) {
   TestPageCrop();
   TestOutlineNavigation();
   TestLinkAnnotationNavigation();
+  TestPageDeleteDestinationIntegrity();
   TestExtractPagesMemory();
   TestExtractPageAnnotationBacklink();
   TestExtractPagesUnsupported();

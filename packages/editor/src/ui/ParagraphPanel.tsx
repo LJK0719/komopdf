@@ -11,7 +11,16 @@ import {
   type ReflowTextStyle,
   type TextLayoutResult,
 } from '@pdf-editor/contracts';
-import { useFontResources } from './font-resources.js';
+import {
+  useFontResources,
+  resolveExactFontFace,
+  getFontWeight,
+  getFontItalic,
+  getAvailableWeightsForFamily,
+  familySupportsItalic,
+  isFontEmbeddable,
+  STANDARD_WEIGHT_OPTIONS,
+} from './font-resources.js';
 
 export type ParagraphPanelProps = {
   document: DocumentInfo | null;
@@ -56,6 +65,15 @@ export function ParagraphPanel({
 
   const { fonts, error: fontError } = useFontResources(engine);
   const chosenFontId = fontId || fonts[0]?.id || '';
+  const chosenFont = useMemo(() => fonts.find(f => f.id === chosenFontId) ?? null, [fonts, chosenFontId]);
+  const availableWeights = useMemo(() => {
+    if (!chosenFont) return [];
+    return getAvailableWeightsForFamily(fonts, chosenFont.family);
+  }, [fonts, chosenFont]);
+  const canItalic = useMemo(() => {
+    if (!chosenFont) return false;
+    return familySupportsItalic(fonts, chosenFont.family);
+  }, [fonts, chosenFont]);
 
   const scope = `${document?.id ?? ''}\0${document?.revision ?? ''}\0${page?.id ?? ''}`;
   const scopeRef = useRef(scope);
@@ -155,6 +173,7 @@ export function ParagraphPanel({
 
   const isPreviewCurrent = preview !== null && previewKey === currentLayoutKey;
   const canModify = supportsParagraph && Boolean(document?.permissions.modify);
+  const fontEmbeddable = !chosenFont || isFontEmbeddable(chosenFont);
   const canReflow =
     isPreviewCurrent &&
     !preview.overflow &&
@@ -162,6 +181,7 @@ export function ParagraphPanel({
     canModify &&
     validBounds &&
     Boolean(chosenFontId) &&
+    fontEmbeddable &&
     !locked;
 
   const canInsert =
@@ -171,22 +191,26 @@ export function ParagraphPanel({
     canModify &&
     validBounds &&
     Boolean(chosenFontId) &&
+    fontEmbeddable &&
     !locked;
 
-  const buildStyle = (): ReflowTextStyle => ({
-    fontId: chosenFontId,
-    fontSize: numFontSize,
-    ...(color && /^#[0-9a-f]{6}$/i.test(color) ? { color: parseRgb(color) } : {}),
-    lineHeight: numLineHeight,
-    alignment,
-    underline,
-    ...(characterSpacing.trim() && Number.isFinite(parseFloat(characterSpacing))
-      ? { characterSpacing: parseFloat(characterSpacing) }
-      : {}),
-  });
+  const buildStyle = (): ReflowTextStyle =>
+    buildParagraphStyle({
+      fontId: chosenFontId,
+      fontSize: numFontSize,
+      color,
+      lineHeight: numLineHeight,
+      alignment,
+      underline,
+      characterSpacing,
+    });
 
   const runPreview = async (): Promise<void> => {
     if (!document || !page || !chosenFontId || locked || previewing) return;
+    if (chosenFont && !isFontEmbeddable(chosenFont)) {
+      setError(`Font face "${chosenFont.family} · ${chosenFont.style}" is restricted from editable embedding by font flags.`);
+      return;
+    }
     if (!text.trim()) {
       setError('Enter paragraph text before previewing.');
       return;
@@ -471,6 +495,64 @@ export function ParagraphPanel({
         </select>
       </label>
 
+      {chosenFont && (
+        <div className="document-tools-grid">
+          <label>
+            Font weight
+            <select
+              value={getFontWeight(chosenFont)}
+              onChange={e => {
+                const targetWeight = Number(e.target.value);
+                const match = resolveExactFontFace(fonts, {
+                  family: chosenFont.family,
+                  weight: targetWeight,
+                  italic: getFontItalic(chosenFont),
+                });
+                if (match.success) {
+                  setFontId(match.font.id);
+                  clearPreview();
+                } else {
+                  setError(match.reason);
+                }
+              }}
+              disabled={locked}
+            >
+              {availableWeights.map(w => (
+                <option key={w} value={w}>
+                  {STANDARD_WEIGHT_OPTIONS.find(o => o.value === w)?.label ?? `Weight ${w}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Font posture
+            <select
+              value={getFontItalic(chosenFont) ? 'italic' : 'normal'}
+              onChange={e => {
+                const targetItalic = e.target.value === 'italic';
+                const match = resolveExactFontFace(fonts, {
+                  family: chosenFont.family,
+                  weight: getFontWeight(chosenFont),
+                  italic: targetItalic,
+                });
+                if (match.success) {
+                  setFontId(match.font.id);
+                  clearPreview();
+                } else {
+                  setError(match.reason);
+                }
+              }}
+              disabled={locked}
+            >
+              <option value="normal">Regular (Upright)</option>
+              <option value="italic">
+                Italic{!canItalic ? ' (Unavailable)' : ''}
+              </option>
+            </select>
+          </label>
+        </div>
+      )}
+
       <div className="document-tools-grid">
         <label>
           Font size (pt)
@@ -643,4 +725,36 @@ function parseRgb(hex: string): [number, number, number] {
 function formatError(error: unknown): string {
   if (error instanceof EngineError) return `${error.code} · ${error.message}`;
   return error instanceof Error ? error.message : 'Operation failed';
+}
+
+export type BuildParagraphStyleOptions = {
+  fontId: string;
+  fontSize: number;
+  color?: string;
+  lineHeight?: number;
+  alignment?: 'left' | 'center' | 'right' | 'justify';
+  underline?: boolean;
+  characterSpacing?: string;
+};
+
+export function buildParagraphStyle({
+  fontId,
+  fontSize,
+  color,
+  lineHeight,
+  alignment,
+  underline,
+  characterSpacing,
+}: BuildParagraphStyleOptions): ReflowTextStyle {
+  return {
+    fontId,
+    fontSize,
+    ...(color && /^#[0-9a-f]{6}$/i.test(color) ? { color: parseRgb(color) } : {}),
+    ...(lineHeight !== undefined && Number.isFinite(lineHeight) && lineHeight > 0 ? { lineHeight } : {}),
+    ...(alignment ? { alignment } : {}),
+    ...(underline !== undefined ? { underline } : {}),
+    ...(characterSpacing && characterSpacing.trim() && Number.isFinite(parseFloat(characterSpacing))
+      ? { characterSpacing: parseFloat(characterSpacing) }
+      : {}),
+  };
 }
