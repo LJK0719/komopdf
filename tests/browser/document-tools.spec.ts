@@ -277,6 +277,44 @@ test('real WASM persists a required multi-select List and atomic read-only chang
     .toEqual(['Alpha', 'Gamma']);
 });
 
+test('text field tooltip and maximum length survive native save and reject conflicting edits', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'form-properties.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
+  const forms = page.getByRole('region', { name: 'Annotations and forms' });
+  await forms.getByRole('textbox', { name: 'Field name' }).fill('AccountCode');
+  await forms.getByRole('combobox', { name: 'Field type' }).selectOption('text');
+  await forms.getByRole('combobox', { name: 'Field font' }).selectOption('noto-sans-cjk-sc-regular');
+  await forms.getByRole('button', { name: 'Create field' }).click();
+  const field = page.locator('.document-field').filter({ hasText: 'AccountCode' });
+  const value = field.getByRole('textbox', { name: 'Value' });
+  await value.fill('Hello');
+  await field.getByRole('button', { name: 'Apply value' }).click();
+  const properties = field.getByRole('group', { name: 'Properties for AccountCode' });
+  await properties.getByRole('textbox', { name: 'Tooltip' }).fill('Account code');
+  await properties.getByRole('spinbutton', { name: 'Max length' }).fill('4');
+  await properties.getByRole('button', { name: 'Apply field properties' }).click();
+  await expect(forms.getByRole('alert')).toContainText('current value exceeds requested maximum length');
+  await properties.getByRole('spinbutton', { name: 'Max length' }).fill('6');
+  await properties.getByRole('button', { name: 'Apply field properties' }).click();
+  await expect(field).toContainText('max: 6');
+  await value.fill('ABCDEFG');
+  await field.getByRole('button', { name: 'Apply value' }).click();
+  await expect(forms.getByRole('alert')).toContainText('Text value exceeds field maximum length');
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const saved = await readFile((await (await download).path())!);
+  expect(saved.toString('latin1')).toContain('/MaxLen 6');
+  const reopen = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await reopen).setFiles({ name: 'form-properties-saved.pdf', mimeType: 'application/pdf', buffer: saved });
+  const reopened = page.locator('.document-field').filter({ hasText: 'AccountCode' });
+  await expect(reopened).toContainText('max: 6');
+  await expect(reopened.getByRole('group', { name: 'Properties for AccountCode' }).getByRole('textbox', { name: 'Tooltip' })).toHaveValue('Account code');
+  await expect(reopened.getByRole('textbox', { name: 'Value' })).toHaveValue('Hello');
+});
+
 function syntheticPdf(pageAttributes = '/MediaBox [0 0 300 300]'): Buffer {
   const stream = 'q 1 0 0 rg 20 20 50 50 re f Q\nBT /F1 18 Tf 20 240 Td (Hello PDF Editor) Tj ET';
   const objects = [

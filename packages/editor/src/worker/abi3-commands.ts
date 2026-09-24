@@ -184,6 +184,14 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       if (command.readOnly !== undefined) { fields[10]! |= 1; values[0] = command.readOnly ? 1 : 0; }
       if (command.required !== undefined) { fields[10]! |= 2; values[1] = command.required ? 1 : 0; }
       if (command.multiple !== undefined) { fields[10]! |= 4; values[2] = command.multiple ? 1 : 0; }
+      if (command.maxLen !== undefined) {
+        fields[10]! |= 8;
+        values[3] = (command.maxLen === null || command.maxLen === 0) ? 0 : command.maxLen;
+      }
+      if (command.tooltip !== undefined) {
+        fields[10]! |= 16;
+        fields[4] = allocations.string(command.tooltip ?? '');
+      }
       break;
     default: throw new EngineError('UNSUPPORTED_CAPABILITY', 'Command is not connected to this core');
   }

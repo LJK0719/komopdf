@@ -57,8 +57,16 @@ export const editCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('form.fill'), fieldId: idSchema, value: z.union([z.string(), z.boolean(), z.array(z.string())]) }).strict(),
   z.object({ type: z.literal('form.create'), pageId: idSchema, fieldId: idSchema, name: z.string().min(1), fieldType: z.enum(['text', 'checkbox', 'combo', 'list', 'radio']), bounds: rectSchema, fontId: idSchema.optional(), fontSize: z.number().positive().max(1000).optional(), options: z.array(z.string().min(1).max(1000)).min(1).max(128).optional(), readOnly: z.boolean().optional(), required: z.boolean().optional(), multiple: z.boolean().optional() }).strict()
     .refine(command => !command.multiple || command.fieldType === 'list', 'Only list fields can be multiple'),
-  z.object({ type: z.literal('form.update'), fieldId: idSchema, readOnly: z.boolean().optional(), required: z.boolean().optional(), multiple: z.boolean().optional() }).strict()
-    .refine(command => command.readOnly !== undefined || command.required !== undefined || command.multiple !== undefined, 'Specify at least one field attribute'),
+  z.object({
+    type: z.literal('form.update'),
+    fieldId: idSchema,
+    readOnly: z.boolean().optional(),
+    required: z.boolean().optional(),
+    multiple: z.boolean().optional(),
+    tooltip: z.string().max(1024).nullable().optional(),
+    maxLen: z.number().int().nonnegative().max(1_000_000).nullable().optional(),
+  }).strict()
+    .refine(command => command.readOnly !== undefined || command.required !== undefined || command.multiple !== undefined || command.tooltip !== undefined || command.maxLen !== undefined, 'Specify at least one field attribute'),
 ]);
 export type EditCommand = z.infer<typeof editCommandSchema>;
 export type CommandType = EditCommand['type'];

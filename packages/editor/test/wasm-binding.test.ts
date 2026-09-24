@@ -534,6 +534,37 @@ describe('WASM C ABI binding', () => {
     expect(annots[0]!.targetPageId).toBe(`${info.id}-page-2`);
     expect(annots[0]!.targetTopPt).toBe(150);
   });
+
+  it('describes form fields with tooltip and maxLen attributes', async () => {
+    const fake = new FakePdfCoreModule();
+    const binding = createPdfCoreBinding(fake);
+    const info = await binding.engine.open({
+      kind: 'bytes', sourceId: 'src', name: 'form.pdf', bytes: Uint8Array.of(1, 2, 3).buffer,
+    });
+    fake._pde_describe_forms = () => fake['json']([
+      {
+        id: 'f1',
+        name: 'Username',
+        type: 'text',
+        value: 'alice',
+        readOnly: false,
+        required: true,
+        tooltip: 'Enter username',
+        maxLen: 20,
+        options: [],
+        widgets: [{ pageId: `${info.id}-page-1`, bounds: { x: 10, y: 10, width: 100, height: 20 } }],
+      },
+    ]);
+    const forms = await binding.engine.describeForms!(info.id);
+    expect(forms).toHaveLength(1);
+    expect(forms[0]).toMatchObject({
+      id: 'f1',
+      name: 'Username',
+      type: 'text',
+      tooltip: 'Enter username',
+      maxLen: 20,
+    });
+  });
 });
 
 function embeddableTrueTypeFont(): Uint8Array<ArrayBuffer> {

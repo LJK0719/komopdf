@@ -5895,11 +5895,14 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
     case EditType::kFormUpdate:
       if (!require_target() || !target->page_id.empty() ||
           !target->resource_id.empty() || !target->font_id.empty() ||
-          !target->ids.empty() || !target->text.empty() ||
-          target->flags == 0 || (target->flags & ~7U) ||
+          !target->ids.empty() ||
+          target->flags == 0 || (target->flags & ~31U) ||
           ((target->flags & 1U) && target->values[0] != 0 && target->values[0] != 1) ||
           ((target->flags & 2U) && target->values[1] != 0 && target->values[1] != 1) ||
-          ((target->flags & 4U) && target->values[2] != 0 && target->values[2] != 1)) {
+          ((target->flags & 4U) && target->values[2] != 0 && target->values[2] != 1) ||
+          ((target->flags & 8U) && (target->values[3] < 0 || target->values[3] > 1000000.0 || target->values[3] != std::floor(target->values[3]))) ||
+          (!(target->flags & 16U) && !target->text.empty()) ||
+          ((target->flags & 16U) && !target->text.empty() && !ValidateLayoutText(target->text, "Tooltip"))) {
         if (g_error_code.empty()) SetError("INVALID_REQUEST", "The form attribute update is invalid.");
         return false;
       }
