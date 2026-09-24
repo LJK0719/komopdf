@@ -668,6 +668,238 @@ void TestNestedObjectTransform() {
           "close nested Form instances");
 }
 
+void TestNestedTextReplacement() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /XObject << /Outer 6 0 R >> >> /Contents 5 0 R >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /XObject << /Outer 6 0 R >> >> /Contents 5 0 R >>",
+      Stream("q /Outer Do Q"),
+      Stream("q /Inner Do Q q 1 0 0 1 0 -50 cm /Inner Do Q",
+             "/Type /XObject /Subtype /Form /BBox [0 0 300 300] "
+             "/Resources << /XObject << /Inner 7 0 R >> >>"),
+      Stream("BT /F1 20 Tf 30 200 Td (ORIGINAL) Tj ET",
+             "/Type /XObject /Subtype /Form /BBox [0 0 300 300] "
+             "/Resources << /Font << /F1 8 0 R >> >>"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const auto* bytes = reinterpret_cast<const uint8_t*>(pdf.data());
+  const uint32_t doc = pde_open_memory(bytes, static_cast<uint32_t>(pdf.size()),
+                                        "nested-text", "shared-forms", nullptr);
+  Require(doc != 0, "open doubly nested shared text fixture");
+  const std::string before = RequireResult(pde_describe_page(doc, 0), "describe nested text");
+  const auto block_ids = TextBlockIds(before);
+  Require(block_ids.size() == 2 && Count(before, "\"editability\":\"direct\"") == 2,
+          "both safe nested text blocks expose direct editing");
+  const std::string page_id = PageIdFromDescription(before);
+  const auto untouched_other_page = RenderPixels(doc, 1, 300, 300);
+  PdeTextEdit edit{0, block_ids[0].c_str(), 0, 8, "CHANGED", nullptr};
+  const std::string preview = RequireResult(pde_preview_text(doc, &edit),
+                                             "preview nested text replacement");
+  Require(std::string(pde_describe_page(doc, 0)) == before &&
+              RenderPixels(doc, 1, 300, 300) == untouched_other_page,
+          "nested text preview leaves selected and shared source pages untouched");
+  Require(pde_apply_text(doc, 0, "change-one-nested-text", &edit, 1) != nullptr,
+          "replace nested text within one shared Form instance");
+  const std::string changed = RequireResult(pde_describe_page(doc, 0), "describe nested replacement");
+  Require(Count(changed, "\"text\":\"CHANGED\"") == 1 &&
+              Count(changed, "\"text\":\"ORIGINAL\"") == 1 &&
+              std::abs(JsonNumberAfter(preview, "\"bounds\":{\"x\":") -
+                       JsonNumberAfter(changed, "\"bounds\":{\"x\":", 2)) < 0.01 &&
+              std::abs(JsonNumberAfter(preview, "\"y\":") -
+                       JsonNumberAfter(changed, "\"y\":", 2)) < 0.01,
+          "only one nested text changes and preview matches its page coordinates");
+  Require(RenderPixels(doc, 1, 300, 300) == untouched_other_page &&
+              Count(RequireResult(pde_describe_page(doc, 1), "shared second page"),
+                    "\"text\":\"ORIGINAL\"") == 2,
+          "other page's Form instances remain original");
+  Require(pde_save_memory(doc) != nullptr, "save nested text replacement");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+                                             "nested-reopened", "saved-nested", nullptr);
+  Require(reopened != 0, "reopen nested text replacement");
+  const std::string restored = RequireResult(pde_describe_page(reopened, 0),
+                                              "describe saved nested text");
+  Require(Count(restored, "\"text\":\"CHANGED\"") == 1 &&
+              Count(restored, "\"text\":\"ORIGINAL\"") == 1 &&
+              RenderPixels(reopened, 1, 300, 300) == untouched_other_page,
+          "nested text and sibling/page isolation survive PDF save and reopen");
+  const std::string restored_page_id = PageIdFromDescription(restored);
+  const auto restored_block_ids = TextBlockIds(restored);
+  Require(restored_block_ids.size() == 2, "resolve nested style target after reopening");
+  const char* selected[] = {restored_block_ids[0].c_str()};
+  PdeEditCommand style{};
+  style.type = 2;
+  style.page_id = restored_page_id.c_str();
+  style.ids = selected;
+  style.id_count = 1;
+  style.flags = 2 | 4 | 8;
+  style.values[0] = 18;
+  style.values[1] = 1;
+  style.values[2] = 0;
+  style.values[3] = 0;
+  style.values[4] = 1;
+  Require(pde_preview_commands(reopened, 0, &style, 1) != nullptr &&
+              std::string(pde_describe_page(reopened, 0)) == restored,
+          "whole-block nested style preview is non-mutating");
+  Require(pde_apply_commands(reopened, 0, "style-one-nested-text", &style, 1) != nullptr,
+          "apply style to only the selected nested text");
+  const std::string styled = RequireResult(pde_describe_page(reopened, 0),
+                                            "describe styled nested text");
+  Require(styled.find("\"fontSize\":18,\"color\":[1,0,0],\"characterSpacing\":1") !=
+              std::string::npos &&
+              Count(styled, "\"text\":\"ORIGINAL\"") == 1 &&
+              RenderPixels(reopened, 1, 300, 300) == untouched_other_page,
+          "size, color and spacing change without altering sibling or shared page");
+  PdeEditCommand range = style;
+  range.flags |= 16;
+  range.start_utf16 = 0;
+  range.end_utf16 = 2;
+  Require(pde_preview_commands(reopened, 1, &range, 1) == nullptr &&
+              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+              std::string(pde_describe_page(reopened, 0)) == styled,
+          "nested range style remains explicitly unsupported");
+  Require(pde_save_memory(reopened) != nullptr, "save styled nested Form");
+  const std::vector<uint8_t> styled_pdf(pde_binary_data(),
+                                         pde_binary_data() + pde_binary_size());
+  const uint32_t styled_reopen = pde_open_memory(
+      styled_pdf.data(), static_cast<uint32_t>(styled_pdf.size()),
+      "nested-styled", "saved-style", nullptr);
+  Require(styled_reopen != 0 &&
+              RequireResult(pde_describe_page(styled_reopen, 0), "reopen nested style")
+                      .find("\"fontSize\":18,\"color\":[1,0,0],\"characterSpacing\":1") !=
+                  std::string::npos &&
+              RenderPixels(styled_reopen, 1, 300, 300) == untouched_other_page,
+          "nested whole-block style and shared Form isolation survive save and reopen");
+  const std::string before_clear = RequireResult(
+      pde_describe_page(styled_reopen, 0), "describe before clearing nested text");
+  const auto clear_ids = TextBlockIds(before_clear);
+  Require(clear_ids.size() == 2, "resolve nested text for clearing");
+  PdeTextEdit clear{0, clear_ids[0].c_str(), 0, 7, "", nullptr};
+  Require(pde_apply_text(styled_reopen, 0, "clear-one-nested-text", &clear, 1) != nullptr &&
+              Count(RequireResult(pde_describe_page(styled_reopen, 0),
+                                  "describe cleared nested text"),
+                    "\"text\":\"ORIGINAL\"") == 1 &&
+              RenderPixels(styled_reopen, 1, 300, 300) == untouched_other_page,
+          "empty replacement removes only the selected nested text object");
+  Require(pde_save_memory(styled_reopen) != nullptr,
+          "save cleared nested text Form");
+  const std::vector<uint8_t> cleared_pdf(pde_binary_data(),
+                                           pde_binary_data() + pde_binary_size());
+  const uint32_t cleared_reopen = pde_open_memory(
+      cleared_pdf.data(), static_cast<uint32_t>(cleared_pdf.size()),
+      "nested-cleared", "saved-clear", nullptr);
+  Require(cleared_reopen != 0 &&
+              Count(RequireResult(pde_describe_page(cleared_reopen, 0),
+                                  "reopen cleared nested text"),
+                    "\"text\":\"ORIGINAL\"") == 1 &&
+              RenderPixels(cleared_reopen, 1, 300, 300) == untouched_other_page,
+          "nested deletion survives save and reopen without mutating shared pages");
+  Require(pde_undo(doc) != nullptr &&
+              Count(RequireResult(pde_describe_page(doc, 0), "undo nested text"),
+                    "\"text\":\"ORIGINAL\"") == 2 &&
+              pde_redo(doc) != nullptr &&
+              Count(RequireResult(pde_describe_page(doc, 0), "redo nested text"),
+                    "\"text\":\"CHANGED\"") == 1,
+          "nested text edit survives transaction undo and redo");
+  PdeTextEdit partial{0, block_ids[0].c_str(), 0, 2, "UP", nullptr};
+  Require(pde_apply_text(doc, 3, "edit-nested-utf16-range", &partial, 1) != nullptr &&
+              Count(RequireResult(pde_describe_page(doc, 0), "partial nested edit"),
+                    "\"text\":\"UPANGED\"") == 1,
+          "UTF-16 subrange replacement retains the rest of the nested text");
+  Require(pde_save_memory(doc) != nullptr, "save nested range replacement");
+  const std::vector<uint8_t> partial_pdf(pde_binary_data(),
+                                           pde_binary_data() + pde_binary_size());
+  const uint32_t partial_reopen = pde_open_memory(
+      partial_pdf.data(), static_cast<uint32_t>(partial_pdf.size()),
+      "nested-range", "saved-range", nullptr);
+  Require(partial_reopen != 0 &&
+              Count(RequireResult(pde_describe_page(partial_reopen, 0),
+                                  "reopen nested range replacement"),
+                    "\"text\":\"UPANGED\"") == 1,
+          "nested UTF-16 range replacement survives PDF save and reopen");
+  Require(pde_close(partial_reopen) == 1 &&
+              pde_close(cleared_reopen) == 1 && pde_close(styled_reopen) == 1 &&
+              pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close nested text fixtures");
+
+  const std::string tagged = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/StructParents 0 /Resources << /XObject << /Fm 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("/Fm Do"),
+      Stream("BT /F1 20 Tf 30 200 Td (ORIGINAL) Tj ET",
+             "/Type /XObject /Subtype /Form /BBox [0 0 300 300] "
+             "/Resources << /Font << /F1 6 0 R >> >>"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const uint32_t structured = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(tagged.data()), static_cast<uint32_t>(tagged.size()),
+      "structured-form", "tagged-source", nullptr);
+  Require(structured != 0, "open structured Form fixture");
+  const std::string described = RequireResult(pde_describe_page(structured, 0),
+                                                "describe structured Form");
+  Require(described.find("\"editability\":\"geometry-only\"") != std::string::npos,
+          "structured Form text is not advertised as directly editable");
+  const auto structured_ids = TextBlockIds(described);
+  Require(structured_ids.size() == 1, "resolve structured text block");
+  PdeTextEdit rejected{0, structured_ids[0].c_str(), 0, 8, "CHANGED", nullptr};
+  Require(pde_preview_text(structured, &rejected) == nullptr &&
+              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+              pde_document_revision(structured) == 0,
+          "structured Form text rewrite is explicitly rejected before commit");
+  const std::string structured_object_id =
+      JsonStringAfter(described, "\"sourceObjectIds\":[\"");
+  const std::string structured_page_id = PageIdFromDescription(described);
+  const char* selected_object[]{structured_object_id.c_str()};
+  PdeEditCommand structured_move{};
+  structured_move.type = 4;
+  structured_move.page_id = structured_page_id.c_str();
+  structured_move.ids = selected_object;
+  structured_move.id_count = 1;
+  structured_move.values[0] = 1;
+  structured_move.values[3] = 1;
+  structured_move.values[4] = 1;
+  Require(pde_preview_commands(structured, 0, &structured_move, 1) == nullptr &&
+              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+              pde_document_revision(structured) == 0,
+          "structured nested geometry rewrite is also rejected before commit");
+  Require(pde_close(structured) == 1, "close structured Form fixture");
+
+  const std::string marked = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /XObject << /Fm 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("/Fm Do"),
+      Stream("/Span << /ActualText (ORIGINAL) >> BDC "
+             "BT /F1 20 Tf 30 200 Td (ORIGINAL) Tj ET EMC",
+             "/Type /XObject /Subtype /Form /BBox [0 0 300 300] "
+             "/Resources << /Font << /F1 6 0 R >> >>"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const uint32_t marked_doc = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(marked.data()), static_cast<uint32_t>(marked.size()),
+      "marked-form", "marked-source", nullptr);
+  Require(marked_doc != 0, "open marked Form fixture");
+  const std::string marked_page = RequireResult(pde_describe_page(marked_doc, 0),
+                                                 "describe marked Form");
+  const auto marked_ids = TextBlockIds(marked_page);
+  Require(marked_ids.size() == 1 &&
+              marked_page.find("\"editability\":\"geometry-only\"") !=
+                  std::string::npos,
+          "marked Form text is not advertised for editing");
+  PdeTextEdit marked_edit{0, marked_ids[0].c_str(), 0, 8, "CHANGED", nullptr};
+  Require(pde_preview_text(marked_doc, &marked_edit) == nullptr &&
+              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+              pde_document_revision(marked_doc) == 0,
+          "marked nested text rewrite is explicitly rejected");
+  Require(pde_close(marked_doc) == 1, "close marked Form fixture");
+}
+
 void TestObjectGroup() {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -1239,6 +1471,66 @@ FontTestOptions ParseFontTestOptions(int argc, char** argv) {
             "TTF, OTF, and TTC font test paths");
   }
   return options;
+}
+
+void TestNestedTextFont(const std::string& font_path) {
+  const auto font = ReadTestFile(font_path);
+  Require(pde_register_font("nested-style-font", font.data(),
+                            static_cast<uint32_t>(font.size()), 0) != nullptr,
+          "register nested style font");
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /XObject << /Outer 6 0 R /Inner 7 0 R >> "
+      "/Font << /F1 8 0 R >> >> /Contents 5 0 R >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /XObject << /Outer 6 0 R /Inner 7 0 R >> "
+      "/Font << /F1 8 0 R >> >> /Contents 5 0 R >>",
+      Stream("/Outer Do"),
+      Stream("/Inner Do", "/Type /XObject /Subtype /Form /BBox [0 0 300 300]"),
+      Stream("BT /F1 20 Tf 30 200 Td (ORIGINAL) Tj ET",
+             "/Type /XObject /Subtype /Form /BBox [0 0 300 300]"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const uint32_t doc = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(pdf.data()), static_cast<uint32_t>(pdf.size()),
+      "nested-font", "inherited-resource-font", nullptr);
+  Require(doc != 0, "open nested inherited font Form");
+  const std::string initial = RequireResult(pde_describe_page(doc, 0),
+                                              "describe original nested font");
+  const auto ids = TextBlockIds(initial);
+  Require(ids.size() == 1, "resolve nested inherited font text");
+  const auto other_page = RenderPixels(doc, 1, 300, 300);
+  const std::string page_id = PageIdFromDescription(initial);
+  const char* selected[]{ids[0].c_str()};
+  PdeEditCommand style{};
+  style.type = 2;
+  style.page_id = page_id.c_str();
+  style.font_id = "nested-style-font";
+  style.ids = selected;
+  style.id_count = 1;
+  style.flags = 1 | 2;
+  style.values[0] = 18;
+  Require(pde_apply_commands(doc, 0, "nested-font-change", &style, 1) != nullptr,
+          "replace font inside one isolated inherited resource Form");
+  const auto styled_pixels = RenderPixels(doc, 0, 300, 300);
+  Require(pde_save_memory(doc) != nullptr, "save nested embedded font");
+  const std::vector<uint8_t> saved(pde_binary_data(),
+                                    pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(
+      saved.data(), static_cast<uint32_t>(saved.size()), "nested-font-reopened",
+      "saved-inherited-font", nullptr);
+  Require(reopened != 0 &&
+              RequireResult(pde_extract_page(reopened, 0), "extract saved nested font")
+                      .find("ORIGINAL") != std::string::npos &&
+              RequireResult(pde_describe_page(reopened, 0), "describe saved nested font")
+                      .find("\"fontSize\":18") != std::string::npos &&
+              RenderPixels(reopened, 0, 300, 300) == styled_pixels &&
+              RenderPixels(reopened, 1, 300, 300) == other_page,
+          "new font resource retains pixels after save without mutating sibling page");
+  Require(pde_close(reopened) == 1 && pde_close(doc) == 1,
+          "close nested font fixtures");
 }
 
 std::vector<uint8_t> ExerciseRegisteredFont(const std::string& suffix,
@@ -2184,8 +2476,8 @@ int main(int argc, char** argv) {
           "actual text object content");
   Require(Count(page, "\"editability\"") == 1,
           "one text block for one actual text object");
-  Require(page.find("\"editability\":\"geometry-only\"") != std::string::npos,
-          "nested Form text is not advertised as directly editable");
+  Require(page.find("\"editability\":\"direct\"") != std::string::npos,
+          "unmarked nested Form text is advertised as directly editable");
   Require(Count(page, "\"locator\"") == 3,
           "form and nested objects are enumerated");
 
@@ -2202,10 +2494,10 @@ int main(int argc, char** argv) {
           "stable page and object string IDs within a session");
   const std::vector<std::string> nested_ids = TextBlockIds(page);
   Require(nested_ids.size() == 1, "nested text block ID");
-  PdeTextEdit nested_edit{0, nested_ids[0].c_str(), 0, 11, "Rejected", nullptr};
-  Require(pde_preview_text(document, &nested_edit) == nullptr &&
-              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY",
-          "nested Form text is explicitly rejected");
+  PdeTextEdit nested_edit{0, nested_ids[0].c_str(), 0, 11, "Edited", nullptr};
+  Require(pde_preview_text(document, &nested_edit) != nullptr &&
+              std::string(pde_describe_page(document, 0)) == page,
+          "safe nested Form text can be previewed without mutation");
 
   const char* render_pointer =
       pde_render(document, 0, 480, 320, 0, 0, 480, 320);
@@ -2289,6 +2581,8 @@ int main(int argc, char** argv) {
   TestObjectAlignment();
   TestObjectDistribution();
   TestNestedObjectTransform();
+  TestNestedTextReplacement();
+  if (font_options.enabled()) TestNestedTextFont(font_options.ttf_path);
   TestObjectGroup();
   TestPageCrop();
   TestOutlineNavigation();

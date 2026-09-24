@@ -55,10 +55,21 @@ function mergeTextBlocks(command: { pageId: string; blockIds: string[] }, contex
   };
 }
 
+function insertBlankPage(referencePageId: string, position: 'before' | 'after', request: AiRequest, context: CommandContext): EditCommand {
+  if (!request.context.pages?.some(page => page.id === referencePageId)) reject('Page insertion reference is outside request scope');
+  const reference = context.pages.get(referencePageId);
+  const index = context.document.pageOrder.indexOf(referencePageId);
+  if (!reference || index < 0) reject('Navigate to the reference page before inserting a blank page');
+  return { type: 'pages.insert', pageId: crypto.randomUUID(),
+    afterPageId: position === 'after' ? referencePageId : context.document.pageOrder[index - 1] ?? null,
+    widthPt: reference.widthPt, heightPt: reference.heightPt };
+}
+
 function assertScope(command: EditCommand, request: AiRequest): void {
   const pageIds = new Set([...(request.context.pages ?? []).map(page => page.id), ...request.context.evidence.map(item => item.pageId), ...(request.context.objects ?? []).map(object => object.pageId)]);
   if ('pageIds' in command && command.pageIds.some(id => !pageIds.has(id))) reject('Candidate page is outside request scope');
-  if ('pageId' in command && !pageIds.has(command.pageId)) reject('Candidate page is outside request scope');
+  if ('pageId' in command && command.type !== 'pages.insert' && !pageIds.has(command.pageId)) reject('Candidate page is outside request scope');
+  if (command.type === 'pages.duplicate' && command.afterPageId !== null && !pageIds.has(command.afterPageId)) reject('Candidate insertion position is outside request scope');
   if ('objectIds' in command) {
     for (const id of command.objectIds) if (!request.context.objects?.some(object => object.id === id && object.pageId === command.pageId)) reject('Candidate object is outside request scope');
   }
@@ -97,7 +108,13 @@ export function createAiTransaction(requestInput: AiRequest, responseInput: AiRe
       if (!request.context.availableCommands?.includes(command.type)) reject('Candidate command is not allowed in this request');
       const local: EditCommand = command.type === 'text.replace'
         ? replacement(command.targetEvidenceId, command.text, request, context)
-        : command.type === 'text.reflow' ? mergeTextBlocks(command, context, preferredFontId) : command;
+        : command.type === 'text.reflow' ? mergeTextBlocks(command, context, preferredFontId)
+          : command.type === 'pages.insert' ? insertBlankPage(command.referencePageId, command.position, request, context)
+            : command.type === 'pages.duplicate' ? { type: 'pages.duplicate', pageIds: command.pageIds,
+              newPageIds: command.pageIds.map(() => crypto.randomUUID()), afterPageId: command.afterPageId }
+              : command.type === 'objects.copy' ? { type: 'objects.copy', pageId: command.pageId,
+                objectIds: command.objectIds, newObjectIds: command.objectIds.map(() => crypto.randomUUID()),
+                offset: command.offset ?? { x: 12, y: 12 } } : command;
       assertScope(local, request);
       return local;
     });

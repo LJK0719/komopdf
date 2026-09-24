@@ -9,7 +9,7 @@ export interface LongTaskBatch<Payload, Result> {
   content: string;
   contentHash: string;
   payloadHash: string;
-  /** 只有内容和 payload（含 evidence/page 等身份）完全相同才可直接复用结果。 */
+  /** 同一文档、配置及块内容与 payload（含来源/位置身份）相同才可复用。 */
   cacheKey: string;
   payload: Payload;
   status: LongTaskBatchStatus;
@@ -88,10 +88,22 @@ export async function createLongTask<Payload, Result = unknown>(
     protocolVersion: input.protocolVersion,
     settingsHash,
   });
+  // 整篇指纹只用于任务快照身份；批次复用不能绑定整篇内容，否则单块修改会让全部批次失效。
+  const batchContextKey = await hashStableValue({
+    docId: input.docId,
+    taskType: input.taskType,
+    model: input.model,
+    templateVersion: input.templateVersion,
+    protocolVersion: input.protocolVersion,
+    settingsHash,
+  });
   const batches = await Promise.all(input.batches.map(async batch => {
     const contentHash = await sha256Text(batch.content);
     const payloadHash = await hashStableValue(batch.payload);
-    const cacheKey = await hashStableValue({ hashKey, contentHash, payloadHash });
+    const sourceId = batch.payload && typeof batch.payload === 'object' && 'sourceId' in batch.payload
+      ? batch.payload.sourceId : undefined;
+    const sourceIdentity = typeof sourceId === 'string' ? sourceId : sourceIds;
+    const cacheKey = await hashStableValue({ batchContextKey, sourceIdentity, contentHash, payloadHash });
     return {
       id: batch.id,
       content: batch.content,
@@ -162,6 +174,7 @@ export class LongTaskRunner<Payload, Result> {
     taskId: string,
     authorization: DocumentAiAuthorization,
     runBatch: RunLongTaskBatch<Payload, Result>,
+    onBatchCompleted?: (task: Readonly<LongTaskRecord<Payload, Result>>) => void,
   ): Promise<LongTaskRecord<Payload, Result>> {
     if (this.#active.has(taskId)) throw new Error('A batch is already in progress for this task');
     const active: ActiveRun = { controller: new AbortController(), intent: 'run' };
@@ -194,6 +207,7 @@ export class LongTaskRunner<Payload, Result> {
           batch.status = 'completed';
           delete batch.error;
           await this.#store.saveTask(task);
+          onBatchCompleted?.(task);
           continue;
         }
 
@@ -220,6 +234,7 @@ export class LongTaskRunner<Payload, Result> {
           batch.status = 'completed';
           // result 和 completed 在同一次 store 写入中提交。
           await this.#store.saveTask(task);
+          onBatchCompleted?.(task);
         } catch (error) {
           const interruption = interruptionIntent(
             active,

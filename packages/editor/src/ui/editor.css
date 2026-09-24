@@ -40,6 +40,31 @@
     height: 100%;
     background: var(--panel);
   }
+  .editor-shell-with-tabs { grid-template-rows: 72px 38px 44px minmax(0, 1fr) 30px; }
+  .editor-document-tabs {
+    display: flex;
+    gap: 4px;
+    align-items: end;
+    padding: 0 16px;
+    overflow-x: auto;
+    background: #e4e2da;
+    border-bottom: 1px solid var(--line);
+  }
+  .editor-document-tabs button {
+    max-width: 240px;
+    padding: 8px 12px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    background: #d8d7d0;
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .editor-document-tabs button[aria-current] { background: var(--panel); font-weight: 700; }
+  .editor-document-tabs button:disabled { cursor: default; }
+  .editor-document-tabs button:focus-visible { outline: 2px solid var(--signal); outline-offset: -2px; }
 
   .editor-topbar {
     display: grid;

@@ -1,5 +1,7 @@
 import type { AiFeature, AiRequest, DocumentInfo, EngineAdapter, TextBlock } from '@pdf-editor/contracts';
-import { AiWorkflow, createEvidenceSnapshot, resolveCitation, type DocumentAiAuthorization } from '@pdf-editor/ai-client';
+import { AiWorkflow, LongTaskRunner, createEvidenceSnapshot, createLongTask, resolveCitation,
+  type DocumentAiAuthorization, type LongTaskBatch, type LongTaskRecord, type LongTaskStatus } from '@pdf-editor/ai-client';
+import { IndexedDbTaskStore } from './AiPanelTaskStore.js';
 
 export type DocumentPassage = {
   pageId: string;
@@ -117,6 +119,43 @@ export function passageBatches(passages: readonly DocumentPassage[]): DocumentPa
   return batches;
 }
 
+type SummaryPayload =
+  | { kind: 'section'; passages: DocumentPassage[] }
+  | { kind: 'overview'; contentFingerprint: string };
+type SummaryResult = DocumentAnalysis['sections'][number];
+type SummaryTask = LongTaskRecord<SummaryPayload, SummaryResult>;
+
+function analysisFromTask(task: SummaryTask): DocumentAnalysis | null {
+  const last = task.batches.at(-1);
+  if (task.status !== 'completed' || last?.status !== 'completed' || !last.result) return null;
+  const sections = task.batches.slice(0, -1).map(batch => batch.result).filter((result): result is SummaryResult => !!result);
+  if (sections.length !== task.batches.length - 1) return null;
+  const scope = task.scope as { pagesScanned: number; pagesWithText: number; passagesScanned: number };
+  return { document: { id: task.docId, revision: task.baseRevision }, overview: last.result.text,
+    sections, pagesScanned: scope.pagesScanned, pagesWithText: scope.pagesWithText,
+    passagesScanned: scope.passagesScanned };
+}
+
+/** 仅从本地任务存储恢复快照，不自动授权或向 AI 发送请求。 */
+export async function restoreFullDocumentAnalysis(docId: string): Promise<{
+  feature: 'document.ask' | 'document.summarize'; instruction: string;
+  status: LongTaskStatus; analysis: DocumentAnalysis | null;
+} | null> {
+  const store = new IndexedDbTaskStore<SummaryPayload, SummaryResult>();
+  const [summary, ask] = await Promise.all([
+    store.getLatestTaskForDocument(docId, 'document.summarize'),
+    store.getLatestTaskForDocument(docId, 'document.ask'),
+  ]);
+  const task = [summary, ask].filter((item): item is SummaryTask => !!item)
+    .sort((a, b) => ((b.scope as { createdAt?: number }).createdAt ?? 0) -
+      ((a.scope as { createdAt?: number }).createdAt ?? 0))[0];
+  if (!task) return null;
+  const restored = await new LongTaskRunner(store).restore(task.id);
+  return { feature: restored.taskType as 'document.ask' | 'document.summarize',
+    instruction: (restored.settings as { instruction: string }).instruction,
+    status: restored.status, analysis: analysisFromTask(restored) };
+}
+
 export async function analyzeFullDocument(options: {
   engine: EngineAdapter;
   document: DocumentInfo;
@@ -132,12 +171,47 @@ export async function analyzeFullDocument(options: {
   const passages = await collectDocumentPassages(options.engine, document, signal,
     page => onProgress(`Reading page ${page} / ${document.pageOrder.length}`));
   if (!passages.length) throw new Error('No extractable text in this document. Use desktop OCR for scanned pages.');
+  signal.throwIfAborted();
+  const current = options.currentDocument();
+  if (current.id !== document.id || current.revision !== document.revision) {
+    throw new Error('Document changed while collecting text; start again from the current revision');
+  }
+
+  const sectionPassages = passageBatches(passages);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({
+    pageOrder: document.pageOrder, passages,
+  })));
+  const contentFingerprint = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const store = new IndexedDbTaskStore<SummaryPayload, SummaryResult>();
+  const runner = new LongTaskRunner(store);
+  const taskType = options.feature;
+  const createdAt = Date.now();
+  const candidate = await createLongTask<SummaryPayload, SummaryResult>({
+    id: `summary-${document.id}-${createdAt}-${crypto.randomUUID()}`,
+    docId: document.id, baseRevision: document.revision, sourceIds: document.sourceIds,
+    taskType, scope: { createdAt, pagesScanned: document.pageOrder.length,
+      pagesWithText: new Set(passages.map(passage => passage.pageId)).size, passagesScanned: passages.length },
+    contentFingerprint, model: 'gemini-3.8-flash-high', templateVersion: '1', protocolVersion: 1,
+    settings: { instruction: options.instruction, feature: options.feature },
+    batches: [...sectionPassages.map((items, index) => ({
+      id: `section-${index + 1}`, content: items.map(item => item.text).join('\n'),
+      payload: { kind: 'section' as const, passages: items },
+    })), { id: 'overview', content: contentFingerprint,
+      payload: { kind: 'overview' as const, contentFingerprint } }],
+  });
+  const previous = await store.getLatestTaskForDocument(document.id, taskType);
+  const task = previous && previous.status !== 'failed' && previous.status !== 'cancelled' &&
+    previous.baseRevision === document.revision && previous.hashKey === candidate.hashKey
+    ? await runner.restore(previous.id) : candidate;
+  if (task === candidate) await store.saveTask(task);
+  const completed = analysisFromTask(task);
+  if (completed) return completed;
 
   const workflow = new AiWorkflow<never>({
     endpoint: options.endpoint, authorization: options.authorization, getCurrentDocument: options.currentDocument,
     nextTransactionId: () => crypto.randomUUID(), apply: async () => { throw new Error('Document analysis cannot edit the PDF'); },
   });
-  const ask = async (feature: AiFeature, items: readonly DocumentPassage[], instruction: string) => {
+  const ask = async (feature: AiFeature, items: readonly DocumentPassage[], instruction: string, runSignal: AbortSignal) => {
     const evidence = items.map((item, index) => ({
       id: `e${index + 1}`, docId: document.id, revision: document.revision,
       pageId: item.pageId, pageNumber: item.pageNumber, blockId: item.blockId,
@@ -151,7 +225,7 @@ export async function analyzeFullDocument(options: {
     const snapshot = createEvidenceSnapshot(request, items.map((item, index) => ({
       evidenceId: `e${index + 1}`, sourceId: item.sourceId, blockText: item.blockText,
     })));
-    const response = (await workflow.run({ request, snapshot, sourceIds: document.sourceIds, signal })).response.result;
+    const response = (await workflow.run({ request, snapshot, sourceIds: document.sourceIds, signal: runSignal })).response.result;
     if (response.kind !== 'answer' || !response.text.trim()) throw new Error('The model did not return a complete document answer');
     const citations = response.citations.flatMap(citation => {
       const location = resolveCitation(snapshot, citation, options.currentDocument());
@@ -162,47 +236,70 @@ export async function analyzeFullDocument(options: {
     return { text: response.text, citations };
   };
 
-  const batches = passageBatches(passages);
-  const sections: DocumentAnalysis['sections'] = [];
-  for (const [index, batch] of batches.entries()) {
-    signal.throwIfAborted();
-    onProgress(`Analyzing section ${index + 1} / ${batches.length}`);
-    const instruction = options.feature === 'document.ask'
-      ? `Check this section for evidence relevant to: ${options.instruction}. Report findings or say no evidence in this section.`
-      : `Summarize this section, preserving specific facts and citations. ${options.instruction}`;
-    sections.push(await ask('document.summarize', batch, instruction));
-  }
+  signal.throwIfAborted();
+  const pause = () => { void runner.pauseTask(task.id); };
+  signal.addEventListener('abort', pause, { once: true });
+  try {
+    const finished = await runner.continueTask(task.id, options.authorization,
+      async (_task, batch: Readonly<LongTaskBatch<SummaryPayload, SummaryResult>>, runSignal) => {
+        const now = options.currentDocument();
+        if (now.id !== document.id || now.revision !== document.revision) {
+          await runner.pauseTask(task.id);
+          throw new Error('Document changed during analysis');
+        }
+        if (batch.payload.kind === 'section') {
+          const index = _task.batches.findIndex(item => item.id === batch.id);
+          onProgress(`Analyzing section ${index + 1} / ${sectionPassages.length}`);
+          const instruction = options.feature === 'document.ask'
+            ? `Check this section for evidence relevant to: ${options.instruction}. Report findings or say no evidence in this section.`
+            : `Summarize this section, preserving specific facts and citations. ${options.instruction}`;
+          return ask('document.summarize', batch.payload.passages, instruction, runSignal);
+        }
 
-  let level = sections.map((section, index) => {
-    const source = batches[index]![0]!;
-    return { ...source, blockText: section.text, text: section.text,
-      range: [0, section.text.length] as [number, number] };
-  });
-  let depth = 0;
-  while (level.length > 1) {
-    signal.throwIfAborted();
-    onProgress(depth ? `Combining summaries (level ${depth + 1})` : 'Combining document sections');
-    const next: DocumentPassage[] = [];
-    for (const batch of passageBatches(level)) {
-      const summary = await ask('document.summarize', batch,
-        options.feature === 'document.ask'
-          ? `Consolidate these section findings to answer: ${options.instruction}. Do not claim unseen evidence.`
-          : `Combine these section summaries into an overview and reading outline. ${options.instruction}`);
-      const source = batch[0]!;
-      next.push({ ...source, blockText: summary.text, text: summary.text,
-        range: [0, summary.text.length] });
+        const saved = await store.loadTask(task.id);
+        if (!saved) throw new Error('Saved document analysis was not found');
+        let level = saved.batches.slice(0, -1).map((sectionBatch, index) => {
+          if (!sectionBatch.result) throw new Error('Missing section summary');
+          const source = sectionPassages[index]![0]!;
+          return { ...source, blockText: sectionBatch.result.text, text: sectionBatch.result.text,
+            range: [0, sectionBatch.result.text.length] as [number, number] };
+        });
+        let depth = 0;
+        while (level.length > 1) {
+          runSignal.throwIfAborted();
+          onProgress(depth ? `Combining summaries (level ${depth + 1})` : 'Combining document sections');
+          const next: DocumentPassage[] = [];
+          for (const items of passageBatches(level)) {
+            const summary = await ask('document.summarize', items,
+              options.feature === 'document.ask'
+                ? `Consolidate these section findings to answer: ${options.instruction}. Do not claim unseen evidence.`
+                : `Combine these section summaries into an overview and reading outline. ${options.instruction}`,
+              runSignal);
+            const source = items[0]!;
+            next.push({ ...source, blockText: summary.text, text: summary.text,
+              range: [0, summary.text.length] });
+          }
+          if (next.length >= level.length) {
+            return { text: 'The document was fully scanned, but its section summaries could not be condensed further. Read each section below.', citations: [] };
+          }
+          level = next;
+          depth += 1;
+        }
+        return { text: level[0]!.text, citations: [] };
+      },
+      updated => onProgress(`Completed ${updated.batches.filter(batch => batch.status === 'completed').length} / ${updated.batches.length} summary batches`),
+    );
+    if (signal.aborted || finished.status !== 'completed') {
+      throw new Error('Document analysis paused. Re-authorize and generate again to resume.');
     }
-    if (next.length >= level.length) {
-      return { document: { id: document.id, revision: document.revision },
-        overview: 'The document was fully scanned, but its section summaries could not be condensed further. Read each section below.',
-        sections, pagesScanned: document.pageOrder.length,
-        pagesWithText: new Set(passages.map(passage => passage.pageId)).size, passagesScanned: passages.length };
+    const now = options.currentDocument();
+    if (now.id !== document.id || now.revision !== document.revision) {
+      throw new Error('Document changed during analysis; current results belong to an older revision');
     }
-    level = next;
-    depth += 1;
+    const analysis = analysisFromTask(finished);
+    if (!analysis) throw new Error('Document analysis finished without a complete overview');
+    return analysis;
+  } finally {
+    signal.removeEventListener('abort', pause);
   }
-  return { document: { id: document.id, revision: document.revision },
-    overview: level[0]?.text ?? sections[0]!.text,
-    sections, pagesScanned: document.pageOrder.length,
-        pagesWithText: new Set(passages.map(passage => passage.pageId)).size, passagesScanned: passages.length };
 }

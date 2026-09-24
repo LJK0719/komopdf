@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
   EngineError,
+  WEB_LIMITS,
   type CommitResult,
   type DocumentInfo,
   type DocumentSource,
@@ -78,16 +79,21 @@ export function mergeSavedRevision(current: LoadedDocument, savedRevision: numbe
 }
 
 type Activity = 'idle' | 'opening' | 'rendering' | 'saving' | 'editing';
+type WebDocumentSession = { loaded: LoadedDocument; history: { canUndo: boolean; canRedo: boolean }; zoom: number; selectedIds: string[] };
 
 export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, renderAiPanel,
   source: externalSource, onSourceConsumed, onDocumentChange, closeDocumentRef, externalBusy = false, onActivityChange }: EditorShellProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const documentRef = useRef<LoadedDocument | null>(null);
+  const inactiveWebDocuments = useRef(new Map<string, WebDocumentSession>());
+  const [webTabs, setWebTabs] = useState<{ id: string; name: string }[]>([]);
   const [document, setDocument] = useState<LoadedDocument | null>(null);
   const [activity, setActivity] = useState<Activity>('idle');
   const [notice, setNotice] = useState('PDF processed only on this device');
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [searchSelection, setSearchSelection] = useState<{ docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null>(null);
+  const searchLocationSequence = useRef(0);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const [outline, setOutline] = useState<OutlineEntry[]>([]);
   const [outlineError, setOutlineError] = useState(false);
@@ -148,6 +154,10 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   useEffect(() => () => {
     const current = documentRef.current;
     if (current) void engine.close(current.info.id).catch(() => undefined);
+    for (const session of inactiveWebDocuments.current.values()) {
+      void engine.close(session.loaded.info.id).catch(() => undefined);
+    }
+    inactiveWebDocuments.current.clear();
   }, [engine]);
 
   const triggerAutoRecovery = (docInfo: DocumentInfo, name: string): void => {
@@ -195,7 +205,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         }
         documentRef.current = loaded;
         setDocument(loaded);
+        if (host.capabilities.platform === 'web') setWebTabs([{ id: loaded.info.id, name: loaded.name }]);
         setSelectedIds([]);
+        setSearchSelection(null);
         setTextDraftDirty(false);
         setParagraphDraftDirty(false);
         setHistory({ canUndo: info.revision > 0, canRedo: false });
@@ -241,7 +253,12 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
     setError(null);
     const previous = documentRef.current;
-    if (previous && previous.info.revision !== previous.info.savedRevision) {
+    const web = host.capabilities.platform === 'web';
+    if (web && previous && inactiveWebDocuments.current.size >= WEB_LIMITS.openDocuments - 1) {
+      setError(`The web editor can keep only ${WEB_LIMITS.openDocuments} PDFs open. Close one before opening another.`);
+      return null;
+    }
+    if (!web && previous && previous.info.revision !== previous.info.savedRevision) {
       const saveFirst = window.confirm('Current document has unsaved changes.\n\nOK: Save first, then open new file\nCancel: Choose whether to discard changes');
       if (saveFirst) {
         const saved = await saveCurrentDocument(previous, engine, host, updateSavedRevision, setError, setNotice, setActivity);
@@ -282,16 +299,25 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         }
       }
       if (sequence !== openSequence.current) { await engine.close(loaded.info.id); return null; }
+      if (web && loaded.info.pageOrder.length > WEB_LIMITS.pagesPerDocument) {
+        await engine.close(loaded.info.id);
+        throw new EngineError('RESOURCE_LIMIT', `The web editor supports at most ${WEB_LIMITS.pagesPerDocument} pages per PDF`);
+      }
+      if (web) {
+        if (previous) inactiveWebDocuments.current.set(previous.info.id, { loaded: previous, history, zoom, selectedIds });
+        setWebTabs(current => [...current, { id: loaded.info.id, name: loaded.name }]);
+      }
       documentRef.current = loaded;
       setDocument(loaded);
       setSelectedIds([]);
+      setSearchSelection(null);
       setTextDraftDirty(false);
       setParagraphDraftDirty(false);
       setHistory({ canUndo: false, canRedo: false });
       setZoom(RENDER_SCALE);
       setNotice(`${loaded.info.pageOrder.length} pages · Rev ${loaded.info.revision}`);
       setPendingRecovery(null);
-      if (previous) {
+      if (previous && !web) {
         try {
           await discardRecoveryRecord(host, previous.info.id);
         } catch {
@@ -325,6 +351,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       documentRef.current = refreshed;
       setDocument(refreshed);
       setSelectedIds([]);
+      setSearchSelection(null);
       setNotice(`Page ${latest.info.pageOrder.indexOf(pageId) + 1} · Rev ${latest.info.revision}`);
     } catch (caught) {
       setError(formatError(caught));
@@ -410,7 +437,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
   };
 
-  const locateTextBlock = (pageId: string, blockId: string): void => {
+  const locateTextBlock = (pageId: string, blockId: string, range?: { start: number; end: number }): void => {
     if (isDraftDirty) { setError('Apply or discard the current text draft before changing selection'); return; }
     void (async () => {
       const current = documentRef.current;
@@ -428,8 +455,12 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           documentRef.current = loaded;
           setDocument(loaded);
         }
+        const latest = documentRef.current;
+        if (!latest || latest.info.id !== current.info.id || latest.info.revision !== current.info.revision) return;
         const target = loaded.page.objects.find((object) => object.textBlock?.id === blockId);
         setSelectedIds(target ? [target.id] : []);
+        setSearchSelection(target && range ? { docId: latest.info.id, revision: latest.info.revision,
+          pageId, blockId, start: range.start, end: range.end, key: ++searchLocationSequence.current } : null);
         setNotice(target ? `Located page ${current.info.pageOrder.indexOf(pageId) + 1}` : 'Referenced text block is currently not visible');
       } catch (caught) {
         setError(formatError(caught));
@@ -441,6 +472,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
   const selectObject = (objectId: string, additive: boolean): void => {
     if (isDraftDirty) { setError('Apply or discard the current text draft before changing selection'); return; }
+    setSearchSelection(null);
     setSelectedIds((current) => {
       if (!additive) return [objectId];
       return current.includes(objectId)
@@ -463,12 +495,42 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     finally { setActivity('idle'); }
   };
 
+  const switchWebDocument = (docId: string): void => {
+    const current = documentRef.current;
+    const next = inactiveWebDocuments.current.get(docId);
+    if (!current || !next || isDraftDirty || activity !== 'idle' || editPending || externalBusy) return;
+    inactiveWebDocuments.current.delete(docId);
+    inactiveWebDocuments.current.set(current.info.id, { loaded: current, history, zoom, selectedIds });
+    documentRef.current = next.loaded;
+    setDocument(next.loaded);
+    setHistory(next.history);
+    setZoom(next.zoom);
+    setSelectedIds(next.selectedIds);
+    setSearchSelection(null);
+    setError(null);
+    setNotice(`Switched to ${next.loaded.name} · Rev ${next.loaded.info.revision}`);
+  };
+
   const closeDocument = async (): Promise<boolean> => {
     const current = documentRef.current;
     if (!current || !await closeHandler.current()) return false;
     setActivity('opening'); setError(null);
     try {
       await engine.close(current.info.id);
+      setSearchSelection(null);
+      if (host.capabilities.platform === 'web') {
+        setWebTabs(tabs => tabs.filter(tab => tab.id !== current.info.id));
+        const nextId = [...inactiveWebDocuments.current.keys()].at(-1);
+        if (nextId) {
+          const next = inactiveWebDocuments.current.get(nextId)!;
+          inactiveWebDocuments.current.delete(nextId);
+          documentRef.current = next.loaded; setDocument(next.loaded);
+          setHistory(next.history); setZoom(next.zoom); setSelectedIds(next.selectedIds);
+          setTextDraftDirty(false); setParagraphDraftDirty(false);
+          setNotice(`Switched to ${next.loaded.name}`);
+          return true;
+        }
+      }
       documentRef.current = null; setDocument(null); setSelectedIds([]); setTextDraftDirty(false); setParagraphDraftDirty(false);
       setHistory({ canUndo: false, canRedo: false }); setNotice('Document closed');
       return true;
@@ -553,7 +615,20 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     let disposed = false;
     let unlisten: (() => void) | undefined;
     if (host.onCloseRequested) {
-      void host.onCloseRequested(() => closeHandler.current()).then(cleanup => {
+      void host.onCloseRequested(async () => {
+        if (!await closeHandler.current()) return false;
+        const active = documentRef.current;
+        if (!active) return true;
+        try {
+          await engine.close(active.info.id);
+          documentRef.current = null;
+          setDocument(null);
+          return true;
+        } catch (caught) {
+          setError(`Could not close PDF session: ${formatError(caught)}`);
+          return false;
+        }
+      }).then(cleanup => {
         if (disposed) cleanup(); else unlisten = cleanup;
       }).catch(() => setError('Unable to register the window close guard'));
     }
@@ -563,7 +638,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     if (host.capabilities.platform !== 'web') return;
     const beforeUnload = (event: BeforeUnloadEvent) => {
       const current = documentRef.current;
-      if (isBusy || (current && current.info.revision !== current.info.savedRevision)) {
+      if (isBusy || (current && current.info.revision !== current.info.savedRevision) ||
+        [...inactiveWebDocuments.current.values()].some(session => session.loaded.info.revision !== session.loaded.info.savedRevision)) {
         event.preventDefault(); event.returnValue = '';
       }
     };
@@ -578,7 +654,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   }, [externalSource]);
 
   return (
-    <main className="editor-shell">
+    <main className={webTabs.length ? 'editor-shell editor-shell-with-tabs' : 'editor-shell'}>
       {passwordPrompt && <PasswordDialog prompt={passwordPrompt} />}
       <header className="editor-topbar">
         <div className="brand-lockup" aria-label={productName}>
@@ -589,10 +665,10 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           </span>
         </div>
 
-        <div className="document-title">
+        {(host.capabilities.platform !== 'web' || !document) && <div className="document-title">
           <span className="eyebrow">Current Document</span>
           <strong>{document?.name ?? 'No PDF open'}</strong>
-        </div>
+        </div>}
 
         <div className="topbar-actions">
           <button className="button button-quiet" type="button" disabled={!document || isBusy || zoom <= 0.25}
@@ -614,6 +690,18 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           </button>
         </div>
       </header>
+
+      {webTabs.length > 0 && <nav className="editor-document-tabs" aria-label="Open PDFs">
+        {webTabs.map(tab => {
+          const active = document?.info.id === tab.id;
+          const info = active ? document.info : inactiveWebDocuments.current.get(tab.id)?.loaded.info;
+          return <button key={tab.id} type="button" aria-current={active ? 'page' : undefined}
+            disabled={active || isBusy} onClick={() => switchWebDocument(tab.id)}
+            title={tab.name}>
+            {tab.name}{info && info.revision !== info.savedRevision ? ' ●' : ''}
+          </button>;
+        })}
+      </nav>}
 
       <section className="editor-commandbar" aria-label="Current editing capabilities">
         <div>
@@ -702,7 +790,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           ) : (
             <div className="page-wrap" onClick={() => {
               if (isDraftDirty) setError('Apply or discard the current text draft before changing selection');
-              else setSelectedIds([]);
+              else { setSelectedIds([]); setSearchSelection(null); }
             }}>
               <canvas ref={canvasRef} className="pdf-canvas" aria-label={`Page ${currentPageIndex + 1}`} />
               <SelectionLayer
@@ -710,7 +798,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                 render={document.render}
                 selectedIds={selectedIds}
                 onSelect={selectObject}
-                onBoxSelect={setSelectedIds}
+                onBoxSelect={ids => { setSelectedIds(ids); setSearchSelection(null); }}
                 disabled={isBusy}
                 canTransform={document.info.capabilities.includes('objects.transform')}
                 onMove={moveObjects}
@@ -736,7 +824,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
           {document && <ObjectEditPanel document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} host={host} disabled={isBusy} onBusyChange={setEditPending}
-            onSelectionChange={setSelectedIds} onCommitted={handleCommitted} />}
+            onSelectionChange={ids => { setSelectedIds(ids); setSearchSelection(null); }} onCommitted={handleCommitted} />}
 
           {document && <DocumentToolsPanel document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
@@ -767,6 +855,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
             document={document?.info ?? null}
             page={document?.page ?? null}
             selectedIds={selectedIds}
+            searchSelection={searchSelection}
             engine={engine}
             disabled={operationBusy || paragraphDraftDirty}
             onBusyChange={setEditPending}

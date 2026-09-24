@@ -110,6 +110,12 @@ const commandSchemas: Record<string, JsonSchema> = {
     type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['objects.delete'] }, pageId: id, objectIds: idArray },
     required: ['type', 'pageId', 'objectIds'],
   },
+  'objects.copy': {
+    type: 'OBJECT', properties: {
+      type: { type: 'STRING', enum: ['objects.copy'] }, pageId: id, objectIds: idArray,
+      offset: { type: 'OBJECT', properties: { x: { type: 'NUMBER' }, y: { type: 'NUMBER' } }, required: ['x', 'y'] },
+    }, required: ['type', 'pageId', 'objectIds'],
+  },
   'objects.align': {
     type: 'OBJECT', properties: {
       type: { type: 'STRING', enum: ['objects.align'] }, pageId: id, objectIds: idArray,
@@ -139,6 +145,17 @@ const commandSchemas: Record<string, JsonSchema> = {
   'pages.reorder': {
     type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['pages.reorder'] }, pageIds: idArray }, required: ['type', 'pageIds'],
   },
+  'pages.insert': {
+    type: 'OBJECT', properties: {
+      type: { type: 'STRING', enum: ['pages.insert'] }, referencePageId: id,
+      position: { type: 'STRING', enum: ['before', 'after'] },
+    }, required: ['type', 'referencePageId', 'position'],
+  },
+  'pages.duplicate': {
+    type: 'OBJECT', properties: { type: { type: 'STRING', enum: ['pages.duplicate'] }, pageIds: idArray,
+      afterPageId: { anyOf: [id, { type: 'NULL' }] } },
+    required: ['type', 'pageIds', 'afterPageId'],
+  },
   'form.fill': {
     type: 'OBJECT', properties: {
       type: { type: 'STRING', enum: ['form.fill'] }, fieldId: id,
@@ -167,7 +184,7 @@ const featureInstructions: Record<AiFeature, string> = {
   'text.proofread': 'Proofread the supplied evidence. Preserve meaning, numbers, and names unless the instruction explicitly says otherwise. Return only changed replacement candidates.',
   'text.rewrite': 'Rewrite the supplied evidence according to the user instruction and return replacement candidates bound to evidence IDs.',
   'text.fit': 'Rewrite the supplied evidence to fit the target character count while preserving essential meaning. Return replacement candidates.',
-  'commands.plan': 'Propose a short PDF edit plan using only the command types explicitly listed as available.',
+  'commands.plan': 'Propose a short PDF edit plan using only the command types explicitly listed as available. For pages.insert, select an existing referencePageId and before/after; the editor uses that page size. For pages.duplicate, select existing source pageIds and an existing afterPageId (or null for the start). For objects.copy, specify an offset only when the user explicitly requests a numeric displacement; otherwise omit it and the editor uses a small default. The editor generates all new page and object IDs; never return them.',
   'document.ask': 'Answer only from the supplied evidence. Every answer must include one or more exact evidence citations; if evidence is insufficient, return clarification instead of an unsupported answer.',
   'document.summarize': 'Summarize only the supplied evidence and attach citations for the main claims.',
   'document.translate': 'Translate every supplied evidence block, retaining each evidence ID.',
