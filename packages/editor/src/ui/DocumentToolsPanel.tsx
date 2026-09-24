@@ -207,7 +207,7 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   }
 
   async function updateAnnotation(annotation: PdfAnnotationInfo): Promise<void> {
-    if (annotation.subtype === 'other') throw new Error('This annotation subtype cannot be rebuilt');
+    if (annotation.subtype === 'other' || annotation.subtype === 'link') throw new Error('This annotation subtype cannot be rebuilt');
     await execute({
       type: 'annotation.update', pageId: page.id, annotationId: annotation.id,
       subtype: annotation.subtype, bounds: readBounds(boundsDraft), text: annotationText,
@@ -294,8 +294,12 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
             <strong>{annotation.subtype}</strong>
             <span>{formatRect(annotation.bounds)} · {Math.round(annotation.opacity * 100)}%</span>
             {annotation.text ? <span>{annotation.text}</span> : null}
-            <button type="button" disabled={locked} onClick={() => selectAnnotation(annotation)}
-              aria-label={`Edit ${annotation.subtype} annotation`}>Select for editing</button>
+            {annotation.subtype === 'link' || annotation.subtype === 'other' ? (
+              <span className="document-tools-readonly">{annotation.subtype === 'link' ? 'Link (read-only)' : 'Unsupported (read-only)'}</span>
+            ) : (
+              <button type="button" disabled={locked} onClick={() => selectAnnotation(annotation)}
+                aria-label={`Edit ${annotation.subtype} annotation`}>Select for editing</button>
+            )}
             {canDeleteAnnotation && <button type="button" disabled={locked || !document.permissions.annotate}
               aria-label={`Delete ${annotation.subtype} annotation`} onClick={() => {
                 if (window.confirm('Delete this annotation? You can undo this change.'))

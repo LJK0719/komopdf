@@ -1274,13 +1274,15 @@ function validateAnnotationInfo(value: unknown, pageId: string): PdfAnnotationIn
     if (!isRecord(annotation)
         || typeof annotation.id !== 'string' || annotation.id.length === 0 || ids.has(annotation.id)
         || annotation.pageId !== pageId
-        || !['highlight', 'text', 'rectangle', 'ink', 'other'].includes(annotation.subtype as string)
+        || !['highlight', 'text', 'rectangle', 'ink', 'link', 'other'].includes(annotation.subtype as string)
         || !isRect(annotation.bounds)
         || typeof annotation.text !== 'string'
         || !Array.isArray(annotation.color) || annotation.color.length !== 3
         || annotation.color.some(component => typeof component !== 'number' || !Number.isFinite(component) || component < 0 || component > 1)
         || typeof annotation.opacity !== 'number' || !Number.isFinite(annotation.opacity)
-        || annotation.opacity < 0 || annotation.opacity > 1) {
+        || annotation.opacity < 0 || annotation.opacity > 1
+        || (annotation.targetPageId !== undefined && typeof annotation.targetPageId !== 'string')
+        || (annotation.targetTopPt !== undefined && (typeof annotation.targetTopPt !== 'number' || !Number.isFinite(annotation.targetTopPt)))) {
       throw new EngineError('CORE_UNAVAILABLE', 'PDF core returned invalid annotation information');
     }
     ids.add(annotation.id);

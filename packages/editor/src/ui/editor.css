@@ -352,6 +352,35 @@
     outline: 2px dashed #779019;
   }
   .inline-preview-overflow { outline-color: #d44929; }
+  .pdf-link-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .pdf-link-annotation {
+    position: absolute;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
+    pointer-events: auto;
+    border-radius: 2px;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+  }
+  .pdf-link-annotation:hover:not(:disabled) {
+    background-color: rgb(37 99 235 / 12%);
+    border-color: rgb(37 99 235 / 45%);
+  }
+  .pdf-link-annotation:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 1px;
+    background-color: rgb(37 99 235 / 16%);
+  }
+  .pdf-link-annotation:disabled {
+    cursor: default;
+    pointer-events: none;
+  }
   .object-hitbox {
     position: absolute;
     padding: 0;

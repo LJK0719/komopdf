@@ -14,6 +14,8 @@ namespace pdf_editor {
 enum class FontFormat {
   kTrueType,
   kOpenTypeCff,
+  // CFF2 source faces are instantiated to standalone CFF1 in PrepareFontFace().
+  kOpenTypeCff2,
 };
 
 struct FontFaceInfo {
@@ -30,6 +32,8 @@ struct FontFaceInfo {
 
 struct PreparedFontFace {
   FontFaceInfo info;
+  // Standalone SFNT; CFF2 sources are pinned at default axis values and
+  // converted to static CFF1 before shaping or embedding in PDF.
   std::vector<uint8_t> sfnt;
 };
 
@@ -48,7 +52,8 @@ bool PrepareFontFace(std::span<const uint8_t> bytes,
 
 // Loads a validated standalone face as a composite PDF font with one BMP
 // character code per Unicode value. TrueType uses CIDFontType2, FontFile2, and
-// CIDToGIDMap. OpenType/CFF uses CIDFontType0, FontFile3 /OpenType, and a
+// CIDToGIDMap. OpenType/CFF (including prepared static CFF2 instances) uses
+// CIDFontType0, FontFile3 /OpenType, and a
 // custom Encoding CMap from character codes to glyph CIDs. Both representations
 // carry an exact ToUnicode map, including distinct Unicode aliases of one glyph.
 FPDF_FONT LoadFontFace(FPDF_DOCUMENT document,

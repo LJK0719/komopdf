@@ -38,7 +38,7 @@ export function ParagraphPanel({
   const [fontId, setFontId] = useState('');
   const [fontSize, setFontSize] = useState('18');
   const [lineHeight, setLineHeight] = useState('1.2');
-  const [alignment, setAlignment] = useState<'left' | 'center' | 'right'>('left');
+  const [alignment, setAlignment] = useState<'left' | 'center' | 'right' | 'justify'>('left');
   const [color, setColor] = useState('#000000');
   const [characterSpacing, setCharacterSpacing] = useState('');
   const [underline, setUnderline] = useState(false);
@@ -510,7 +510,7 @@ export function ParagraphPanel({
           <select
             value={alignment}
             onChange={e => {
-              setAlignment(e.target.value as 'left' | 'center' | 'right');
+              setAlignment(e.target.value as 'left' | 'center' | 'right' | 'justify');
               clearPreview();
             }}
             disabled={locked}
@@ -518,6 +518,7 @@ export function ParagraphPanel({
             <option value="left">Left</option>
             <option value="center">Center</option>
             <option value="right">Right</option>
+            <option value="justify">Justify</option>
           </select>
         </label>
         <label>

@@ -341,6 +341,19 @@ FPDF_FONT LoadShapedFontFace(
     return nullptr;
   }
 
+  if (info.format == FontFormat::kOpenTypeCff2) {
+    std::vector<FontFaceInfo> prepared_faces;
+    std::string code;
+    std::string message;
+    if (!InspectFontFaces(sfnt, &prepared_faces, &code, &message) ||
+        prepared_faces.size() != 1 ||
+        prepared_faces.front().format != FontFormat::kOpenTypeCff) {
+      SetError("CFF2 must be instantiated to static CFF before PDF embedding.",
+               error_message);
+      return nullptr;
+    }
+  }
+
   std::vector<ShapedFontMapping> sorted_mappings;
   if (!ValidateAndSortMappings(sfnt, mappings, &sorted_mappings,
                                error_message)) {
@@ -370,7 +383,8 @@ FPDF_FONT LoadShapedFontFace(
     return handle;
   }
 
-  if (info.format != FontFormat::kOpenTypeCff) {
+  if (info.format != FontFormat::kOpenTypeCff &&
+      info.format != FontFormat::kOpenTypeCff2) {
     SetError("The shaped font face has an unsupported format.", error_message);
     return nullptr;
   }

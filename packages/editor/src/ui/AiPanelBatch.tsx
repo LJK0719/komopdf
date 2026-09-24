@@ -41,7 +41,7 @@ export type AiPanelBatchProps = {
   authorization: DocumentAiAuthorization;
   endpoint?: string | undefined;
   targetLanguage: string;
-  onApplyBlock(pageId: string, blockId: string, range: [number, number], text: string): Promise<void>;
+  onApplyBlocks(blocks: { pageId: string; blockId: string; range: [number, number]; text: string }[]): Promise<void>;
   onLocate?: ((pageId: string, blockId: string) => void) | undefined;
   disabled: boolean;
 };
@@ -53,7 +53,7 @@ export function AiPanelBatch({
   authorization,
   endpoint = '/api/v1/ai/requests',
   targetLanguage,
-  onApplyBlock,
+  onApplyBlocks,
   onLocate,
   disabled,
 }: AiPanelBatchProps) {
@@ -63,6 +63,9 @@ export function AiPanelBatch({
   const [statusText, setStatusText] = useState('');
   const [error, setError] = useState('');
   const [applyingBlockId, setApplyingBlockId] = useState<string | null>(null);
+  const [appliedBatchIds, setAppliedBatchIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => setAppliedBatchIds(new Set()), [task?.id]);
 
   const runnerRef = useRef<LongTaskRunner<BatchPayload, BatchResult> | null>(null);
   const storeRef = useRef<IndexedDbTaskStore<BatchPayload, BatchResult> | null>(null);
@@ -90,7 +93,7 @@ export function AiPanelBatch({
             const restoredScope = (restored.scope as { scope?: string } | null)?.scope;
             if (restoredScope === 'page' || restoredScope === 'document') setScope(restoredScope);
             if (restored.baseRevision !== currentDocRef.current.revision) {
-              setStatusText('Document changed. Refresh to reuse unchanged translated blocks and re-translate changed blocks.');
+              setStatusText('Document changed. Refresh before requesting more translations; existing results may still be written to unchanged source blocks.');
             } else if (restored.sourceIds.length !== 1 && restored.batches.some(batch => !batch.payload.sourceId)) {
               setStatusText('Previous task has no per-block source mapping. Reset to start a new task.');
             } else if (restored.status === 'completed') {
@@ -331,61 +334,50 @@ export function AiPanelBatch({
     }
   };
 
-  // 单块写入 PDF：必须先校验文档版本与当前原文未发生变动，并进行真实排版测量
-  const handleWriteBlock = async (batch: LongTaskBatch<BatchPayload, BatchResult>) => {
-    if (!task || !batch.result || applyingBlockId) return;
-    if (currentDocRef.current.id !== task.docId || currentDocRef.current.revision !== task.baseRevision) {
-      setError('Document revision has changed since translation was generated; cannot apply stale candidate.');
-      return;
-    }
-
-    setApplyingBlockId(batch.id);
+  const writeBlocks = async (batches: LongTaskBatch<BatchPayload, BatchResult>[]) => {
+    if (!task || disabled || applyingBlockId || busy || !batches.length) return;
+    const currentDocument = currentDocRef.current;
+    setApplyingBlockId(batches.length === 1 ? batches[0]!.id : 'all');
     setError('');
 
     try {
-      // 1. 验证当前文本块内容是否与生成译文时完全一致
-      const currentBlocks = await engine.extract({
-        docId: currentDocRef.current.id,
-        pageIds: [batch.payload.pageId],
-      });
-      const targetBlock = currentBlocks.find(b => b.id === batch.payload.blockId);
-      if (!targetBlock) {
-        throw new Error('Target text block no longer exists in current page');
+      if (currentDocument.id !== task.docId) throw new Error('Translation belongs to another document');
+      const revision = currentDocument.revision;
+      const pageBlocks = new Map<string, TextBlock[]>();
+      const commands: { pageId: string; blockId: string; range: [number, number]; text: string }[] = [];
+      for (const batch of batches) {
+        if (!batch.result || !currentDocument.pageOrder.includes(batch.payload.pageId)) {
+          throw new Error('The translated block no longer belongs to this document');
+        }
+        const sourceId = batchSourceId(task.sourceIds, batch.payload.sourceId);
+        if (!currentDocument.sourceIds.includes(sourceId)) throw new Error('Translated block source is no longer available');
+        let blocks = pageBlocks.get(batch.payload.pageId);
+        if (!blocks) {
+          blocks = await engine.extract({ docId: currentDocument.id, pageIds: [batch.payload.pageId] });
+          pageBlocks.set(batch.payload.pageId, blocks);
+        }
+        const target = blocks.find(block => block.id === batch.payload.blockId);
+        if (!target || batchSourceId(currentDocument.sourceIds, target.sourceId) !== sourceId ||
+            target.runs.map(run => run.text).join('') !== batch.payload.originalText) {
+          throw new Error('A translated block changed; refresh its translation before writing');
+        }
+        const layout = await engine.previewText({
+          docId: currentDocument.id, pageId: batch.payload.pageId, blockId: batch.payload.blockId,
+          range: batch.payload.range, text: batch.result.translatedText,
+        });
+        if (layout.overflow) throw new Error('A translated block overflows its text box; shorten it before writing');
+        commands.push({ pageId: batch.payload.pageId, blockId: batch.payload.blockId,
+          range: batch.payload.range, text: batch.result.translatedText });
       }
-      const currentBlockText = targetBlock.runs.map(r => r.text).join('');
-      if (currentBlockText !== batch.payload.originalText) {
-        throw new Error('Block text was edited after translation; range is invalid. Please re-translate.');
+      if (currentDocRef.current.id !== task.docId || currentDocRef.current.revision !== revision) {
+        throw new Error('Document changed while measuring translation; check the blocks again before writing');
       }
-
-      // 2. 真实排版测算
-      const layout = await engine.previewText({
-        docId: currentDocRef.current.id,
-        pageId: batch.payload.pageId,
-        blockId: batch.payload.blockId,
-        range: batch.payload.range,
-        text: batch.result.translatedText,
-      });
-
-      if (layout.overflow) {
-        throw new Error('Translated text overflows the text box; cannot apply directly. Please shorten translation or enlarge the box.');
-      }
-
-      // 3. 执行应用
-      if (currentDocRef.current.id !== task.docId || currentDocRef.current.revision !== task.baseRevision) {
-        throw new Error('Document changed while measuring translation; regenerate from the current revision');
-      }
-      await onApplyBlock(
-        batch.payload.pageId,
-        batch.payload.blockId,
-        batch.payload.range,
-        batch.result.translatedText,
-      );
+      await onApplyBlocks(commands);
+      setAppliedBatchIds(previous => new Set([...previous, ...batches.map(batch => batch.id)]));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to write translation to PDF');
     } finally {
-      if (isMountedRef.current) {
-        setApplyingBlockId(null);
-      }
+      if (isMountedRef.current) setApplyingBlockId(null);
     }
   };
 
@@ -484,13 +476,20 @@ export function AiPanelBatch({
       )}
 
       {error && <p role="alert" style={{ color: '#ff623d' }}>{error}</p>}
-      {staleTask && <p role="alert">Previous translation belongs to an older revision. Refresh to reuse unchanged blocks; old results cannot be written.</p>}
+      {staleTask && <p role="status">Document revision changed. Refresh before requesting more translations; completed blocks can still be written if their source and original text are unchanged.</p>}
       {missingBatchSource && <p role="alert">Per-block source mapping is missing; reset to start a new task.</p>}
       {statusText && <p style={{ fontSize: '10px', color: '#666' }}>{statusText}</p>}
 
       {task && task.batches.some(b => b.status === 'completed') && (
         <div style={{ display: 'grid', gap: '8px', maxHeight: '280px', overflowY: 'auto' }}>
-          <strong>Translated Blocks</strong>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong>Translated Blocks</strong>
+            <button type="button" onClick={() => void writeBlocks(task.batches.filter(batch => batch.status === 'completed' && batch.result && !appliedBatchIds.has(batch.id)))}
+              disabled={disabled || isRunning || applyingBlockId !== null || task.docId !== document.id ||
+                !task.batches.some(batch => batch.status === 'completed' && batch.result && !appliedBatchIds.has(batch.id))}>
+              Write remaining (one undo)
+            </button>
+          </div>
           {task.batches
             .filter(b => b.status === 'completed' && b.result)
             .map(batch => (
@@ -518,11 +517,11 @@ export function AiPanelBatch({
                     </button>
                     <button
                       type="button"
-                      onClick={() => void handleWriteBlock(batch)}
-                      disabled={disabled || staleTask || applyingBlockId === batch.id || isRunning}
+                      onClick={() => void writeBlocks([batch])}
+                      disabled={disabled || task.docId !== document.id || applyingBlockId !== null || isRunning || appliedBatchIds.has(batch.id)}
                       style={{ fontSize: '9px', padding: '1px 6px', fontWeight: 600 }}
                     >
-                      {applyingBlockId === batch.id ? 'Writing…' : 'Write to PDF'}
+                      {applyingBlockId === batch.id ? 'Writing…' : appliedBatchIds.has(batch.id) ? 'Applied' : 'Write to PDF'}
                     </button>
                   </div>
                 </div>

@@ -176,6 +176,18 @@ describe('restricted Anthropic agent proxy', () => {
     expect(oversizedImage.statusCode).toBe(400);
     expect(oversizedImage.json().error.message).toContain('Image attachment exceeds');
 
+    const multiImageOversized = await app.inject({
+      method: 'POST', url: '/api/agent/v1/messages',
+      payload: {
+        model: 'ignored', max_tokens: 32, messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.alloc(3).toString('base64') } },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.alloc(3).toString('base64') } },
+        ] }],
+      },
+    });
+    expect(multiImageOversized.statusCode).toBe(400);
+    expect(multiImageOversized.json().error.message).toContain('Total image attachments exceed');
+
     const serverTool = await app.inject({
       method: 'POST', url: '/api/agent/v1/messages',
       payload: {
@@ -265,5 +277,138 @@ describe('restricted Anthropic agent proxy', () => {
     expect(afterCancel.statusCode).toBe(200);
     expect(afterCancel.json()).toEqual({ input_tokens: 2 });
     expect(client.destroyed).toBe(true);
+  });
+
+  it('shares per-IP concurrency between web and desktop requests', async () => {
+    let unblockWeb: (() => void) | undefined;
+    let webStarted: (() => void) | undefined;
+    const webRunning = new Promise<void>(resolve => { webStarted = resolve; });
+    const webBlocker = new Promise<void>(resolve => { unblockWeb = resolve; });
+
+    const blockingProvider: ProviderAdapter = {
+      async generate(): Promise<ProviderResult> {
+        webStarted?.();
+        await webBlocker;
+        return {
+          text: JSON.stringify({ kind: 'textProposal', replacements: [{ targetEvidenceId: 'e1', text: 'new' }] }),
+          finishReason: 'STOP',
+          usage: null,
+        };
+      },
+      async *stream(): AsyncIterable<never> { throw new Error('not called'); },
+    };
+
+    const baseUrl = await mockServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end('{}');
+    });
+
+    const app = buildGateway({
+      config: config(baseUrl, { perIpInFlight: 1 }),
+      provider: blockingProvider,
+      apiKey: 'server-secret',
+      runtimeLogger: { write() {} },
+    });
+    apps.push(app);
+
+    const validWebRequest = {
+      protocolVersion: 1, requestId: 'r-1', feature: 'text.rewrite',
+      document: { id: 'd1', revision: 1 },
+      context: { scope: 'selection', evidence: [{ id: 'e1', docId: 'd1', revision: 1, pageId: 'p1', pageNumber: 1, blockId: 'b1', text: 'hi' }] },
+      instruction: 'rewrite', options: {},
+    };
+
+    const webPending = app.inject({ method: 'POST', url: '/api/v1/ai/requests', payload: validWebRequest });
+    await webRunning;
+
+    const desktopBlocked = await app.inject({
+      method: 'POST', url: '/api/agent/v1/messages/count_tokens',
+      payload: { model: 'ignored', messages: [{ role: 'user', content: 'test' }] },
+    });
+    expect(desktopBlocked.statusCode).toBe(429);
+    expect(desktopBlocked.json().error.type).toBe('rate_limit_error');
+
+    unblockWeb?.();
+    const webDone = await webPending;
+    expect(webDone.statusCode).toBe(200);
+
+    const desktopAfter = await app.inject({
+      method: 'POST', url: '/api/agent/v1/messages/count_tokens',
+      payload: { model: 'ignored', messages: [{ role: 'user', content: 'test' }] },
+    });
+    expect(desktopAfter.statusCode).toBe(200);
+
+    // Symmetrical test: desktop in flight blocks web request from same IP
+    let unblockDesktop: (() => void) | undefined;
+    let desktopStarted: (() => void) | undefined;
+    const desktopRunning = new Promise<void>(resolve => { desktopStarted = resolve; });
+    const desktopBlocker = new Promise<void>(resolve => { unblockDesktop = resolve; });
+
+    const server2 = await mockServer((_req, res) => {
+      desktopStarted?.();
+      void desktopBlocker.then(() => {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ input_tokens: 5 }));
+      });
+    });
+
+    const app2 = buildGateway({
+      config: config(server2, { perIpInFlight: 1 }),
+      provider: blockingProvider,
+      apiKey: 'server-secret',
+      runtimeLogger: { write() {} },
+    });
+    apps.push(app2);
+
+    const desktopPending = app2.inject({
+      method: 'POST', url: '/api/agent/v1/messages/count_tokens',
+      payload: { model: 'ignored', messages: [{ role: 'user', content: 'hold' }] },
+    });
+    await desktopRunning;
+
+    const webBlocked = await app2.inject({
+      method: 'POST', url: '/api/v1/ai/requests', payload: validWebRequest,
+    });
+    expect(webBlocked.statusCode).toBe(429);
+    expect(webBlocked.json().error.code).toBe('IP_CONCURRENCY_LIMIT');
+
+    unblockDesktop?.();
+    const desktopDone = await desktopPending;
+    expect(desktopDone.statusCode).toBe(200);
+
+    const webAfter = await app2.inject({
+      method: 'POST', url: '/api/v1/ai/requests', payload: validWebRequest,
+    });
+    expect(webAfter.statusCode).toBe(200);
+  });
+
+  it('enforces upstream response size limits for agent proxy', async () => {
+    const baseUrl = await mockServer((request, response) => {
+      if (request.url === '/v1/messages/count_tokens') {
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ input_tokens: 1, padding: 'x'.repeat(200) }));
+        return;
+      }
+      response.setHeader('content-type', 'text/event-stream');
+      response.write('event: message_start\ndata: ' + JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 1 } }, padding: 'x'.repeat(150) }) + '\n\n');
+    });
+
+    const app = appFor(baseUrl, { upstreamFrameBytes: 100, upstreamStreamBytes: 150 });
+
+    const countOversized = await app.inject({
+      method: 'POST', url: '/api/agent/v1/messages/count_tokens',
+      payload: { model: 'ignored', messages: [{ role: 'user', content: 'hello' }] },
+    });
+    expect(countOversized.statusCode).toBe(502);
+    expect(countOversized.json().error.message).toContain('Upstream response exceeded the service limit');
+
+    const streamOversized = await app.inject({
+      method: 'POST', url: '/api/agent/v1/messages',
+      payload: { model: 'ignored', max_tokens: 32, stream: true, messages: [{ role: 'user', content: 'hello' }] },
+    });
+    expect(streamOversized.statusCode).toBe(200);
+    expect(streamOversized.headers['content-type']).toContain('text/event-stream');
+    expect(streamOversized.body).toContain('event: error');
+    expect(streamOversized.body).toContain('Upstream response exceeded the service limit');
   });
 });

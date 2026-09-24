@@ -42,3 +42,13 @@ executable("pdf_editor_api_test") {
   ]
   configs += [ "//:pdfium_core_config" ]
 }
+
+executable("cff2_font_test") {
+  testonly = true
+  sources = [ "cff2_font_test.cc" ]
+  deps = [
+    ":pdf_editor_api",
+    "//:pdfium",
+  ]
+  configs += [ "//:pdfium_core_config" ]
+}

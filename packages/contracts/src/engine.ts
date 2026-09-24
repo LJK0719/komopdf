@@ -20,8 +20,10 @@ export type FormFieldInfo = {
 };
 export type OutlineEntry = { title: string; pageId: string | null; level: number };
 export type PdfAnnotationInfo = {
-  id: string; pageId: string; subtype: 'highlight' | 'text' | 'rectangle' | 'ink' | 'other';
+  id: string; pageId: string; subtype: 'highlight' | 'text' | 'rectangle' | 'ink' | 'link' | 'other';
   bounds: Rect; text: string; color: [number, number, number]; opacity: number;
+  targetPageId?: string | undefined;
+  targetTopPt?: number | undefined;
 };
 export type SourceObjectLocator = { pageId: string; containerPath: number[]; objectIndex: number };
 export type StyledTextRun = { text: string; style: TextStyle; sourceObjectIds: string[] };

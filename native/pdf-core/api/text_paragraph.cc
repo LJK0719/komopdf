@@ -43,6 +43,8 @@
 #include "hb-ot.h"
 #include "hb.h"
 #include "unicode/ubrk.h"
+#include "unicode/uchar.h"
+#include "unicode/uscript.h"
 #include "unicode/utypes.h"
 
 namespace pdf_editor {
@@ -112,6 +114,7 @@ class ScopedFont {
 struct LayoutLine {
   uint32_t start_utf16 = 0;
   uint32_t end_utf16 = 0;
+  bool soft_wrap = false;
   ShapedText shaped;
   std::vector<uint16_t> character_codes;
   float ascent = 0;
@@ -525,8 +528,128 @@ bool WrapParagraph(const std::vector<ParagraphFont>& fonts,
     if (chosen->width > request.width + kLayoutEpsilon) {
       *overflow = true;
     }
+    chosen->soft_wrap = chosen->end_utf16 < paragraph_end;
     line_start = chosen->end_utf16;
     lines->push_back(std::move(*chosen));
+  }
+  return true;
+}
+
+bool IsCjkCluster(const std::u16string& text, uint32_t start, uint32_t end) {
+  if (end != start + 1 || end > text.size()) return false;
+  UErrorCode status = U_ZERO_ERROR;
+  const auto script = uscript_getScript(static_cast<UChar32>(text[start]), &status);
+  return U_SUCCESS(status) && (script == USCRIPT_HAN || script == USCRIPT_HIRAGANA ||
+                               script == USCRIPT_KATAKANA || script == USCRIPT_HANGUL);
+}
+
+bool IsWordCluster(const std::u16string& text, uint32_t start, uint32_t end) {
+  if (start >= end || end > text.size()) return false;
+  const auto first = static_cast<UChar32>(text[start]);
+  return first < 0xd800 || first > 0xdfff ? u_isalnum(first) : false;
+}
+
+bool JustifyLines(const ParagraphRequest& request,
+                  const std::u16string& text,
+                  std::vector<LayoutLine>* lines,
+                  std::string* error_message) {
+  for (LayoutLine& line : *lines) {
+    for (const auto& run : line.shaped.visual_runs) {
+      if (run.direction != TextDirection::kLeftToRight) {
+        return Fail("Justification of right-to-left or mixed-direction lines is not supported.",
+                    error_message);
+      }
+    }
+    for (const auto& glyph : line.shaped.glyphs) {
+      if (glyph.y_advance != 0) {
+        return Fail("Vertical text cannot be justified as a horizontal paragraph.",
+                    error_message);
+      }
+    }
+    if (!line.soft_wrap || line.shaped.glyphs.empty()) continue;
+    auto& glyphs = line.shaped.glyphs;
+    const auto single_space = [&](const ShapedGlyph& glyph) {
+      const uint32_t start = line.start_utf16 + glyph.cluster.start;
+      return glyph.cluster.end == glyph.cluster.start + 1 &&
+             start < text.size() && text[start] == u' ';
+    };
+    // Soft-wrap spaces remain in ActualText, but contribute no visible advance
+    // beyond the last painted glyph on the justified line.
+    for (size_t index = glyphs.size(); index > 0 && single_space(glyphs[index - 1]); --index) {
+      glyphs[index - 1].x_advance = 0;
+    }
+    std::vector<size_t> word_gaps, cjk_gaps;
+    const auto has_word = [&](size_t index, bool backward) {
+      while (index < glyphs.size()) {
+        const uint32_t start = line.start_utf16 + glyphs[index].cluster.start;
+        const uint32_t end = line.start_utf16 + glyphs[index].cluster.end;
+        if (IsWordCluster(text, start, end)) return true;
+        if (end != start + 1 || start >= text.size() ||
+            !u_ispunct(static_cast<UChar32>(text[start]))) return false;
+        if (backward) {
+          if (index == 0) return false;
+          --index;
+        } else {
+          ++index;
+        }
+      }
+      return false;
+    };
+    for (size_t index = 0; index < glyphs.size(); ++index) {
+      const auto& glyph = glyphs[index];
+      const uint32_t start = line.start_utf16 + glyph.cluster.start;
+      const uint32_t end = line.start_utf16 + glyph.cluster.end;
+      if (single_space(glyph) && glyph.x_advance > 0 && index > 0 &&
+          index + 1 < glyphs.size() &&
+          has_word(index - 1, true) && has_word(index + 1, false)) {
+        word_gaps.push_back(index);
+      }
+      if (index + 1 < glyphs.size() &&
+          end == line.start_utf16 + glyphs[index + 1].cluster.start &&
+          IsCjkCluster(text, start, end) &&
+          IsCjkCluster(text, line.start_utf16 + glyphs[index + 1].cluster.start,
+                       line.start_utf16 + glyphs[index + 1].cluster.end)) {
+        cjk_gaps.push_back(index);
+      }
+    }
+    const auto& gaps = word_gaps.empty() ? cjk_gaps : word_gaps;
+    float pen = 0, minimum = 0, maximum = 0;
+    const auto measure = [&]() {
+      pen = minimum = maximum = 0;
+      for (const auto& glyph : glyphs) {
+        const float origin = pen + glyph.x_offset;
+        const float advance = pen + glyph.x_advance;
+        minimum = std::min({minimum, origin, advance});
+        maximum = std::max({maximum, origin, advance});
+        pen = advance;
+      }
+    };
+    measure();
+    const float extra = request.width - (maximum - minimum);
+    if (!std::isfinite(extra) || extra < -kLayoutEpsilon) {
+      return Fail("A justified line exceeds its text box.", error_message);
+    }
+    if (extra <= kLayoutEpsilon) {
+      line.min_x = minimum; line.max_x = maximum; line.width = maximum - minimum;
+      continue;
+    }
+    if (gaps.empty()) {
+      return Fail("The wrapped line has no safe inter-word or CJK spacing to justify.",
+                  error_message);
+    }
+    const float adjustment = extra / static_cast<float>(gaps.size());
+    if (!std::isfinite(adjustment)) {
+      return Fail("Justified glyph spacing exceeds the usable range.", error_message);
+    }
+    for (size_t index : gaps) glyphs[index].x_advance += adjustment;
+    measure();
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) ||
+        maximum - minimum > request.width + kLayoutEpsilon) {
+      return Fail("Justified glyph positions exceed the paragraph box.", error_message);
+    }
+    line.min_x = minimum;
+    line.max_x = maximum;
+    line.width = maximum - minimum;
   }
   return true;
 }
@@ -541,6 +664,8 @@ float AlignedX(ParagraphAlignment alignment,
       return (paragraph_width - line_width) / 2;
     case ParagraphAlignment::kRight:
       return paragraph_width - line_width;
+    case ParagraphAlignment::kJustify:
+      return 0;
   }
   return 0;
 }
@@ -1001,6 +1126,8 @@ const char* AlignmentName(ParagraphAlignment alignment) {
       return "Center";
     case ParagraphAlignment::kRight:
       return "Right";
+    case ParagraphAlignment::kJustify:
+      return "Justify";
   }
   return "Left";
 }
@@ -1226,6 +1353,13 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
                      whole_text.grapheme_boundaries, line_breaks, request,
                      &lines, &overflow, error_message)) {
     return false;
+  }
+
+  if (request.alignment == ParagraphAlignment::kJustify) {
+    if (request.direction == TextDirection::kRightToLeft) {
+      return Fail("Right-to-left paragraphs cannot be justified safely.", error_message);
+    }
+    if (!JustifyLines(request, whole_text.logical_text, &lines, error_message)) return false;
   }
 
   std::vector<std::vector<ShapedFontMapping>> mappings;

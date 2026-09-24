@@ -57,7 +57,10 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
     if (insert && input.lineHeight !== undefined) { flags |= 16; values[9] = input.lineHeight; }
     if (insert && input.alignment === 'center') flags |= 32;
     if (insert && input.alignment === 'right') flags |= 64;
-    if (insert && input.alignment === 'justify') throw new EngineError('UNSUPPORTED_CAPABILITY', 'Justified text is not supported by this layout engine yet');
+    if (insert && input.alignment === 'justify') {
+      if (!paragraph) throw new EngineError('UNSUPPORTED_CAPABILITY', 'Justification requires paragraph layout');
+      flags |= 32 | 64;
+    }
     if (!insert && input.underline !== undefined) { flags |= 32; values[5] = input.underline ? 1 : 0; }
     if (paragraph && input.underline) flags |= 2048;
     if (insert && (flags & 3) !== 3) throw new EngineError('INVALID_REQUEST', 'New text requires an explicit font and font size');

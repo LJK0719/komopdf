@@ -16,6 +16,7 @@ enum class ParagraphAlignment {
   kLeft,
   kCenter,
   kRight,
+  kJustify,
 };
 
 struct ParagraphColor {

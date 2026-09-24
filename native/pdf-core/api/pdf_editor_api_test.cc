@@ -1,18 +1,24 @@
 #include "pdf_editor_api.h"
 #include "native_file_path.h"
 #include "text_shaping.h"
+#include "core/fpdfapi/font/cpdf_font.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
+#include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_text.h"
 #include "public/fpdfview.h"
 
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <set>
 #include <string>
@@ -1131,6 +1137,56 @@ void TestOutlineNavigation() {
   Require(std::string(pde_describe_outline(doc)) == entries,
           "source bookmark stays attached to original page, not the duplicate");
   Require(pde_close(doc) == 1, "close outline fixture");
+}
+
+void TestLinkAnnotationNavigation() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << >> /Contents 5 0 R /Annots [ 7 0 R 8 0 R 9 0 R 10 0 R ] >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << >> /Contents 6 0 R >>",
+      Stream("q 1 0 0 rg 20 20 50 50 re f Q"),
+      Stream("q 0 0 1 rg 30 30 60 60 re f Q"),
+      // 7 0 obj: Direct internal Dest
+      "<< /Type /Annot /Subtype /Link /Rect [20 200 120 230] /Dest [4 0 R /Fit] >>",
+      // 8 0 obj: GoTo action Dest with XYZ location
+      "<< /Type /Annot /Subtype /Link /Rect [20 160 120 190] "
+      "/A << /S /GoTo /D [4 0 R /XYZ 15 250 1] >> >>",
+      // 9 0 obj: External URI link - must not provide targetPageId
+      "<< /Type /Annot /Subtype /Link /Rect [20 120 120 150] "
+      "/A << /S /URI /URI (https://example.com) >> >>",
+      // 10 0 obj: Broken Dest - non-existent target page
+      "<< /Type /Annot /Subtype /Link /Rect [20 80 120 110] /Dest [99 0 R /Fit] >>",
+  });
+
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "link-doc", "link-source", nullptr);
+  Require(doc != 0, "open PDF with link annotations");
+  const std::string page1_id = PageIdFromDescription(RequireResult(pde_describe_page(doc, 0), "page 1"));
+  const std::string page2_id = PageIdFromDescription(RequireResult(pde_describe_page(doc, 1), "page 2"));
+
+  const std::string annots = RequireResult(pde_describe_annotations(doc, 0), "describe link annotations on page 1");
+  Require(annots.find("\"subtype\":\"link\"") != std::string::npos, "link annotations have subtype link");
+  Require(annots.find("\"targetPageId\":\"" + page2_id + "\"") != std::string::npos, "valid link resolves to page 2 id");
+  Require(annots.find("\"targetTopPt\":") != std::string::npos, "link with XYZ provides precise targetTopPt");
+  Require(Count(annots, "\"targetPageId\":\"" + page2_id + "\"") == 2,
+          "exactly the two resolvable internal links have targetPageId; external and broken links do not");
+
+  // Duplicate page 2 and ensure link still points to original target page
+  const char* duplicate_pair[] = {page2_id.c_str(), "page2-copy"};
+  PdeEditCommand duplicate{};
+  duplicate.type = 12; duplicate.ids = duplicate_pair; duplicate.id_count = 2;
+  duplicate.target_id = page2_id.c_str();
+  Require(pde_apply_commands(doc, 0, "duplicate-page2", &duplicate, 1) != nullptr,
+          "duplicate target page without invalidating link resolution");
+
+  const std::string annots_after_duplicate = RequireResult(pde_describe_annotations(doc, 0), "describe annotations after page duplicate");
+  Require(Count(annots_after_duplicate, "\"targetPageId\":\"" + page2_id + "\"") == 2,
+          "link targetPageId stays stably attached to original page ID after page edits");
+
+  Require(pde_close(doc) == 1, "close link navigation fixture");
 }
 
 void TestP1bTransactions() {
@@ -2371,6 +2427,55 @@ void InspectStyledPdfGlyphs(const std::vector<uint8_t>& saved) {
   FPDF_CloseDocument(pdf);
 }
 
+struct ParagraphGlyphSnapshot {
+  std::vector<float> last_origin_x;
+  std::u16string copied;
+};
+
+ParagraphGlyphSnapshot InspectParagraphGlyphs(const std::vector<uint8_t>& saved) {
+  FPDF_DOCUMENT pdf = FPDF_LoadMemDocument(saved.data(), static_cast<int>(saved.size()), nullptr);
+  Require(pdf != nullptr, "reopen justified PDF with PDFium");
+  FPDF_PAGE page = FPDF_LoadPage(pdf, 0);
+  Require(page != nullptr, "load justified PDF page");
+  FPDF_TEXTPAGE text_page = FPDFText_LoadPage(page);
+  Require(text_page != nullptr, "load justified PDF glyphs");
+  const int count = FPDFText_CountChars(text_page);
+  std::vector<unsigned short> unicode(static_cast<size_t>(count) + 1);
+  const int copied = FPDFText_GetText(text_page, 0, count, unicode.data());
+  Require(copied > 1, "copy saved PDF glyphs through ToUnicode/ActualText");
+  ParagraphGlyphSnapshot snapshot;
+  snapshot.copied.assign(unicode.begin(), unicode.begin() + copied - 1);
+  std::map<int, float> row_maxima;
+  for (int outer = 0; outer < FPDFPage_CountObjects(page); ++outer) {
+    FPDF_PAGEOBJECT form = FPDFPage_GetObject(page, outer);
+    if (FPDFPageObj_GetType(form) != FPDF_PAGEOBJ_FORM) continue;
+    for (int inner = 0; inner < FPDFFormObj_CountObjects(form); ++inner) {
+      FPDF_PAGEOBJECT glyph = FPDFFormObj_GetObject(form, static_cast<unsigned long>(inner));
+      if (FPDFPageObj_GetType(glyph) != FPDF_PAGEOBJ_TEXT) continue;
+      const FPDF_FONT handle = FPDFTextObj_GetFont(glyph);
+      CPDF_Font* font = handle ? CPDFFontFromFPDFFont(handle) : nullptr;
+      Require(font && font->IsEmbedded() &&
+              font->GetFontDict()->GetStreamFor("ToUnicode") &&
+              FPDFPageObj_CountMarks(glyph) == 1,
+              "saved justified glyph uses embedded font, ToUnicode and direct ActualText mark");
+      FS_MATRIX matrix{};
+      Require(FPDFPageObj_GetMatrix(glyph, &matrix), "inspect actual saved glyph origin");
+      const int baseline = static_cast<int>(std::lround(matrix.f * 100));
+      const auto found = row_maxima.find(baseline);
+      if (found == row_maxima.end() || matrix.e > found->second) {
+        row_maxima[baseline] = matrix.e;
+      }
+    }
+  }
+  for (auto row = row_maxima.rbegin(); row != row_maxima.rend(); ++row) {
+    snapshot.last_origin_x.push_back(row->second);
+  }
+  FPDFText_ClosePage(text_page);
+  FPDF_ClosePage(page);
+  FPDF_CloseDocument(pdf);
+  return snapshot;
+}
+
 void TestParagraphRangeStyles(const std::string& base_font,
                               const std::string& latin_font,
                               const std::vector<uint8_t>& latin_bytes) {
@@ -2568,6 +2673,225 @@ void TestParagraphRangeStyles(const std::string& base_font,
   Require(pde_close(bidi_doc) == 1 && pde_close(whole) == 1 &&
           pde_close(removed) == 1 && pde_close(reopened) == 1 &&
           pde_close(doc) == 1, "close paragraph range fixtures");
+}
+
+void TestParagraphJustify(const std::string& latin_font,
+                          const std::string& cjk_font) {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << >> /Contents 4 0 R >>",
+      Stream("q Q"),
+  });
+  const auto open = [&](const char* id) {
+    return pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+                           static_cast<uint32_t>(pdf.size()), id, id, nullptr);
+  };
+  const uint32_t doc = open("justify-doc"), control = open("left-doc");
+  Require(doc != 0 && control != 0, "open justified and left-aligned PDF controls");
+  const std::string page = PageIdFromDescription(pde_describe_page(doc, 0));
+  const std::string control_page = PageIdFromDescription(pde_describe_page(control, 0));
+  const char* text = "One two three four five six seven eight nine ten";
+  PdeEditCommand insert{};
+  insert.type = 3; insert.page_id = page.c_str(); insert.target_id = "justify-paragraph";
+  insert.text_utf8 = text; insert.font_id = latin_font.c_str();
+  insert.flags = 3 | 16 | 32 | 64 | 1024;
+  insert.values[0] = 20; insert.values[1] = 20; insert.values[2] = 150;
+  insert.values[3] = 180; insert.values[4] = 16; insert.values[9] = 1.35;
+  const std::string before = pde_describe_page(doc, 0);
+  PdeEditCommand nonparagraph = insert;
+  nonparagraph.flags &= ~1024U;
+  Require(pde_preview_commands(doc, 0, &nonparagraph, 1) == nullptr &&
+          std::string(pde_error_code()) == "INVALID_REQUEST" &&
+          std::string(pde_describe_page(doc, 0)) == before,
+          "ordinary inserted text still rejects simultaneous center/right flags");
+  const std::string preview = RequireResult(pde_preview_text_insert(doc, 0, &insert),
+                                            "preview justified text line boxes");
+  const size_t preview_lines = Count(preview, "\"range\":[");
+  Require(preview.find("\"overflow\":false") != std::string::npos &&
+          preview_lines >= 2 &&
+          std::abs(JsonNumberAfter(preview, "\"width\":", 1) - 150) < 0.05 &&
+          JsonNumberAfter(preview, "\"width\":", preview_lines) < 149.9 &&
+          std::string(pde_describe_page(doc, 0)) == before,
+          "preview expands soft lines to box width but leaves the final line natural");
+  PdeEditCommand left = insert;
+  left.page_id = control_page.c_str(); left.flags = 3 | 16 | 1024;
+  Require(pde_apply_commands(control, 0, "insert-left-control", &left, 1) != nullptr &&
+          pde_apply_commands(doc, 0, "insert-justify", &insert, 1) != nullptr,
+          "apply identical left and justified text to separate real PDFs");
+  const auto pixels = RenderPixels(doc, 0, 400, 300);
+  Require(pixels != RenderPixels(control, 0, 400, 300),
+          "justification changes real printed glyph positions");
+  Require(pde_undo(doc) != nullptr && std::string(pde_describe_page(doc, 0)) == before &&
+          pde_redo(doc) != nullptr && RenderPixels(doc, 0, 400, 300) == pixels,
+          "justify preview and undo/redo restore paragraph geometry and appearance");
+  Require(pde_save_memory(control) != nullptr, "save left glyph control PDF");
+  const std::vector<uint8_t> left_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  Require(pde_save_memory(doc) != nullptr, "save justified glyph PDF");
+  const std::vector<uint8_t> justified_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const std::string raw(justified_bytes.begin(), justified_bytes.end());
+  Require(raw.find("/Justify") != std::string::npos &&
+          raw.find("/ToUnicode") != std::string::npos,
+          "saved Form records justify alignment and a real glyph ToUnicode mapping");
+  const auto left_glyphs = InspectParagraphGlyphs(left_bytes);
+  const auto justified_glyphs = InspectParagraphGlyphs(justified_bytes);
+  Require(justified_glyphs.copied.find(u"One two three") != std::u16string::npos &&
+          justified_glyphs.copied.find(u"nine ten") != std::u16string::npos &&
+          justified_glyphs.last_origin_x.size() == left_glyphs.last_origin_x.size() &&
+          justified_glyphs.last_origin_x.size() >= 2 &&
+          justified_glyphs.last_origin_x.front() > left_glyphs.last_origin_x.front() + 5 &&
+          std::abs(justified_glyphs.last_origin_x.back() -
+                   left_glyphs.last_origin_x.back()) < 0.01f,
+          "non-final actual PDF glyph origins reach farther right; final line stays natural");
+  const uint32_t reopened = pde_open_memory(justified_bytes.data(),
+      static_cast<uint32_t>(justified_bytes.size()), "justify-reopened", "justify-saved", nullptr);
+  Require(reopened != 0 && RenderPixels(reopened, 0, 400, 300) == pixels,
+          "saved justified PDF reopens with identical real glyph placement");
+  const std::string block = TextBlockIds(pde_describe_page(reopened, 0)).front();
+  PdeTextEdit replace{0, block.c_str(), 0, 3, "Two", nullptr};
+  Require(pde_apply_text(reopened, 0, "justify-reflow", &replace, 1) != nullptr &&
+          pde_save_memory(reopened) != nullptr,
+          "reflow reopened paragraph while preserving justify metadata");
+  const std::vector<uint8_t> edited(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  Require(std::string(edited.begin(), edited.end()).find("/Justify") != std::string::npos &&
+          InspectParagraphGlyphs(edited).copied.find(u"Two two three") != std::u16string::npos,
+          "paragraph replacement retains real justify alignment and Unicode text");
+  PdeEditCommand unsafe = insert;
+  unsafe.text_utf8 = "abc \xD7\x90\xD7\x91\xD7\x92 xyz";
+  unsafe.target_id = "rtl-justify";
+  Require(pde_preview_commands(doc, 3, &unsafe, 1) == nullptr &&
+          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY",
+          "mixed RTL line is explicitly rejected for justify");
+  unsafe.text_utf8 = "Supercalifragilisticexpialidocious";
+  Require(pde_preview_commands(doc, 3, &unsafe, 1) == nullptr &&
+          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY",
+          "a long word without safe word or CJK gaps is not stretched between letters");
+  PdeEditCommand punctuation = insert;
+  punctuation.target_id = "punctuation-justify";
+  punctuation.text_utf8 = "Hello, world example";
+  punctuation.values[2] = 115;
+  Require(pde_preview_commands(doc, 3, &punctuation, 1) != nullptr,
+          "safe word spacing across punctuation remains eligible for justification");
+  const std::string tagged = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R >>",
+      Stream("q Q"),
+      "<< /Type /StructTreeRoot /K [] >>",
+  });
+  const uint32_t tagged_doc = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(tagged.data()), static_cast<uint32_t>(tagged.size()),
+      "tagged-justify", "tagged-justify-source", nullptr);
+  Require(tagged_doc != 0, "open tagged PDF to test structural guard");
+  const std::string tagged_page = PageIdFromDescription(pde_describe_page(tagged_doc, 0));
+  unsafe = insert; unsafe.page_id = tagged_page.c_str();
+  Require(pde_preview_commands(tagged_doc, 0, &unsafe, 1) == nullptr &&
+          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY",
+          "justification rejects tagged PDFs rather than claiming structure support");
+  Require(pde_close(tagged_doc) == 1, "close tagged justification fixture");
+  const auto saved_glyphs = [&](uint32_t handle) {
+    Require(pde_save_memory(handle) != nullptr, "save comparison paragraph");
+    return InspectParagraphGlyphs(std::vector<uint8_t>(
+        pde_binary_data(), pde_binary_data() + pde_binary_size()));
+  };
+  const uint32_t cjk_doc = open("cjk-justify"), cjk_left_doc = open("cjk-left");
+  Require(cjk_doc != 0 && cjk_left_doc != 0, "open CJK spacing fixtures");
+  const std::string cjk_page = PageIdFromDescription(pde_describe_page(cjk_doc, 0));
+  const std::string cjk_left_page = PageIdFromDescription(pde_describe_page(cjk_left_doc, 0));
+  insert.page_id = cjk_page.c_str(); insert.font_id = cjk_font.c_str();
+  insert.text_utf8 = "中文测试中文测试中文测试中文测试";
+  insert.values[2] = 125; insert.values[4] = 18;
+  left.page_id = cjk_left_page.c_str(); left.font_id = cjk_font.c_str();
+  left.text_utf8 = insert.text_utf8; left.values[2] = 125; left.values[4] = 18;
+  Require(pde_apply_commands(cjk_doc, 0, "cjk-justify", &insert, 1) != nullptr &&
+          pde_apply_commands(cjk_left_doc, 0, "cjk-left", &left, 1) != nullptr,
+          "justify non-final CJK lines by safe ideograph gaps without word spaces");
+  const auto cjk_just = saved_glyphs(cjk_doc);
+  const auto cjk_left = saved_glyphs(cjk_left_doc);
+  Require(cjk_just.copied.find(u"中文测试") != std::u16string::npos &&
+          cjk_just.last_origin_x.size() == cjk_left.last_origin_x.size() &&
+          cjk_just.last_origin_x.size() >= 2 &&
+          cjk_just.last_origin_x.front() > cjk_left.last_origin_x.front() + 5 &&
+          std::abs(cjk_just.last_origin_x.back() - cjk_left.last_origin_x.back()) < 0.01f,
+          "CJK non-final glyph positions expand while final line retains natural spacing");
+  const uint32_t hard_doc = open("hard-justify"), hard_left_doc = open("hard-left");
+  Require(hard_doc != 0 && hard_left_doc != 0, "open hard-break spacing fixtures");
+  const std::string hard_page = PageIdFromDescription(pde_describe_page(hard_doc, 0));
+  const std::string hard_left_page = PageIdFromDescription(pde_describe_page(hard_left_doc, 0));
+  insert.page_id = hard_page.c_str(); insert.font_id = latin_font.c_str();
+  insert.text_utf8 = "One two\nThree four five six seven eight nine ten";
+  insert.values[2] = 150; insert.values[4] = 16;
+  left.page_id = hard_left_page.c_str(); left.font_id = latin_font.c_str();
+  left.text_utf8 = insert.text_utf8; left.values[2] = 150; left.values[4] = 16;
+  Require(pde_apply_commands(hard_doc, 0, "hard-justify", &insert, 1) != nullptr &&
+          pde_apply_commands(hard_left_doc, 0, "hard-left", &left, 1) != nullptr,
+          "insert paragraph containing both explicit break and soft wraps");
+  const auto hard_just = saved_glyphs(hard_doc);
+  const auto hard_left = saved_glyphs(hard_left_doc);
+  Require(hard_just.last_origin_x.size() == hard_left.last_origin_x.size() &&
+          hard_just.last_origin_x.size() >= 3 &&
+          std::abs(hard_just.last_origin_x.front() - hard_left.last_origin_x.front()) < 0.01f &&
+          hard_just.last_origin_x[1] > hard_left.last_origin_x[1] + 5,
+          "explicit-break final line stays natural; following soft-wrapped line expands");
+  const std::string source_pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] "
+      "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("BT /F1 16 Tf 20 250 Td (Old first) Tj ET "
+             "BT /F1 16 Tf 20 225 Td (Old second) Tj ET"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const uint32_t reflow_doc = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(source_pdf.data()),
+      static_cast<uint32_t>(source_pdf.size()), "justify-reflow", "justify-reflow-source", nullptr);
+  Require(reflow_doc != 0, "open two-source reflow justification fixture");
+  const std::string source_page = pde_describe_page(reflow_doc, 0);
+  const std::string reflow_page_id = PageIdFromDescription(source_page);
+  const auto ids = TextBlockIds(source_page);
+  Require(ids.size() == 2, "reflow fixture has adjacent original text objects");
+  const char* from[] = {ids[0].c_str(), ids[1].c_str()};
+  PdeEditCommand reflow = insert;
+  reflow.type = 20; reflow.page_id = reflow_page_id.c_str();
+  reflow.ids = from; reflow.id_count = 2; reflow.font_id = latin_font.c_str();
+  reflow.text_utf8 = text; reflow.values[2] = 150; reflow.values[4] = 16;
+  Require(pde_preview_text_insert(reflow_doc, 0, &reflow) != nullptr &&
+          pde_apply_commands(reflow_doc, 0, "justify-source-reflow", &reflow, 1) != nullptr,
+          "type-20 reflow accepts 32|64 only with the logical paragraph flag");
+  const auto reflow_glyphs = saved_glyphs(reflow_doc);
+  Require(reflow_glyphs.last_origin_x.size() >= 2 &&
+          reflow_glyphs.copied.find(u"Old first") == std::u16string::npos &&
+          reflow_glyphs.copied.find(u"One two three") != std::u16string::npos,
+          "real PDF replaces source glyphs with justified ToUnicode text");
+  Require(pde_undo(reflow_doc) != nullptr &&
+          std::string(pde_describe_page(reflow_doc, 0)) == source_page,
+          "undo reflow restores the original text objects and identities");
+  const std::string vertical_pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] "
+      "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("BT /F1 16 Tf 0 1 -1 0 20 250 Tm (Vertical) Tj ET"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const uint32_t vertical_doc = pde_open_memory(
+      reinterpret_cast<const uint8_t*>(vertical_pdf.data()),
+      static_cast<uint32_t>(vertical_pdf.size()), "vertical-justify", "vertical-source", nullptr);
+  Require(vertical_doc != 0, "open rotated source text fixture");
+  const std::string vertical_page = pde_describe_page(vertical_doc, 0);
+  const std::string vertical_page_id = PageIdFromDescription(vertical_page);
+  const std::string vertical_id = TextBlockIds(vertical_page).front();
+  const char* vertical_ids[] = {vertical_id.c_str()};
+  reflow.page_id = vertical_page_id.c_str(); reflow.ids = vertical_ids; reflow.id_count = 1;
+  Require(pde_preview_commands(vertical_doc, 0, &reflow, 1) == nullptr &&
+          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY",
+          "justified reflow rejects rotated or vertical source text");
+  Require(pde_close(vertical_doc) == 1 && pde_close(reflow_doc) == 1 &&
+          pde_close(hard_left_doc) == 1 &&
+          pde_close(hard_doc) == 1 && pde_close(cjk_left_doc) == 1 &&
+          pde_close(cjk_doc) == 1 && pde_close(reopened) == 1 &&
+          pde_close(doc) == 1 && pde_close(control) == 1,
+          "close justified glyph fixtures");
 }
 
 void TestParagraphEditing(const std::string& font_id) {
@@ -3018,6 +3342,7 @@ void TestFontRuntime(const FontTestOptions& options) {
               otf_info.find("\"editableEmbedding\":true") != std::string::npos,
           "register OpenType CFF face info");
   TestParagraphRangeStyles("runtime-otf", "runtime-ttf", ttf);
+  TestParagraphJustify("runtime-ttf", "runtime-otf");
   TestParagraphEditing("runtime-otf");
   TestOcrSearchLayer("runtime-otf");
   TestOcrSearchLayer("runtime-otf", true);
@@ -3252,6 +3577,7 @@ int main(int argc, char** argv) {
   TestObjectGroup();
   TestPageCrop();
   TestOutlineNavigation();
+  TestLinkAnnotationNavigation();
   TestExtractPagesMemory();
   TestExtractPageAnnotationBacklink();
   TestExtractPagesUnsupported();

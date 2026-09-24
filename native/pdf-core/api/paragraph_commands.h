@@ -86,7 +86,8 @@ bool ReadParagraphStyles(
   if (color && color->size() == 3) request->color =
       {color->GetFloatAt(0), color->GetFloatAt(1), color->GetFloatAt(2)};
   const auto align = info->GetNameFor("Alignment");
-  request->alignment = align == "Center" ? pdf_editor::ParagraphAlignment::kCenter :
+  request->alignment = align == "Justify" ? pdf_editor::ParagraphAlignment::kJustify :
+      align == "Center" ? pdf_editor::ParagraphAlignment::kCenter :
       align == "Right" ? pdf_editor::ParagraphAlignment::kRight : pdf_editor::ParagraphAlignment::kLeft;
   const auto direction = info->GetNameFor("Direction");
   request->direction = direction == "RTL" ? pdf_editor::TextDirection::kRightToLeft :
@@ -221,6 +222,14 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   size_t page_index = 0;
   ScopedPage page(nullptr);
   if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) return false;
+  const bool justify = (command.flags & (32U | 64U)) == (32U | 64U);
+  const auto* checked_page = CPDFPageFromFPDFPage(page.get());
+  if (justify && (!checked_page || checked_page->GetDict()->KeyExist("StructParents") ||
+                  checked_page->GetDict()->KeyExist("StructParent") ||
+                  checked_page->GetDocument()->GetRoot()->KeyExist("StructTreeRoot"))) {
+    SetError("UNSUPPORTED_CAPABILITY", "Justification cannot rewrite tagged page structure.");
+    return false;
+  }
   const auto font = resources.find(command.font_id);
   if (font == resources.end()) { SetError("INVALID_REQUEST", "Select a registered paragraph font."); return false; }
   pdf_editor::ParagraphRequest request;
@@ -231,8 +240,11 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   if (command.flags & 8U) request.letter_spacing = static_cast<float>(command.values[8]);
   if (command.flags & 16U) request.line_height = static_cast<float>(command.values[9]);
   request.underline = (command.flags & kTextUnderlineFlag) != 0;
-  request.alignment = (command.flags & 32U) ? pdf_editor::ParagraphAlignment::kCenter :
-      (command.flags & 64U) ? pdf_editor::ParagraphAlignment::kRight : pdf_editor::ParagraphAlignment::kLeft;
+  request.alignment = (command.flags & (32U | 64U)) == (32U | 64U)
+      ? pdf_editor::ParagraphAlignment::kJustify
+      : (command.flags & 32U) ? pdf_editor::ParagraphAlignment::kCenter
+      : (command.flags & 64U) ? pdf_editor::ParagraphAlignment::kRight
+                              : pdf_editor::ParagraphAlignment::kLeft;
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, *font->second, request, &paragraph)) return false;
   std::unique_ptr<CPDF_PageObject> object(CPDFPageObjectFromFPDFPageObject(paragraph.object));
@@ -261,6 +273,20 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
     for (const auto& block_id : command.ids) {
       ObjectTarget target;
       if (!FindObjectTarget(page.get(), &metadata->pages[page_index], block_id, true, &target)) return false;
+      if (justify && FPDFPageObj_CountMarks(target.object) != 0) {
+        SetError("UNSUPPORTED_CAPABILITY", "Justification cannot replace marked source objects.");
+        return false;
+      }
+      if (justify && FPDFPageObj_GetType(target.object) == FPDF_PAGEOBJ_TEXT) {
+        FS_MATRIX matrix{};
+        auto* source_text = CPDFPageObjectFromFPDFPageObject(target.object)->AsText();
+        if (!FPDFPageObj_GetMatrix(target.object, &matrix) || !source_text ||
+            std::abs(matrix.b) > 0.001f || std::abs(matrix.c) > 0.001f ||
+            source_text->CalcPositionData(1).y != 0) {
+          SetError("UNSUPPORTED_CAPABILITY", "Vertical or rotated source text cannot be justified safely.");
+          return false;
+        }
+      }
       if (target.path.size() != 1 || IsOcrTextObject(target.object) ||
           (!ParagraphMetadata(target.object) &&
            (FPDFPageObj_GetType(target.object) != FPDF_PAGEOBJ_TEXT || !HasSupportedTextMarks(target.object)))) {

@@ -168,6 +168,16 @@ std::string SerializeAnnotations(const Document& document, size_t page_index) {
   Matrix to_page, to_pdf;
   if (!page.get() || !GetPageMatrices(page.get(), &to_page, &to_pdf)) return {};
   const auto annots = CPDFPageFromFPDFPage(page.get())->GetDict()->GetArrayFor("Annots");
+
+  std::map<int, FPDF_LINK> enumerated_links;
+  int link_pos = 0;
+  FPDF_LINK enumerated_link = nullptr;
+  while (FPDFLink_Enumerate(page.get(), &link_pos, &enumerated_link)) {
+    if (link_pos > 0 && enumerated_link) {
+      enumerated_links[link_pos - 1] = enumerated_link;
+    }
+  }
+
   std::string result = "[";
   bool first = true;
   if (annots) for (size_t index = 0; index < annots->size(); ++index) {
@@ -175,7 +185,41 @@ std::string SerializeAnnotations(const Document& document, size_t page_index) {
     if (!annot || annot->GetNameFor("Subtype") == "Widget") continue;
     const ByteString subtype = annot->GetNameFor("Subtype");
     const char* kind = subtype == "Highlight" ? "highlight" : subtype == "Text" ? "text" :
-        subtype == "Square" ? "rectangle" : subtype == "Ink" ? "ink" : "other";
+        subtype == "Square" ? "rectangle" : subtype == "Ink" ? "ink" :
+        subtype == "Link" ? "link" : "other";
+    std::string target_page_id;
+    std::optional<double> target_top_pt;
+    if (subtype == "Link") {
+      auto link_it = enumerated_links.find(static_cast<int>(index));
+      if (link_it != enumerated_links.end()) {
+        FPDF_LINK link = link_it->second;
+        FPDF_DEST destination = FPDFLink_GetDest(document.pdf, link);
+        if (!destination) {
+          const FPDF_ACTION action = FPDFLink_GetAction(link);
+          if (action && FPDFAction_GetType(action) == PDFACTION_GOTO) {
+            destination = FPDFAction_GetDest(document.pdf, action);
+          }
+        }
+        if (destination) {
+          const int target_page_index = FPDFDest_GetDestPageIndex(document.pdf, destination);
+          if (target_page_index >= 0 && static_cast<size_t>(target_page_index) < document.metadata.pages.size()) {
+            target_page_id = document.metadata.pages[target_page_index].id;
+            FPDF_BOOL has_x = 0, has_y = 0, has_zoom = 0;
+            FS_FLOAT x = 0, y = 0, zoom = 0;
+            if (FPDFDest_GetLocationInPage(destination, &has_x, &has_y, &has_zoom, &x, &y, &zoom) && has_x && has_y) {
+              ScopedPage target_page(FPDF_LoadPage(document.pdf, target_page_index));
+              Matrix target_to_page, target_to_pdf;
+              if (target_page.get() && GetPageMatrices(target_page.get(), &target_to_page, &target_to_pdf)) {
+                const auto point = target_to_page.Apply(x, y);
+                if (std::isfinite(point[1])) {
+                  target_top_pt = point[1];
+                }
+              }
+            }
+          }
+        }
+      }
+    }
     const ByteString stored = annot->GetUnicodeTextFor("NM").ToUTF8();
     const std::string id = stored.IsEmpty() ?
         "a:" + std::to_string(document.session_id) + ":" + std::to_string(annot->GetObjNum()) + ":" +
@@ -203,6 +247,14 @@ std::string SerializeAnnotations(const Document& document, size_t page_index) {
     }
     result += "],\"opacity\":";
     AppendJsonNumber(&result, annot->KeyExist("CA") ? annot->GetFloatFor("CA") : 1);
+    if (!target_page_id.empty()) {
+      result += ",\"targetPageId\":";
+      AppendJsonString(&result, target_page_id);
+      if (target_top_pt.has_value()) {
+        result += ",\"targetTopPt\":";
+        AppendJsonNumber(&result, *target_top_pt);
+      }
+    }
     result += '}';
   }
   result += ']';
