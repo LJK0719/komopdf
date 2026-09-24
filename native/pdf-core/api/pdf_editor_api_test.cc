@@ -1,6 +1,7 @@
 #include "pdf_editor_api.h"
 #include "native_file_path.h"
 #include "text_shaping.h"
+#include "tagged_content.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -919,15 +920,23 @@ void TestNestedTextReplacement() {
                                                  "describe marked Form");
   const auto marked_ids = TextBlockIds(marked_page);
   Require(marked_ids.size() == 1 &&
-              marked_page.find("\"editability\":\"geometry-only\"") !=
-                  std::string::npos,
-          "marked Form text is not advertised for editing");
+              marked_page.find("\"editability\":\"geometry-only\"") == std::string::npos,
+          "locally mapped ActualText inside a Form is editable");
   PdeTextEdit marked_edit{0, marked_ids[0].c_str(), 0, 8, "CHANGED", nullptr};
-  Require(pde_preview_text(marked_doc, &marked_edit) == nullptr &&
-              std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
-              pde_document_revision(marked_doc) == 0,
-          "marked nested text rewrite is explicitly rejected");
-  Require(pde_close(marked_doc) == 1, "close marked Form fixture");
+  Require(pde_preview_text(marked_doc, &marked_edit) != nullptr &&
+              pde_document_revision(marked_doc) == 0 &&
+              std::string(pde_describe_page(marked_doc, 0)) == marked_page,
+          "marked nested text preview leaves active glyphs and ActualText unchanged");
+  Require(pde_apply_text(marked_doc, 0, "replace-marked-form-text", &marked_edit, 1) != nullptr &&
+              std::string(pde_describe_page(marked_doc, 0)).find("CHANGED") != std::string::npos &&
+              pde_save_memory(marked_doc) != nullptr,
+          "marked nested replacement updates ActualText and saves");
+  const std::vector<uint8_t> marked_saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t marked_reopen = pde_open_memory(marked_saved.data(), static_cast<uint32_t>(marked_saved.size()),
+      "marked-form-reopened", "marked-form-saved", nullptr);
+  Require(marked_reopen != 0 && std::string(pde_describe_page(marked_reopen, 0)).find("CHANGED") != std::string::npos,
+          "the changed marked Form text survives save/reopen");
+  Require(pde_close(marked_reopen) == 1 && pde_close(marked_doc) == 1, "close marked Form fixture");
 }
 
 void TestNestedSharedFormTextTransformAndEdit() {
@@ -3206,9 +3215,9 @@ void TestParagraphJustify(const std::string& latin_font,
   Require(tagged_doc != 0, "open tagged PDF to test structural guard");
   const std::string tagged_page = PageIdFromDescription(pde_describe_page(tagged_doc, 0));
   unsafe = insert; unsafe.page_id = tagged_page.c_str();
-  Require(pde_preview_commands(tagged_doc, 0, &unsafe, 1) == nullptr &&
-          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY",
-          "justification rejects tagged PDFs rather than claiming structure support");
+  Require(pde_preview_commands(tagged_doc, 0, &unsafe, 1) != nullptr &&
+          pde_document_revision(tagged_doc) == 0,
+          "justified paragraph preview can create valid structure on a tagged page without committing");
   Require(pde_close(tagged_doc) == 1, "close tagged justification fixture");
   const auto saved_glyphs = [&](uint32_t handle) {
     Require(pde_save_memory(handle) != nullptr, "save comparison paragraph");
@@ -3807,6 +3816,7 @@ void TestFontRuntime(const FontTestOptions& options) {
 #include "shading_test.h"
 #include "page_structure_test.h"
 #include "tagged_page_test.h"
+#include "tagged_content_test.h"
 
 }  // namespace
 
@@ -4020,7 +4030,11 @@ int main(int argc, char** argv) {
   RunAllPageStructureTests();
   TestTaggedPageStructureRoundtrip();
   TestFontRuntime(font_options);
-  if (font_options.enabled()) TestShapedFormText("runtime-otf");
+  if (font_options.enabled()) {
+    TestShapedFormText("runtime-otf");
+    TestSupplementaryParagraphCopy("runtime-otf");
+    RunTaggedContentTests("runtime-ttf");
+  }
   pde_shutdown();
   Require(pde_binary_size() == 0, "shutdown releases result buffers");
   std::puts(

@@ -42,13 +42,11 @@ bool ApplyObjectsGroup(const Document& document,
     ObjectTarget target;
     if (!FindObjectTarget(page.get(), &metadata->pages[page_index], id,
                           false, &target)) return false;
-    if ((FPDFPageObj_CountMarks(target.object) != 0 &&
-         !(FPDFPageObj_GetType(target.object) == FPDF_PAGEOBJ_TEXT && HasSupportedTextMarks(target.object))) ||
-        (!member_path.empty() &&
-         (target.path.size() != member_path.size() ||
-          !std::equal(target.path.begin(), target.path.end() - 1, member_path.begin())))) {
+    if (!member_path.empty() &&
+        (target.path.size() != member_path.size() ||
+         !std::equal(target.path.begin(), target.path.end() - 1, member_path.begin()))) {
       SetError("UNSUPPORTED_CAPABILITY",
-               "Group members must be unmarked siblings in the same drawing container.");
+               "Group members must be siblings in the same drawing container.");
       return false;
     }
     member_path = target.path;
@@ -69,6 +67,31 @@ bool ApplyObjectsGroup(const Document& document,
     if (indices[index] != indices[index - 1] + 1) {
       SetError("UNSUPPORTED_CAPABILITY", "Group members must be adjacent in PDF drawing order.");
       return false;
+    }
+  }
+  bool tagged_members = false;
+  std::set<int> whole_nonlocal_scopes;
+  const std::set<size_t> selected(indices.begin(), indices.end());
+  for (size_t index : indices) {
+    auto* source = source_holder->GetPageObjectByIndex(index);
+    const int mcid = source->GetContentMarks()->GetMarkedContentID();
+    if (mcid >= 0) {
+      tagged_members = true;
+      if (!pdf_editor::tagged::ElementFor(native_document, source_holder, mcid)) {
+        SetError("UNSUPPORTED_CAPABILITY", "The selected tagged scope has no ParentTree entry.");
+        return false;
+      }
+      if (!pdf_editor::tagged::CanEditTextScope(source_holder, source)) {
+        bool complete = true;
+        for (size_t sibling = 0; sibling < source_holder->GetPageObjectCount(); ++sibling)
+          if (source_holder->GetPageObjectByIndex(sibling)->GetContentMarks()->GetMarkedContentID() == mcid &&
+              !selected.contains(sibling)) complete = false;
+        if (!complete) {
+          SetError("UNSUPPORTED_CAPABILITY", "Non-local ActualText cannot be partitioned across a group boundary.");
+          return false;
+        }
+        whole_nonlocal_scopes.insert(mcid);
+      }
     }
   }
   CPDF_PageObjectHolder* holder = nullptr;
@@ -94,6 +117,15 @@ bool ApplyObjectsGroup(const Document& document,
     right = std::max(right, x1); top = std::max(top, y1);
     auto clone = CloneTopLevelObject(source);
     if (!clone) return false;
+    const int mcid = source->GetContentMarks()->GetMarkedContentID();
+    if (whole_nonlocal_scopes.contains(mcid)) {
+      clone->SetContentMarks(*source->GetContentMarks());
+    } else if (mcid >= 0 && source->AsText() &&
+               pdf_editor::tagged::ActualMark(source) &&
+               pdf_editor::tagged::HasOtherMember(holder, mcid, source)) {
+      pdf_editor::tagged::SetLocalActualText(clone.get(),
+                                             pdf_editor::tagged::GlyphText(source->AsText()));
+    }
     objects.push_back(std::move(clone));
     children.push_back((*siblings)[index]);
   }
@@ -128,7 +160,40 @@ bool ApplyObjectsGroup(const Document& document,
   auto form = std::make_unique<CPDF_Form>(native_document,
                                          holder->GetMutablePageResources(), std::move(stream));
   form->ParseContent();
-  for (auto& object : objects) form->AppendPageObject(std::move(object));
+  if (tagged_members) {
+    const int key = pdf_editor::tagged::AllocateParentKey(native_document);
+    form->GetMutableDict()->SetNewFor<CPDF_Number>("StructParents", key);
+    pdf_editor::tagged::SetParentEntry(native_document, key, pdfium::MakeRetain<CPDF_Array>());
+  }
+  std::set<int> copied_whole_scopes;
+  std::set<int> source_mcids;
+  for (size_t index = 0; index < objects.size(); ++index) {
+    auto* original = holder->GetPageObjectByIndex(indices[index]);
+    auto* copy = objects[index].get();
+    if (original->AsForm() && !pdf_editor::tagged::DuplicateFormTree(
+            native_document, native_page, original->AsForm()->form(), copy->AsForm()->form())) {
+      SetError("UNSUPPORTED_CAPABILITY", "A nested tagged Form could not be grouped.");
+      return false;
+    }
+    const int mcid = original->GetContentMarks()->GetMarkedContentID();
+    if (mcid >= 0) {
+      source_mcids.insert(mcid);
+      if (whole_nonlocal_scopes.contains(mcid)) {
+        if (copied_whole_scopes.insert(mcid).second) {
+          auto element = pdf_editor::tagged::ElementFor(native_document, holder, mcid);
+          auto array = pdf_editor::tagged::ParentArray(native_document,
+                                                        pdf_editor::tagged::ParentKey(form.get()));
+          pdf_editor::tagged::SetParentAt(array.Get(), native_document, mcid, element.Get());
+          pdf_editor::tagged::AddMcr(native_document, native_page, element.Get(), mcid, form.get());
+        }
+      } else if (!pdf_editor::tagged::DuplicateMcid(native_document, native_page,
+                                                      holder, form.get(), original, copy)) {
+        SetError("UNSUPPORTED_CAPABILITY", "A group's marked content could not be rebound.");
+        return false;
+      }
+    }
+    form->AppendPageObject(std::move(objects[index]));
+  }
   CPDF_PageContentGenerator(form.get()).GenerateFormContentForEditing(form.get());
   auto grouped = std::make_unique<CPDF_FormObject>(
       CPDF_PageObject::kNoContentStream, std::move(form), CFX_Matrix());
@@ -147,6 +212,56 @@ bool ApplyObjectsGroup(const Document& document,
     SetUnexpectedError(); return false;
   }
   siblings->insert(siblings->begin() + static_cast<std::ptrdiff_t>(indices.front()), std::move(identity));
+  if (tagged_members) {
+    for (int mcid : source_mcids) {
+      CPDF_PageObject* before = nullptr;
+      CPDF_PageObject* after = nullptr;
+      std::vector<CPDF_PageObject*> trailing;
+      for (size_t index = 0; index < holder->GetPageObjectCount(); ++index) {
+        auto* other = holder->GetPageObjectByIndex(index);
+        if (other->GetContentMarks()->GetMarkedContentID() != mcid) continue;
+        if (index < indices.front()) before = before ? before : other;
+        else if (index > indices.front()) {
+          after = after ? after : other;
+          trailing.push_back(other);
+        }
+      }
+      if (!before && !after) {
+        pdf_editor::tagged::ClearMcid(native_document, holder, mcid,
+            holder->IsPage() ? 0 : static_cast<CPDF_Form*>(holder)->GetStream()->GetObjNum());
+        continue;
+      }
+      if (before && after) {
+        CPDF_PageObject* first = nullptr;
+        for (auto* trailing_object : trailing) {
+          const bool rebound = first
+              ? pdf_editor::tagged::ShareReboundMcid(trailing_object, mcid, first)
+              : pdf_editor::tagged::DuplicateMcid(native_document, native_page,
+                  holder, holder, trailing_object, trailing_object);
+          if (!rebound) {
+            SetError("UNSUPPORTED_CAPABILITY", "The remaining marked scope could not be split.");
+            return false;
+          }
+          if (!first) first = trailing_object;
+        }
+      }
+      if (!before) {
+        auto element = pdf_editor::tagged::ElementFor(native_document, holder, mcid);
+        auto* grouped_form = holder->GetPageObjectByIndex(indices.front())->AsForm()->form();
+        pdf_editor::tagged::MoveFormMcrsBeforeOriginal(element.Get(), mcid,
+            holder->IsPage() ? 0 : static_cast<CPDF_Form*>(holder)->GetStream()->GetObjNum(),
+            grouped_form->GetStream()->GetObjNum());
+      }
+      for (auto* survivor : {before, after}) {
+        if (survivor && survivor->AsText() && pdf_editor::tagged::ActualMark(survivor) &&
+            !pdf_editor::tagged::RefreshAllTextScopes(holder, survivor,
+                pdf_editor::tagged::GlyphText(survivor->AsText()))) {
+          SetError("UNSUPPORTED_CAPABILITY", "The remaining ActualText could not be updated.");
+          return false;
+        }
+      }
+    }
+  }
   return GenerateGroupChange(page.get(), &metadata->pages[page_index], member_path, prepared);
 }
 
@@ -173,10 +288,44 @@ bool ApplyObjectsUngroup(FPDF_DOCUMENT pdf,
     SetUnexpectedError(); return false;
   }
   const CFX_Matrix placement = group->form_matrix();
+  auto* native_doc = CPDFDocumentFromFPDFDocument(pdf);
+  auto* native_page = CPDFPageFromFPDFPage(page.get());
+  auto* source_form = group->form();
+  const int group_parent = pdf_editor::tagged::ParentKey(source_form);
+  std::map<int, CPDF_PageObject*> first_member;
+  std::map<int, int> moved_mcids;
+  std::set<int> relocated;
   std::vector<std::unique_ptr<CPDF_PageObject>> objects;
-  for (const auto& child : *group->form()) {
+  for (const auto& child : *source_form) {
     auto clone = CloneTopLevelObject(child.get());
     if (!clone) return false;
+    if (child->AsForm() && !pdf_editor::tagged::DuplicateFormTree(native_doc, native_page,
+        child->AsForm()->form(), clone->AsForm()->form())) {
+      SetError("UNSUPPORTED_CAPABILITY", "A nested Form's structure cannot be ungrouped.");
+      return false;
+    }
+    const int mcid = child->GetContentMarks()->GetMarkedContentID();
+    if (mcid >= 0) {
+      if (group_parent < 0) {
+        SetError("UNSUPPORTED_CAPABILITY", "The tagged group's ParentTree entry is missing.");
+        return false;
+      }
+      if (first_member.contains(mcid)) {
+        if (!pdf_editor::tagged::ShareReboundMcid(clone.get(), mcid, first_member.at(mcid))) {
+          SetError("UNSUPPORTED_CAPABILITY", "The tagged group's shared scope cannot be restored.");
+          return false;
+        }
+      } else {
+        if (!pdf_editor::tagged::DuplicateMcid(native_doc, native_page,
+              source_form, holder, child.get(), clone.get())) {
+          SetError("UNSUPPORTED_CAPABILITY", "The group's structure cannot be returned to its page.");
+          return false;
+        }
+        first_member[mcid] = clone.get();
+      }
+      relocated.insert(mcid);
+      moved_mcids[mcid] = clone->GetContentMarks()->GetMarkedContentID();
+    }
     clone->Transform(placement);
     clone->TransformClipPath(placement);
     clone->SetContentStream(CPDF_PageObject::kNoContentStream);
@@ -184,6 +333,17 @@ bool ApplyObjectsUngroup(FPDF_DOCUMENT pdf,
     objects.push_back(std::move(clone));
   }
   const size_t group_index = target.path.back();
+  for (const auto& child : *source_form)
+    if (child->AsForm()) pdf_editor::tagged::DropOwnedFormTags(native_doc, child->AsForm()->form());
+  for (int mcid : relocated) {
+    auto element = pdf_editor::tagged::ElementFor(native_doc, source_form, mcid);
+    pdf_editor::tagged::MoveReplacementMcrBeforeForm(element.Get(), mcid,
+        source_form->GetStream()->GetObjNum(), moved_mcids.at(mcid),
+        holder->IsPage() ? 0 : static_cast<CPDF_Form*>(holder)->GetStream()->GetObjNum());
+    pdf_editor::tagged::ClearMcid(native_doc, source_form, mcid,
+                                   source_form->GetStream()->GetObjNum());
+  }
+  if (group_parent >= 0) pdf_editor::tagged::RemoveParentEntry(native_doc, group_parent);
   if (!holder->RemovePageObject(group)) { SetUnexpectedError(); return false; }
   siblings->erase(siblings->begin() + static_cast<std::ptrdiff_t>(group_index));
   for (size_t index = 0; index < objects.size(); ++index) {

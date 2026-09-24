@@ -16,7 +16,10 @@ FONT_PATCH = ROOT / 'native/vendor/patches/0003-opentype-font-subsetting.patch'
 FONT_CODE_PATCH = ROOT / 'native/vendor/patches/0004-font-code-mapping.patch'
 TEXT_SPACING_PATCH = ROOT / 'native/vendor/patches/0005-text-spacing.patch'
 SHADING_PATCH = ROOT / 'native/vendor/patches/0006-shading-serialization.patch'
-CORE_PATCHES = (FONT_PATCH, FONT_CODE_PATCH, TEXT_SPACING_PATCH, SHADING_PATCH)
+ACTUALTEXT_PATCH = ROOT / 'native/vendor/patches/0007-actualtext-scope.patch'
+ACTUALTEXT_UTF16_PATCH = ROOT / 'native/vendor/patches/0008-actualtext-utf16.patch'
+SUPPLEMENTARY_PATCH = ROOT / 'native/vendor/patches/0009-supplementary-text-indices.patch'
+CORE_PATCHES = (FONT_PATCH, FONT_CODE_PATCH, TEXT_SPACING_PATCH, SHADING_PATCH, ACTUALTEXT_PATCH, ACTUALTEXT_UTF16_PATCH, SUPPLEMENTARY_PATCH)
 spec = importlib.util.spec_from_file_location('native_build', Path(__file__).with_name('prepare-native.py'))
 native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
@@ -53,6 +56,9 @@ def copy_api(source):
         ('core/fpdfapi/edit/cpdf_fontsubsetter.cpp', 'candidate.char_code_to_width[width_code]', FONT_CODE_PATCH),
         ('core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp', 'Preserve spacing when regenerating or splitting a text object.', TEXT_SPACING_PATCH),
         ('core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp', 'void CPDF_PageContentGenerator::ProcessShading(', SHADING_PATCH),
+        ('core/fpdftext/cpdf_textpage.cpp', 'The lexical ActualText scope is independent of inner decoration marks.', ACTUALTEXT_PATCH),
+        ('core/fpdftext/cpdf_textpage.cpp', 'WideString TextPageUtf16Units(', ACTUALTEXT_UTF16_PATCH),
+        ('core/fpdftext/cpdf_textpage.cpp', 'Keep unmarked ToUnicode text in the same UTF-16 index space as ActualText.', SUPPLEMENTARY_PATCH),
     ):
         if marker not in (source / relative).read_text(encoding='utf-8'):
             subprocess.run(['git', 'apply', '--check', str(patch)], cwd=source, check=True)

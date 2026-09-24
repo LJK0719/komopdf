@@ -1,0 +1,26 @@
+--- a/core/fpdftext/cpdf_textpage.cpp
++++ b/core/fpdftext/cpdf_textpage.cpp
+@@ -112,6 +112,13 @@
+ }
+ 
+ DataVector<wchar_t> GetUnicodeNormalization(wchar_t wch) {
++  // Keep unmarked ToUnicode text in the same UTF-16 index space as ActualText.
++  if (static_cast<uint32_t>(wch) >= 0x10000 &&
++      static_cast<uint32_t>(wch) <= 0x10ffff) {
++    const uint32_t scalar = static_cast<uint32_t>(wch) - 0x10000;
++    return {static_cast<wchar_t>(0xd800 + (scalar >> 10)),
++            static_cast<wchar_t>(0xdc00 + (scalar & 0x3ff))};
++  }
+   wch = wch & 0xFFFF;
+   wchar_t wFind = kUnicodeDataNormalization[wch];
+   if (!wFind) {
+@@ -806,7 +813,8 @@
+   }
+ 
+   DataVector<wchar_t> normalized;
+-  if (wChar >= 0xFB00 && wChar <= 0xFB06) {
++  if ((wChar >= 0xFB00 && wChar <= 0xFB06) ||
++      static_cast<uint32_t>(wChar) >= 0x10000) {
+     normalized = GetUnicodeNormalization(wChar);
+   }
+   if (normalized.empty()) {

@@ -84,6 +84,7 @@
 #include "unicode/ubrk.h"
 #include "unicode/uchar.h"
 #include "page_structure.h"
+#include "tagged_content.h"
 
 namespace {
 
@@ -1076,6 +1077,10 @@ bool HasObjectMark(FPDF_PAGEOBJECT object, const char* name) {
 }
 
 bool SetTextUnderline(FPDF_PAGEOBJECT object, bool enabled) {
+  // Lexical MCID marks may share a mark-list backing store across siblings.
+  auto* native = CPDFPageObjectFromFPDFPageObject(object);
+  auto isolated_marks = native->GetContentMarks()->Clone();
+  native->SetContentMarks(*isolated_marks);
   for (int index = FPDFPageObj_CountMarks(object) - 1; index >= 0; --index) {
     auto mark = FPDFPageObj_GetMark(object, index);
     const auto* item = CPDFContentMarkItemFromFPDFPageObjectMark(mark);
@@ -1200,15 +1205,15 @@ bool IsOcrTextObject(FPDF_PAGEOBJECT object) {
 }
 
 bool HasSupportedTextMarks(FPDF_PAGEOBJECT object) {
-  bool has_actual_text = false;
-  for (int index = 0; index < FPDFPageObj_CountMarks(object); ++index) {
+  const int count = FPDFPageObj_CountMarks(object);
+  if (count < 0) return false;
+  for (int index = 0; index < count; ++index) {
     const auto* item = CPDFContentMarkItemFromFPDFPageObjectMark(FPDFPageObj_GetMark(object, index));
     if (!item) return false;
-    if (item->GetName() == "KomoUnderline" && !item->GetParam()) continue;
     const auto params = item->GetParam();
-    if (has_actual_text || item->GetParamType() != CPDF_ContentMarkItem::kDirectDict ||
-        !params || params->size() != 1 || !params->KeyExist("ActualText")) return false;
-    has_actual_text = true;
+    if (params && params->KeyExist("MCID") &&
+        (params->GetIntegerFor("MCID", -1) < 0 || !params->GetNumberFor("MCID")))
+      return false;
   }
   return true;
 }
@@ -1551,6 +1556,16 @@ bool IdentityTreeHasCollision(const ObjectIdentity& identity,
                      });
 }
 
+CPDF_PageObjectHolder* HolderAtPath(FPDF_PAGE page,
+                                    const std::vector<size_t>& path) {
+  CPDF_PageObjectHolder* holder = CPDFPageFromFPDFPage(page);
+  for (size_t depth = 0; holder && depth + 1 < path.size(); ++depth) {
+    auto* ancestor = holder->GetPageObjectByIndex(path[depth]);
+    holder = ancestor && ancestor->AsForm() ? ancestor->AsForm()->form() : nullptr;
+  }
+  return holder;
+}
+
 FPDF_PAGEOBJECT ObjectAtPath(FPDF_PAGE page, const std::vector<size_t>& path) {
   if (path.empty() ||
       path[0] > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -1567,30 +1582,24 @@ FPDF_PAGEOBJECT ObjectAtPath(FPDF_PAGE page, const std::vector<size_t>& path) {
   return object;
 }
 
-// The Form stream can be isolated, but rewriting tagged/marked content would
-// also require updating the document's structure tree and marked-content scopes.
 template <typename Index>
 bool NestedFormPathIsStructurallyEditable(FPDF_PAGE page,
                                       FPDF_PAGEOBJECT leaf,
                                       const std::vector<Index>& path) {
-  if (!page || !leaf || path.size() < 2 ||
-      (FPDFPageObj_CountMarks(leaf) != 0 &&
-       !(FPDFPageObj_CountMarks(leaf) == 1 && HasObjectMark(leaf, "KomoUnderline"))))
-    return false;
-  const auto* native_page = CPDFPageFromFPDFPage(page);
-  if (!native_page) return false;
-  FPDF_PAGEOBJECT ancestor = FPDFPage_GetObject(page, static_cast<int>(path[0]));
-  for (size_t depth = 1; depth < path.size(); ++depth) {
-    const auto* native = CPDFPageObjectFromFPDFPageObject(ancestor);
-    const auto* form = native ? native->AsForm() : nullptr;
-    if (!form || FPDFPageObj_CountMarks(ancestor) != 0 ||
-        form->form()->GetDict()->KeyExist("StructParents") ||
-        form->form()->GetDict()->KeyExist("StructParent"))
-      return false;
-    if (depth + 1 < path.size())
-      ancestor = FPDFFormObj_GetObject(ancestor, static_cast<unsigned long>(path[depth]));
+  if (!page || !leaf || path.size() < 2) return false;
+  auto* holder = static_cast<CPDF_PageObjectHolder*>(CPDFPageFromFPDFPage(page));
+  auto* doc = holder ? holder->GetDocument() : nullptr;
+  for (size_t depth = 0; doc && depth + 1 < path.size(); ++depth) {
+    auto* object = holder->GetPageObjectByIndex(path[depth]);
+    auto* form = object ? object->AsForm() : nullptr;
+    if (!form || form->form()->GetDict()->KeyExist("StructParent")) return false;
+    const int mcid = object->GetContentMarks()->GetMarkedContentID();
+    if (mcid >= 0 && !pdf_editor::tagged::ElementFor(doc, holder, mcid)) return false;
+    holder = form->form();
   }
-  return true;
+  auto* native_leaf = CPDFPageObjectFromFPDFPageObject(leaf);
+  const int mcid = native_leaf->GetContentMarks()->GetMarkedContentID();
+  return mcid < 0 || !!pdf_editor::tagged::ElementFor(doc, holder, mcid);
 }
 
 struct EnumerationContext {
@@ -1708,6 +1717,14 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
     context->text_blocks->push_back(std::move(block));
   } else if (type == FPDF_PAGEOBJ_TEXT) {
     std::string text = GetTextForObject(object, context->text_page);
+    auto* holder = HolderAtPath(context->page, std::vector<size_t>(path.begin(), path.end()));
+    auto* native_text = CPDFPageObjectFromFPDFPageObject(object)->AsText();
+    if (holder && native_text && pdf_editor::tagged::ActualMark(native_text) &&
+        pdf_editor::tagged::CanEditTextScope(holder, native_text)) {
+      size_t members = 0;
+      pdf_editor::tagged::ScopeGlyphText(holder, pdf_editor::tagged::ActualMark(native_text), &members);
+      if (members > 1) text = pdf_editor::tagged::GlyphText(native_text);
+    }
     if (!text.empty()) {
       if (identity.text_block_id.empty()) {
         throw std::runtime_error("PDF text identity is unavailable");
@@ -2417,12 +2434,29 @@ bool PrepareObjectHolder(
              "Nested marked/tagged Form objects cannot be rewritten safely.");
     return false;
   }
+  std::vector<int> parent_keys;
+  std::vector<uint32_t> stream_nums;
+  CPDF_PageObjectHolder* ancestor_holder = native_page;
+  for (size_t depth = 0; depth + 1 < object_path.size(); ++depth) {
+    auto* form = ancestor_holder->GetPageObjectByIndex(object_path[depth])->AsForm()->form();
+    parent_keys.push_back(pdf_editor::tagged::ParentKey(form));
+    stream_nums.push_back(form->GetStream()->GetObjNum());
+    ancestor_holder = form;
+  }
   auto prepared = pdf_editor::PrepareFormPath(
       native_page,
       std::span<const size_t>(object_path.data(), object_path.size() - 1));
   if (!prepared || prepared->ancestors.empty()) {
     SetError("CORE_UNAVAILABLE", "The nested Form object path is invalid.");
     return false;
+  }
+  auto* document = native_page->GetDocument();
+  for (size_t depth = 0; depth < prepared->ancestors.size(); ++depth) {
+    if (!pdf_editor::tagged::IsolateFormParents(document, native_page,
+        prepared->ancestors[depth]->form(), parent_keys[depth], stream_nums[depth])) {
+      SetError("UNSUPPORTED_CAPABILITY", "The nested Form's tagged content cannot be isolated.");
+      return false;
+    }
   }
   *holder = prepared->ancestors.back()->form();
   *prepared_path = std::move(prepared);
@@ -2852,13 +2886,21 @@ bool FitOcrReplacement(CPDF_TextObject* text, CPDF_TextObject* original) {
   return true;
 }
 
-bool GetObjectText(FPDF_PAGE page, FPDF_PAGEOBJECT object, std::string* text) {
+bool GetObjectText(FPDF_PAGE page, FPDF_PAGEOBJECT object, std::string* text,
+                   CPDF_PageObjectHolder* holder = nullptr) {
   ScopedTextPage text_page(FPDFText_LoadPage(page));
   if (!text_page.get()) {
     SetError("CORE_UNAVAILABLE", "The PDF text layer could not be loaded.");
     return false;
   }
   *text = GetTextForObject(object, text_page.get());
+  auto* native_text = CPDFPageObjectFromFPDFPageObject(object)->AsText();
+  if (holder && native_text && pdf_editor::tagged::ActualMark(native_text) &&
+      pdf_editor::tagged::CanEditTextScope(holder, native_text)) {
+    size_t members = 0;
+    pdf_editor::tagged::ScopeGlyphText(holder, pdf_editor::tagged::ActualMark(native_text), &members);
+    if (members > 1) *text = pdf_editor::tagged::GlyphText(native_text);
+  }
   return true;
 }
 
@@ -2982,8 +3024,16 @@ bool ApplyTextReplace(
   }
   const bool search_layer = IsOcrTextObject(target.object);
   auto original_ocr = search_layer ? native_text->Clone() : nullptr;
+  auto* source_holder = HolderAtPath(page.get(), target.path);
+  auto* native_doc = CPDFDocumentFromFPDFDocument(pdf);
+  const int source_mcid = native_text->GetContentMarks()->GetMarkedContentID();
+  if (!source_holder || !pdf_editor::tagged::CanEditTextScope(source_holder, native_text) ||
+      (source_mcid >= 0 && !pdf_editor::tagged::ElementFor(native_doc, source_holder, source_mcid))) {
+    SetError("UNSUPPORTED_CAPABILITY", "The text's shared marked-content scope cannot be mapped locally.");
+    return false;
+  }
   std::string current_text;
-  if (!GetObjectText(page.get(), target.object, &current_text)) {
+  if (!GetObjectText(page.get(), target.object, &current_text, source_holder)) {
     return false;
   }
   if (!ValidateSingleLineText(command.text, "Replacement text")) return false;
@@ -3023,10 +3073,27 @@ bool ApplyTextReplace(
   if (updated_text.empty()) {
     // PDFium drops empty text on reparsing, so delete the object and its
     // identity together rather than retaining an unsavable empty placeholder.
+    auto* owning_holder = nested ? holder : source_holder;
+    const bool other_member = source_mcid >= 0 &&
+        pdf_editor::tagged::HasOtherMember(owning_holder, source_mcid, native_object);
     if (nested ? !holder->RemovePageObject(native_object)
                : !FPDFPage_RemoveObject(page.get(), target.object)) {
       SetError("CORE_UNAVAILABLE", "The cleared text object could not be removed.");
       return false;
+    }
+    if (source_mcid >= 0 && !other_member)
+      pdf_editor::tagged::ClearMcid(native_doc, owning_holder, source_mcid,
+          nested ? static_cast<CPDF_Form*>(owning_holder)->GetStream()->GetObjNum() : 0);
+    if (other_member && actual_text_mark) {
+      for (const auto& child : *owning_holder) {
+        if (child->GetContentMarks()->GetMarkedContentID() == source_mcid &&
+            pdf_editor::tagged::ActualMark(child.get())) {
+          const auto remaining = pdf_editor::tagged::GlyphText(child->AsText());
+          if (!pdf_editor::tagged::RefreshAllTextScopes(owning_holder, child.get(), remaining))
+            return false;
+          break;
+        }
+      }
     }
     if (!nested) FPDFPageObj_Destroy(target.object);
     auto* identities = &metadata->pages[page_index].objects;
@@ -3055,7 +3122,8 @@ bool ApplyTextReplace(
     return false;
   }
   if (!SetTextContent(target.object, updated_text) ||
-      !SetActualText(target.object, actual_text_mark, updated_text) ||
+      !pdf_editor::tagged::RefreshAllTextScopes(nested ? holder : source_holder,
+                                                 native_object, updated_text) ||
       (search_layer && !FitOcrReplacement(native_text, original_ocr.get()) &&
        !FitTextToBounds(page.get(), target.object, original_bounds)) ||
       (nested && !NestedObjectFitsForm(page.get(), target.object, target.path)) ||
@@ -3176,6 +3244,20 @@ bool ApplyTextRangeStyle(
   }
   FPDF_PAGEOBJECTMARK original_mark = nullptr;
   if (!GetSupportedActualTextMark(target.object, &original_mark)) return false;
+  auto* source_holder = HolderAtPath(page, target.path);
+  auto* tagged_doc = CPDFDocumentFromFPDFDocument(pdf);
+  const int original_mcid = text->GetContentMarks()->GetMarkedContentID();
+  if (!source_holder || !pdf_editor::tagged::CanEditTextScope(source_holder, text) ||
+      (original_mcid >= 0 && !pdf_editor::tagged::ElementFor(tagged_doc, source_holder, original_mcid))) {
+    SetError("UNSUPPORTED_CAPABILITY", "The formatted text's tagged scope cannot be mapped.");
+    return false;
+  }
+  size_t scope_members = 0;
+  if (original_mark)
+    pdf_editor::tagged::ScopeGlyphText(source_holder,
+        CPDFContentMarkItemFromFPDFPageObjectMark(original_mark), &scope_members);
+  const bool shared_scope = scope_members > 1 ||
+      (original_mcid >= 0 && pdf_editor::tagged::HasOtherMember(source_holder, original_mcid, text));
 
   // Locate PDF character boundaries through the actual ToUnicode map. A
   // ligature or marked-text alias is never split by guessing glyph indices.
@@ -3220,6 +3302,11 @@ bool ApplyTextRangeStyle(
       std::to_string(command.transaction_index) + ":" + original_identity.id;
   std::vector<std::unique_ptr<CPDF_TextObject>> pieces;
   std::vector<ObjectIdentity> piece_ids;
+  std::vector<int> added_mcids;
+  auto parent_array = original_mcid >= 0 && !shared_scope
+      ? pdf_editor::tagged::ParentArray(tagged_doc, pdf_editor::tagged::ParentKey(parent_holder))
+      : nullptr;
+  int next_mcid = parent_array ? pdf_editor::tagged::NextMcid(parent_holder, parent_array.Get()) : 0;
   std::set<std::string> generated_ids;
   float suffix_shift = 0;
   const std::array<std::pair<size_t, size_t>, 3> slices = {
@@ -3228,6 +3315,8 @@ bool ApplyTextRangeStyle(
     const auto [begin, finish] = slices[part];
     if (begin == finish) continue;
     auto piece = text->Clone();
+    auto marks = text->GetContentMarks()->Clone();
+    piece->SetContentMarks(*marks);  // Own the mark list, share lexical mark items.
     std::vector<ByteString> strings;
     std::vector<float> kernings;
     for (size_t index = begin; index < finish; ++index) {
@@ -3243,19 +3332,10 @@ bool ApplyTextRangeStyle(
         decoded.byte_offsets[offsets[begin]],
         decoded.byte_offsets[offsets[finish]] - decoded.byte_offsets[offsets[begin]]);
     FPDF_PAGEOBJECT handle = FPDFPageObjectFromCPDFPageObject(piece.get());
-    if (original_mark) {
-      const auto* original_item = CPDFContentMarkItemFromFPDFPageObjectMark(original_mark);
-      // A cloned mark may share its dictionary; detach before updating ActualText.
-      int mark_index = 0;
-      while (mark_index < FPDFPageObj_CountMarks(target.object) &&
-             FPDFPageObj_GetMark(target.object, mark_index) != original_mark) ++mark_index;
-      if (!FPDFPageObj_RemoveMark(handle, FPDFPageObj_GetMark(handle, mark_index))) return false;
-      FPDF_PAGEOBJECTMARK mark = FPDFPageObj_AddMark(handle, original_item->GetName().c_str());
-      auto* item = CPDFContentMarkItemFromFPDFPageObjectMark(mark);
-      if (!item) return false;
-      item->SetDirectDict(ToDictionary(original_item->GetParam()->Clone()));
-      if (!SetActualText(handle, mark, piece_text)) return false;
-    }
+    // Only a one-object scope can be split into independent /ActualText spans.
+    // Multiple objects in one lexical scope keep the same mark across pieces.
+    if (original_mark && !shared_scope)
+      pdf_editor::tagged::SetLocalActualText(piece.get(), piece_text);
     if (part == 1) {
       const float old_advance = piece->CalcPositionData(1).x;
       if (!ApplyStyleToText(pdf, piece.get(), piece_text, command, resources, font_cache)) {
@@ -3286,6 +3366,13 @@ bool ApplyTextRangeStyle(
         return false;
       }
     }
+    if (original_mcid >= 0 && !shared_scope && !pieces.empty()) {
+      if (!parent_array || !pdf_editor::tagged::RebindMcid(piece.get(), original_mcid, next_mcid)) {
+        SetError("UNSUPPORTED_CAPABILITY", "The styled run cannot be assigned a new MCID.");
+        return false;
+      }
+      added_mcids.push_back(next_mcid++);
+    }
     pieces.push_back(std::move(piece));
     piece_ids.push_back(std::move(identity));
   }
@@ -3302,6 +3389,15 @@ bool ApplyTextRangeStyle(
     }
   }
   identities.insert(identities.begin() + object_index, piece_ids.begin(), piece_ids.end());
+  if (!added_mcids.empty()) {
+    auto element = pdf_editor::tagged::ElementFor(tagged_doc, parent_holder, original_mcid);
+    auto* marked_form = parent_holder->IsPage() ? nullptr : static_cast<CPDF_Form*>(parent_holder);
+    for (int mcid : added_mcids) {
+      pdf_editor::tagged::SetParentAt(parent_array.Get(), tagged_doc, mcid, element.Get());
+      pdf_editor::tagged::AddMcr(tagged_doc, CPDFPageFromFPDFPage(page),
+                                  element.Get(), mcid, marked_form);
+    }
+  }
   if (target.path.size() > 1 && !RewriteGroupMetadata(
           FPDFPage_GetObject(page, static_cast<int>(target.path.front())),
           metadata->pages[page_index].objects[target.path.front()])) return false;
@@ -3347,7 +3443,8 @@ bool ApplyTextStyle(
       return false;
     }
     std::string current_text;
-    if (!GetObjectText(page.get(), target.object, &current_text)) {
+    if (!GetObjectText(page.get(), target.object, &current_text,
+                       HolderAtPath(page.get(), target.path))) {
       return false;
     }
     CPDF_PageObjectHolder* holder = nullptr;
@@ -4071,14 +4168,28 @@ bool ApplyObjectsDelete(FPDF_DOCUMENT pdf,
       return false;
     }
     const int mcid = object->GetContentMarks()->GetMarkedContentID();
+    if (mcid >= 0 && (!pdf_editor::tagged::ElementFor(
+            CPDFDocumentFromFPDFDocument(pdf), holder, mcid) ||
+        !pdf_editor::tagged::CanEditTextScope(holder, object))) {
+      SetError("UNSUPPORTED_CAPABILITY", "The deleted content's tagged scope cannot be repaired.");
+      return false;
+    }
     if (!holder->RemovePageObject(object)) {
       SetError("CORE_UNAVAILABLE", "The page object could not be deleted.");
       return false;
     }
     if (mcid >= 0) {
-      CPDF_Document* native_doc = CPDFDocumentFromFPDFDocument(pdf);
-      CPDF_Page* native_page = CPDFPageFromFPDFPage(page.get());
-      pdf_editor::structure::CleanupDeletedObjectMcid(native_doc, native_page, mcid);
+      CPDF_PageObject* survivor = nullptr;
+      for (const auto& child : *holder)
+        if (child->GetContentMarks()->GetMarkedContentID() == mcid) {
+          survivor = child.get(); break;
+        }
+      if (!survivor) pdf_editor::tagged::ClearMcid(CPDFDocumentFromFPDFDocument(pdf),
+          holder, mcid, holder->IsPage() ? 0 :
+              static_cast<CPDF_Form*>(holder)->GetStream()->GetObjNum());
+      else if (survivor->AsText() && pdf_editor::tagged::ActualMark(survivor))
+        pdf_editor::tagged::RefreshAllTextScopes(holder, survivor,
+            pdf_editor::tagged::GlyphText(survivor->AsText()));
     }
     auto* identities = &metadata->pages[page_index].objects;
     for (size_t depth = 0; depth + 1 < it->size(); ++depth)
@@ -4455,10 +4566,6 @@ bool ValidateImportedPageFeatures(FPDF_DOCUMENT source, int page_index) {
   return true;
 }
 
-bool ObjectTreeHasStructureLink(CPDF_PageObject* object,
-                                size_t depth,
-                                bool* has_structure_link);
-
 bool ValidateExtractablePageFeatures(FPDF_DOCUMENT source, int page_index) {
   if (!ValidateImportedPageFeatures(source, page_index)) return false;
   ScopedPage parsed(FPDF_LoadPage(source, page_index));
@@ -4763,6 +4870,8 @@ void CopyCommonObjectState(const CPDF_PageObject& source,
   target->mutable_general_state() = source.general_state();
   target->mutable_clip_path() = source.clip_path();
   const CPDF_ContentMarks* source_marks = source.GetContentMarks();
+  CPDF_ContentMarks empty_marks;
+  target->SetContentMarks(empty_marks);  // Always copy each source mark exactly once.
   CPDF_ContentMarks* target_marks = target->GetContentMarks();
   for (size_t index = 0; index < source_marks->CountItems(); ++index) {
     const CPDF_ContentMarkItem* item = source_marks->GetItem(index);
@@ -5110,52 +5219,10 @@ bool ApplyImageCrop(FPDF_DOCUMENT pdf,
       "The cropped image page content could not be generated.");
 }
 
-bool ObjectTreeHasStructureLink(CPDF_PageObject* object,
-                                size_t depth,
-                                bool* has_structure_link) {
-  if (!object || depth > kMaxObjectDepth) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "The page object nesting is too complex to copy safely.");
-    return false;
-  }
-  if (object->GetContentMarks()->GetMarkedContentID() >= 0) {
-    *has_structure_link = true;
-    return true;
-  }
-  CPDF_FormObject* form = object->AsForm();
-  if (!form) {
-    return true;
-  }
-  if (form->form()->GetDict()->KeyExist("StructParent") ||
-      form->form()->GetDict()->KeyExist("StructParents")) {
-    *has_structure_link = true;
-    return true;
-  }
-  for (const auto& child : *form->form()) {
-    if (!ObjectTreeHasStructureLink(child.get(), depth + 1,
-                                    has_structure_link)) {
-      return false;
-    }
-    if (*has_structure_link) {
-      return true;
-    }
-  }
-  return true;
-}
-
 std::unique_ptr<CPDF_PageObject> CloneTopLevelObject(CPDF_PageObject* source) {
   if (!source || !source->IsActive()) {
     SetError("UNSUPPORTED_CAPABILITY",
              "Inactive page objects cannot be copied.");
-    return nullptr;
-  }
-  bool has_structure_link = false;
-  if (!ObjectTreeHasStructureLink(source, 0, &has_structure_link)) {
-    return nullptr;
-  }
-  if (has_structure_link) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "Tagged-PDF structure links are not copied with objects yet.");
     return nullptr;
   }
   std::unique_ptr<CPDF_PageObject> clone;
@@ -5275,6 +5342,14 @@ bool ApplyObjectsCopy(const Document& document,
   };
   std::vector<PendingCopy> copies;
   copies.reserve(command.ids.size() / 2);
+  std::set<const CPDF_PageObject*> selected_sources;
+  for (size_t pair = 0; pair < command.ids.size() / 2; ++pair) {
+    ObjectTarget source;
+    if (!FindObjectTarget(page.get(), &metadata->pages[page_index],
+                          command.ids[pair * 2], false, &source)) return false;
+    selected_sources.insert(CPDFPageObjectFromFPDFPageObject(source.object));
+  }
+  std::set<std::pair<CPDF_PageObjectHolder*, int>> complete_alias_scopes;
   std::set<std::string> copied_ids;
   for (size_t pair = 0; pair < command.ids.size() / 2; ++pair) {
     const std::string& source_id = command.ids[pair * 2];
@@ -5294,10 +5369,40 @@ bool ApplyObjectsCopy(const Document& document,
       SetError("INVALID_REQUEST", "A copied object ID is already in use.");
       return false;
     }
-    std::unique_ptr<CPDF_PageObject> clone =
-        CloneTopLevelObject(CPDFPageObjectFromFPDFPageObject(source.object));
-    if (!clone) {
+    auto* native_source = CPDFPageObjectFromFPDFPageObject(source.object);
+    auto* source_holder = HolderAtPath(page.get(), source.path);
+    const int source_mcid = native_source->GetContentMarks()->GetMarkedContentID();
+    if (source_mcid >= 0 && !pdf_editor::tagged::ElementFor(
+            CPDFDocumentFromFPDFDocument(pdf), source_holder, source_mcid)) {
+      SetError("UNSUPPORTED_CAPABILITY", "The copied content has no matching ParentTree entry.");
       return false;
+    }
+    const bool shared_actual = source_mcid >= 0 &&
+        pdf_editor::tagged::ActualMark(native_source) &&
+        pdf_editor::tagged::HasOtherMember(source_holder, source_mcid, native_source);
+    if (shared_actual && !pdf_editor::tagged::CanEditTextScope(source_holder, native_source)) {
+      bool complete = true;
+      const auto* marks = native_source->GetContentMarks();
+      for (size_t i = 0; i < marks->CountItems(); ++i) {
+        const auto* mark = marks->GetItem(i);
+        if (!mark->GetParam() || !mark->GetParam()->KeyExist("ActualText")) continue;
+        for (const auto& child : *source_holder)
+          if (child->GetContentMarks()->ContainsItem(mark) &&
+              !selected_sources.contains(child.get())) complete = false;
+      }
+      if (!complete) {
+        SetError("UNSUPPORTED_CAPABILITY", "The copied portion has non-local ActualText.");
+        return false;
+      }
+      complete_alias_scopes.insert({source_holder, source_mcid});
+    }
+    std::unique_ptr<CPDF_PageObject> clone = CloneTopLevelObject(native_source);
+    if (!clone) return false;
+    if (complete_alias_scopes.contains({source_holder, source_mcid})) {
+      clone->SetContentMarks(*native_source->GetContentMarks());
+    } else if (shared_actual && native_source->AsText()) {
+      pdf_editor::tagged::SetLocalActualText(clone.get(),
+                                             pdf_editor::tagged::GlyphText(native_source->AsText()));
     }
     ObjectIdentity identity;
     if (!BuildCopiedObjectIdentity(
@@ -5320,6 +5425,8 @@ bool ApplyObjectsCopy(const Document& document,
                      return left.source_path < right.source_path;
                    });
   const Matrix translation{1, 0, 0, 1, command.values[0], command.values[1]};
+  std::map<std::pair<CPDF_PageObjectHolder*, int>, CPDF_PageObject*> first_scope_copy;
+  bool top_level_added = false;
   for (PendingCopy& copy : copies) {
     Matrix parent_to_pdf;
     if (!ParentFormToPdf(page.get(), copy.source_path, &parent_to_pdf)) return false;
@@ -5330,6 +5437,33 @@ bool ApplyObjectsCopy(const Document& document,
     std::optional<pdf_editor::PreparedFormPath> prepared_path;
     if (!PrepareObjectHolder(page.get(), copy.source_path, &holder, &prepared_path))
       return false;
+    auto* native_source = holder->GetPageObjectByIndex(copy.source_path.back());
+    auto* native_page = CPDFPageFromFPDFPage(page.get());
+    auto* native_doc = CPDFDocumentFromFPDFDocument(pdf);
+    if (auto* form = copy.object->AsForm()) {
+      if (!native_source->AsForm() ||
+          !pdf_editor::tagged::DuplicateFormTree(native_doc, native_page,
+              native_source->AsForm()->form(), form->form())) {
+        SetError("UNSUPPORTED_CAPABILITY", "The copied Form's structure cannot be rebound.");
+        return false;
+      }
+    }
+    const int mcid = native_source->GetContentMarks()->GetMarkedContentID();
+    if (mcid >= 0) {
+      const auto scope = std::pair<CPDF_PageObjectHolder*, int>{holder, mcid};
+      const bool whole_alias = complete_alias_scopes.contains(scope);
+      const bool rebound = whole_alias && first_scope_copy.contains(scope)
+          ? pdf_editor::tagged::ShareReboundMcid(copy.object.get(), mcid,
+                                                   first_scope_copy.at(scope))
+          : pdf_editor::tagged::DuplicateMcid(native_doc, native_page,
+                                               holder, holder, native_source, copy.object.get());
+      if (!rebound) {
+        SetError("UNSUPPORTED_CAPABILITY", "The copied object's MCID could not be rebound.");
+        return false;
+      }
+      if (whole_alias && !first_scope_copy.contains(scope))
+        first_scope_copy[scope] = copy.object.get();
+    }
     auto* siblings = &metadata->pages[page_index].objects;
     for (size_t depth = 0; depth + 1 < copy.source_path.size(); ++depth)
       siblings = &(*siblings)[copy.source_path[depth]].children;
@@ -5338,8 +5472,13 @@ bool ApplyObjectsCopy(const Document& document,
     if (prepared_path && !RewriteGroupMetadata(
             FPDFPage_GetObject(page.get(), static_cast<int>(copy.source_path.front())),
             metadata->pages[page_index].objects[copy.source_path.front()])) return false;
-    if (!GenerateEditedObjectHolder(page.get(), prepared_path,
-            "The copied page objects could not be generated.")) return false;
+    if (prepared_path && !GenerateEditedObjectHolder(page.get(), prepared_path,
+            "The copied Form objects could not be generated.")) return false;
+    if (!prepared_path) top_level_added = true;
+  }
+  if (top_level_added && !FPDFPage_GenerateContent(page.get())) {
+    SetError("CORE_UNAVAILABLE", "The copied page objects could not be generated.");
+    return false;
   }
   return true;
 }

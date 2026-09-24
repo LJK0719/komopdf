@@ -53,6 +53,59 @@ void TestRegularUnderlineLifecycle() {
   Require(pde_close(reopened) == 1 && pde_close(doc) == 1, "close underline fixtures");
 }
 
+void TestSupplementaryParagraphCopy(const std::string& font_id) {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>", Stream("") });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "supplementary-paragraph", "supplementary-source", nullptr);
+  Require(doc != 0, "open supplementary paragraph fixture");
+  const std::string page_id = PageIdFromDescription(pde_describe_page(doc, 0));
+  PdeEditCommand insert{};
+  insert.type = 3; insert.page_id = page_id.c_str(); insert.target_id = "supplementary-text";
+  insert.font_id = font_id.c_str(); insert.text_utf8 = "\xF0\xA0\xAE\xB7";
+  insert.flags = 3 | 1024; insert.values[0] = 20; insert.values[1] = 30;
+  insert.values[2] = 100; insert.values[3] = 60; insert.values[4] = 20;
+  Require(pde_apply_commands(doc, 0, "insert-supplementary-text", &insert, 1) != nullptr &&
+          pde_save_memory(doc) != nullptr, "save a real supplementary-plane paragraph");
+  const std::vector<uint8_t> bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  FPDF_DOCUMENT saved = FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr);
+  FPDF_PAGE page = FPDF_LoadPage(saved, 0);
+  FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
+  Require(text != nullptr, "load supplementary paragraph through PDFium reader");
+  const int count = FPDFText_CountChars(text);
+  std::vector<unsigned short> buffer(static_cast<size_t>(count) * 2 + 1);
+  const int written = FPDFText_GetText(text, 0, count, buffer.data());
+  Require(written > 0 && std::u16string(buffer.begin(), buffer.begin() + written - 1).find(u"\U00020BB7") != std::u16string::npos,
+          "supplementary paragraph remains searchable and copyable without editor metadata");
+  const unsigned short needle[] = {0xd842, 0xdfb7, 0};
+  FPDF_SCHHANDLE search = FPDFText_FindStart(text, needle, FPDF_MATCHCASE, 0);
+  Require(search != nullptr && FPDFText_FindNext(search),
+          "PDFium search finds supplementary text using the same UTF-16 representation");
+  FPDFText_FindClose(search);
+  FPDFText_ClosePage(text);
+  const FPDF_PAGEOBJECT paragraph = FPDFPage_GetObject(page, 0);
+  const int children = FPDFFormObj_CountObjects(paragraph);
+  Require(children > 0, "supplementary paragraph contains native glyph objects");
+  for (int index = 0; index < children; ++index) {
+    const auto child = FPDFFormObj_GetObject(paragraph, static_cast<unsigned long>(index));
+    while (FPDFPageObj_CountMarks(child) > 0)
+      Require(FPDFPageObj_RemoveMark(child, FPDFPageObj_GetMark(child, 0)) != 0, "remove the test glyph's ActualText wrapper");
+  }
+  text = FPDFText_LoadPage(page);
+  Require(text != nullptr, "load the same glyph using its ToUnicode map alone");
+  const int raw_count = FPDFText_CountChars(text);
+  std::vector<unsigned short> raw_buffer(static_cast<size_t>(raw_count) * 2 + 1);
+  const int raw_written = FPDFText_GetText(text, 0, raw_count, raw_buffer.data());
+  Require(raw_written > 0 && std::u16string(raw_buffer.begin(), raw_buffer.begin() + raw_written - 1).find(u"\U00020BB7") != std::u16string::npos,
+          "unmarked supplementary glyphs use the same copy representation as ActualText");
+  search = FPDFText_FindStart(text, needle, FPDF_MATCHCASE, 0);
+  Require(search != nullptr && FPDFText_FindNext(search), "search also finds unmarked supplementary glyphs");
+  FPDFText_FindClose(search);
+  FPDFText_ClosePage(text); FPDF_ClosePage(page); FPDF_CloseDocument(saved);
+  Require(pde_close(doc) == 1, "close supplementary paragraph fixture");
+}
+
 void TestShapedFormText(const std::string& font_id) {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -86,6 +139,10 @@ void TestShapedFormText(const std::string& font_id) {
   Require(reopened != 0 && RenderPixels(reopened, 0, 400, 240) == rendered &&
           std::string(pde_describe_forms(reopened)).find(value) != std::string::npos,
           "complex AcroForm appearance and value survive PDF save/reopen");
+  fill.text_utf8 = "e\xCC\x81 \xF0\xA0\xAE\xB7";
+  Require(pde_apply_commands(reopened, 0, "refill-shape-after-reopen", &fill, 1) != nullptr &&
+          std::string(pde_describe_forms(reopened)).find(fill.text_utf8) != std::string::npos,
+          "the saved field's own embedded font remains usable for subsequent complex-text filling");
   Require(pde_undo(doc) != nullptr && RenderPixels(doc, 0, 400, 240) == blank &&
           pde_redo(doc) != nullptr && RenderPixels(doc, 0, 400, 240) == rendered,
           "complex field filling retains atomic undo/redo");
