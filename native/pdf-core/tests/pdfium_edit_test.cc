@@ -142,6 +142,91 @@ void TestSharedForm() {
   FPDF_CloseDocument(doc);
   std::puts("PASS shared_form: only selected instance changes after save and reopen");
 }
+void TestNestedSharedForm() {
+  const std::string bytes = Pdf({
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /XObject << /Outer 6 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /XObject << /Outer 6 0 R >> >> /Contents 5 0 R >>",
+    Stream("q /Outer Do Q"),
+    Stream("q /Inner Do Q q 1 0 0 1 0 -50 cm /Inner Do Q",
+           "/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /Inner 7 0 R >> >>"),
+    Stream("BT /F1 20 Tf 30 200 Td (ORIGINAL) Tj ET",
+           "/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /Font << /F1 8 0 R >> >>"),
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  FPDF_DOCUMENT doc = FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr);
+  Require(doc != nullptr, "open nested shared Form fixture");
+  FPDF_PAGE first = FPDF_LoadPage(doc, 0);
+  FPDF_PAGE second = FPDF_LoadPage(doc, 1);
+  Require(first && second, "load nested shared Form pages");
+  const auto other_page_hash = RenderHash(second);
+  auto* outer = FPDFPage_GetObject(first, 0);
+  auto* inner = FPDFFormObj_GetObject(outer, 0);
+  auto* text = FPDFFormObj_GetObject(inner, 0);
+  Require(outer && inner && text, "resolve nested Form leaf");
+  auto path = pdf_editor::PrepareFormPath(CPDFPageFromFPDFPage(first),
+                                           std::vector<size_t>{0, 0});
+  Require(path && path->ancestors.size() == 2,
+          "isolate both Form ancestors before editing the leaf");
+  const unsigned short replacement[]{'C', 'H', 'A', 'N', 'G', 'E', 'D', 0};
+  Require(FPDFText_SetText(text, replacement), "edit only one nested instance");
+  pdf_editor::GeneratePreparedFormPath(*path);
+  Require(RenderHash(second) == other_page_hash,
+          "other page must not change before saving");
+  FPDF_ClosePage(first);
+  FPDF_ClosePage(second);
+  Writer output;
+  Require(FPDF_SaveAsCopy(doc, &output, FPDF_NO_INCREMENTAL), "save nested Form edit");
+  FPDF_CloseDocument(doc);
+  doc = FPDF_LoadMemDocument64(output.bytes.data(), output.bytes.size(), nullptr);
+  Require(doc != nullptr, "reopen nested Form edit");
+  first = FPDF_LoadPage(doc, 0);
+  second = FPDF_LoadPage(doc, 1);
+  Require(first && second, "reload both nested Form pages");
+  const std::u16string first_text = Text(first);
+  const std::u16string second_text = Text(second);
+  Require(first_text.find(u"CHANGED") != std::u16string::npos &&
+              first_text.find(u"ORIGINAL") != std::u16string::npos,
+          "saved Form contains changed leaf and unchanged sibling");
+  Require(second_text.find(u"CHANGED") == std::u16string::npos &&
+              second_text.find(u"ORIGINAL") != std::u16string::npos &&
+              RenderHash(second) == other_page_hash,
+          "saved Form does not change another page's shared instance");
+  FPDF_ClosePage(first);
+  FPDF_ClosePage(second);
+  FPDF_CloseDocument(doc);
+  std::puts("PASS nested_shared_form: only one nested instance changes after save and reopen");
+}
+void TestInheritedFormResources() {
+  const std::string bytes = Pdf({
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /XObject << /Outer 6 0 R /Inner 7 0 R >> /Font << /F1 8 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /XObject << /Outer 6 0 R /Inner 7 0 R >> /Font << /F1 8 0 R >> >> /Contents 5 0 R >>",
+    Stream("/Outer Do"),
+    Stream("/Inner Do", "/Type /XObject /Subtype /Form /BBox [0 0 300 300]"),
+    Stream("BT /F1 20 Tf 30 200 Td (ORIGINAL) Tj ET",
+           "/Type /XObject /Subtype /Form /BBox [0 0 300 300]"),
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  FPDF_DOCUMENT doc = FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr);
+  Require(doc != nullptr, "open inherited resource Form fixture");
+  FPDF_PAGE page = FPDF_LoadPage(doc, 0);
+  Require(page != nullptr && Text(page) == u"ORIGINAL", "load inherited resource text");
+  const auto path = pdf_editor::PrepareFormPath(CPDFPageFromFPDFPage(page),
+                                                 std::vector<size_t>{0, 0});
+  Require(path && path->ancestors.size() == 2, "isolate inherited resource Form chain");
+  auto* inner = FPDFFormObj_GetObject(FPDFPage_GetObject(page, 0), 0);
+  auto* text = FPDFFormObj_GetObject(inner, 0);
+  const unsigned short replacement[]{'C', 'H', 'A', 'N', 'G', 'E', 'D', 0};
+  Require(text && FPDFText_SetText(text, replacement), "edit inherited font text");
+  pdf_editor::GeneratePreparedFormPath(*path);
+  FPDF_ClosePage(page);
+  CheckSavedText(doc, {u"CHANGED", u"ORIGINAL"});
+  FPDF_CloseDocument(doc);
+  std::puts("PASS inherited_form_resources: nested clone resolves inherited font and XObject");
+}
 void TestCjkSubset(const char* font_path) {
   std::ifstream input(font_path, std::ios::binary);
   Require(input.good(), "open verified CJK font");
@@ -234,6 +319,8 @@ int main(int argc, char** argv) {
   FPDF_InitLibrary();
   TestActualText();
   TestSharedForm();
+  TestNestedSharedForm();
+  TestInheritedFormResources();
   TestFields();
   TestCjkSubset(argv[1]);
   FPDF_DestroyLibrary();

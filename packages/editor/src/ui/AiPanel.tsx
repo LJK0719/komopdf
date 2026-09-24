@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  WEB_LIMITS,
   type AiFeature,
   type AiRequest,
   type CommandType,
@@ -29,7 +30,7 @@ import { AiPanelExtraction } from './AiPanelExtraction.js';
 import { AiPanelBatch } from './AiPanelBatch.js';
 import { captureRegionImage } from './AiPanelImage.js';
 import { AiPanelForm, type FormSuggestionItem } from './AiPanelForm.js';
-import { analyzeFullDocument, collectDocumentPassages, isExhaustiveQuestion, selectRelevantPassages,
+import { analyzeFullDocument, collectDocumentPassages, isExhaustiveQuestion, restoreFullDocumentAnalysis, selectRelevantPassages,
   type DocumentAnalysis, type DocumentPassage } from './document-ai-context.js';
 
 type Props = {
@@ -81,6 +82,7 @@ export function AiPanel(props: Props) {
   const [authorization] = useState(() => (props.document ? new DocumentAiAuthorization(props.document.id) : null));
   const [enabled, setEnabled] = useState(false);
   const [feature, setFeature] = useState<AiFeature>('text.translate');
+  const featureRef = useRef(feature); featureRef.current = feature;
   const [instruction, setInstruction] = useState('');
   const [language, setLanguage] = useState('English');
   const [tone, setTone] = useState('concise');
@@ -89,6 +91,7 @@ export function AiPanel(props: Props) {
   const [scanAllPages, setScanAllPages] = useState(false);
   const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
   const [analysisProgress, setAnalysisProgress] = useState('');
+  const [restoredAnalysisNote, setRestoredAnalysisNote] = useState('');
   const [retrievalNote, setRetrievalNote] = useState('');
   const [fontId, setFontId] = useState('');
 
@@ -119,6 +122,28 @@ export function AiPanel(props: Props) {
     controller.current?.abort();
   }, [authorization]);
 
+  useEffect(() => {
+    const docId = props.document?.id;
+    if (!docId) return;
+    let active = true;
+    void restoreFullDocumentAnalysis(docId).then(saved => {
+      if (!active || !saved || current.current.document?.id !== docId || featureRef.current !== 'text.translate') return;
+      setFeature(saved.feature);
+      setAskScope('document');
+      setScanAllPages(saved.feature === 'document.ask');
+      setInstruction(saved.instruction);
+      setAnalysis(saved.analysis);
+      setRestoredAnalysisNote(saved.analysis?.document.revision !== undefined &&
+        saved.analysis.document.revision !== current.current.document?.revision
+        ? 'Saved document analysis belongs to an older revision; source links are read-only. Generate again to refresh.'
+        : saved.status === 'completed' ? 'Restored completed document analysis from this device.'
+          : 'Document analysis is paused. Enable AI and Generate to continue; no request was sent on restore.');
+    }).catch(() => {
+      if (active) setRestoredAnalysisNote('Saved document analysis could not be loaded. Start a new request if needed.');
+    });
+    return () => { active = false; };
+  }, [props.document?.id]);
+
   const authorize = () => {
     if (!authorization || !props.document) return;
     authorization.enable(props.document.sourceIds);
@@ -145,6 +170,7 @@ export function AiPanel(props: Props) {
     setRawFormCommands([]);
     setAnalysis(null);
     setAnalysisProgress('');
+    setRestoredAnalysisNote('');
     setRetrievalNote('');
   };
 
@@ -155,6 +181,8 @@ export function AiPanel(props: Props) {
   );
 
   const activeFeatureConfig = FEATURES.find(f => f.id === feature) ?? FEATURES[0]!;
+  const fullDocumentAnalysis = askScope === 'document' && (feature === 'document.summarize' ||
+    (feature === 'document.ask' && (scanAllPages || isExhaustiveQuestion(instruction))));
 
   const checkSingleLayout = async (
     docId: string,
@@ -213,6 +241,7 @@ export function AiPanel(props: Props) {
       document: info,
       pages: pagesMap,
       fields: fieldsMap,
+      pageLimit: WEB_LIMITS.pagesPerDocument,
       ...(fonts.length ? { fontIds: new Set(fonts.map(f => f.id)) } : {}),
     };
   };
@@ -232,8 +261,7 @@ export function AiPanel(props: Props) {
     try {
       const document = props.document;
       const currentPage = props.page;
-      if (askScope === 'document' && (feature === 'document.summarize' ||
-        (feature === 'document.ask' && (scanAllPages || isExhaustiveQuestion(instruction))))) {
+      if (fullDocumentAnalysis) {
         setAnalysis(await analyzeFullDocument({
           engine: props.engine, document, authorization,
           endpoint: props.endpoint ?? '/api/v1/ai/requests', feature,
@@ -348,7 +376,8 @@ export function AiPanel(props: Props) {
       }
 
       const availableCommands = feature === 'commands.plan'
-        ? ['pages.rotate', 'pages.crop', 'pages.delete', 'pages.reorder', 'objects.delete', 'objects.align', 'objects.distribute', 'objects.transform', 'text.style']
+        ? ['pages.rotate', 'pages.crop', 'pages.delete', 'pages.reorder', 'pages.insert', 'pages.duplicate',
+            'objects.delete', 'objects.copy', 'objects.align', 'objects.distribute', 'objects.transform', 'text.style']
         : feature === 'blocks.organize'
           ? ['text.style', 'text.reflow', 'objects.align', 'objects.distribute', 'objects.transform', 'objects.delete']
           : feature === 'form.suggest'
@@ -438,6 +467,7 @@ export function AiPanel(props: Props) {
           document: info,
           pages: new Map([[pageItem.id, pageItem]]),
           fields: fieldsMap,
+          pageLimit: WEB_LIMITS.pagesPerDocument,
           ...(fonts.length ? { fontIds: new Set(fonts.map(f => f.id)) } : {}),
         };
         return createAiTransaction(req, resp, ctx, txId, feature === 'blocks.organize' ? fontId || undefined : undefined);
@@ -514,7 +544,9 @@ export function AiPanel(props: Props) {
         }
       }
     } catch (caught) {
-      setError(abort.signal.aborted ? 'Request cancelled' : caught instanceof Error ? caught.message : 'AI request failed');
+      setError(abort.signal.aborted
+        ? fullDocumentAnalysis ? 'Document analysis paused. Re-enable AI and Generate again to continue.' : 'Request cancelled'
+        : caught instanceof Error ? caught.message : 'AI request failed');
     } finally {
       controller.current = null;
       setAnalysisProgress('');
@@ -943,7 +975,7 @@ export function AiPanel(props: Props) {
               </button>
               {busy && (
                 <button type="button" onClick={() => controller.current?.abort()}>
-                  Cancel
+                  {fullDocumentAnalysis ? 'Pause' : 'Cancel'}
                 </button>
               )}
             </div>
@@ -952,8 +984,11 @@ export function AiPanel(props: Props) {
       )}
 
       {error && <p role="alert" style={{ color: '#ff623d' }}>{error}</p>}
+      {restoredAnalysisNote && <p role="status">{restoredAnalysisNote}</p>}
       {analysisProgress && <p role="status">{analysisProgress}</p>}
       {retrievalNote && <p role="status">{retrievalNote}</p>}
+      {analysis && props.document?.revision !== analysis.document.revision &&
+        <p role="status">This analysis belongs to an older PDF revision. Source links are read-only; Generate to refresh.</p>}
       {analysis && <p role="status">Scanned {analysis.pagesScanned} pages; {analysis.pagesWithText} contained extractable text ({analysis.passagesScanned} passages). Scanned pages without text require desktop OCR. Section findings and source locations follow.</p>}
 
       {answerText && (

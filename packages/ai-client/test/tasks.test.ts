@@ -122,6 +122,39 @@ describe('长任务恢复与去重', () => {
     expect(completed.batches.map(batch => batch.result?.translated)).toEqual(['result-0', 'result-1']);
   });
 
+  it('整篇指纹及修订号变动时只重新运行变更的块', async () => {
+    const store = new MemoryStore();
+    const authorization = new DocumentAiAuthorization('doc-1');
+    authorization.enable(['source-1']);
+    const input = {
+      docId: 'doc-1', sourceIds: ['source-1'], taskType: 'document.translate', scope: { scope: 'document' },
+      model: 'gemini-3.8-flash-high', templateVersion: '1', protocolVersion: 1,
+      settings: { targetLanguage: 'zh' },
+    };
+    const oldTask = await createLongTask<Payload, Result>({ ...input, id: 'old', baseRevision: 1,
+      contentFingerprint: 'old-document', batches: [
+        { id: 'a', content: 'unchanged', payload: { index: 0 } },
+        { id: 'b', content: 'old text', payload: { index: 1 } },
+      ],
+    });
+    await store.saveTask(oldTask);
+    const runBatch = vi.fn(async (_task, batch: Readonly<(typeof oldTask.batches)[number]>) => ({ translated: batch.content }));
+    await new LongTaskRunner(store).continueTask(oldTask.id, authorization, runBatch);
+    const fresh = await createLongTask<Payload, Result>({ ...input, id: 'fresh', baseRevision: 2,
+      contentFingerprint: 'new-document', batches: [
+        { id: 'a', content: 'unchanged', payload: { index: 0 } },
+        { id: 'b', content: 'new text', payload: { index: 1 } },
+      ],
+    });
+    expect(fresh.hashKey).not.toBe(oldTask.hashKey);
+    expect(fresh.batches[0]?.cacheKey).toBe(oldTask.batches[0]?.cacheKey);
+    expect(fresh.batches[1]?.cacheKey).not.toBe(oldTask.batches[1]?.cacheKey);
+    await store.saveTask(fresh);
+    const completed = await new LongTaskRunner(store).continueTask(fresh.id, authorization, runBatch);
+    expect(runBatch).toHaveBeenCalledTimes(3);
+    expect(completed.batches.map(batch => batch.result?.translated)).toEqual(['unchanged', 'new text']);
+  });
+
   it('撤回授权会即时 abort 正在运行的长任务批次', async () => {
     const store = new MemoryStore();
     const task = await makeTask();

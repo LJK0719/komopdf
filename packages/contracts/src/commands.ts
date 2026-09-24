@@ -73,12 +73,16 @@ export const proposedCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text.reflow'), pageId: idSchema, blockIds: idsSchema.min(2) }).strict(),
   z.object({ type: z.literal('objects.transform'), pageId: idSchema, objectIds: idsSchema, matrix: matrixSchema }).strict(),
   z.object({ type: z.literal('objects.delete'), pageId: idSchema, objectIds: idsSchema }).strict(),
+  z.object({ type: z.literal('objects.copy'), pageId: idSchema, objectIds: idsSchema,
+    offset: z.object({ x: z.number(), y: z.number() }).strict().optional() }).strict(),
   z.object({ type: z.literal('objects.align'), pageId: idSchema, objectIds: idsSchema, axis: z.enum(['left', 'center', 'right', 'top', 'middle', 'bottom']) }).strict(),
   z.object({ type: z.literal('objects.distribute'), pageId: idSchema, objectIds: idsSchema, axis: z.enum(['horizontal', 'vertical']) }).strict(),
   z.object({ type: z.literal('pages.rotate'), pageIds: idsSchema, degrees: z.union([z.literal(90), z.literal(180), z.literal(270)]) }).strict(),
   z.object({ type: z.literal('pages.crop'), pageIds: idsSchema, bounds: rectSchema }).strict(),
   z.object({ type: z.literal('pages.delete'), pageIds: idsSchema }).strict(),
   z.object({ type: z.literal('pages.reorder'), pageIds: idsSchema }).strict(),
+  z.object({ type: z.literal('pages.insert'), referencePageId: idSchema, position: z.enum(['before', 'after']) }).strict(),
+  z.object({ type: z.literal('pages.duplicate'), pageIds: idsSchema, afterPageId: idSchema.nullable() }).strict(),
   z.object({ type: z.literal('form.fill'), fieldId: idSchema, value: z.union([z.string(), z.boolean(), z.array(z.string())]) }).strict(),
 ]);
 export type ProposedCommand = z.infer<typeof proposedCommandSchema>;

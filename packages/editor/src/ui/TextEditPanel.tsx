@@ -16,6 +16,7 @@ type Props = {
   document: DocumentInfo | null;
   page: PageModel | null;
   selectedIds: string[];
+  searchSelection?: { docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null;
   engine: EngineAdapter;
   disabled?: boolean;
   onBusyChange?(busy: boolean): void;
@@ -23,7 +24,7 @@ type Props = {
   onCommitted(result: CommitResult): Promise<void>;
 };
 
-export function TextEditPanel({ document, page, selectedIds, engine, disabled = false, onBusyChange, onDraftChange, onCommitted }: Props) {
+export function TextEditPanel({ document, page, selectedIds, searchSelection, engine, disabled = false, onBusyChange, onDraftChange, onCommitted }: Props) {
   const selectedObject = useMemo(() => {
     if (!page || selectedIds.length !== 1) return null;
     return page.objects.find((object) => object.id === selectedIds[0]) ?? null;
@@ -31,6 +32,7 @@ export function TextEditPanel({ document, page, selectedIds, engine, disabled = 
   const block = selectedObject?.textBlock ?? null;
   const originalText = block?.runs.map((run) => run.text).join('') ?? '';
   const selectionKey = `${document?.id ?? ''}\0${document?.revision ?? ''}\0${page?.id ?? ''}\0${block?.id ?? ''}`;
+  const originalInput = useRef<HTMLTextAreaElement>(null);
   const [replacement, setReplacement] = useState(originalText);
   const [fontId, setFontId] = useState('');
   const [formatFontId, setFormatFontId] = useState('');
@@ -65,6 +67,24 @@ export function TextEditPanel({ document, page, selectedIds, engine, disabled = 
     setPreviewing(false);
     setError('');
   }, [selectionKey, originalText]);
+
+  useEffect(() => {
+    if (!searchSelection || document?.id !== searchSelection.docId || document.revision !== searchSelection.revision ||
+      page?.id !== searchSelection.pageId || block?.id !== searchSelection.blockId) return;
+    if (searchSelection.start < 0 || searchSelection.end > originalText.length || searchSelection.end <= searchSelection.start) return;
+    let start = 0;
+    let end = originalText.length;
+    for (const boundary of graphemeBoundaries(originalText)) {
+      if (boundary <= searchSelection.start && boundary > start) start = boundary;
+      if (boundary >= searchSelection.end && boundary < end) end = boundary;
+    }
+    const next: TextRange = [start, end];
+    setRange(next);
+    setReplacement(originalText.slice(...next));
+    setPreview(null);
+    originalInput.current?.focus();
+    originalInput.current?.setSelectionRange(...next);
+  }, [searchSelection, selectionKey, originalText]);
 
   const canReplace = Boolean(
     document
@@ -138,7 +158,7 @@ export function TextEditPanel({ document, page, selectedIds, engine, disabled = 
   };
 
   const formatSelection = async (): Promise<void> => {
-    if (!document || !page || !block || applying || !formatDirty) return;
+    if (!document || !page || !block || (selectedObject?.locator.containerPath.length && !wholeBlock) || applying || !formatDirty) return;
     setApplying(true); onBusyChange?.(true); setError('');
     try {
       const style: TextStyle = {};
@@ -174,7 +194,7 @@ export function TextEditPanel({ document, page, selectedIds, engine, disabled = 
     <span className="eyebrow">{block.isOcr ? 'Correct OCR Search Text' : block.isParagraph ? 'Paragraph Text Edit' : 'Manual Text Edit'}</span>
     {block.isOcr && <p>This is an invisible OCR search layer. Corrections update searchable and copied text inside the recognized box; they do not change the scanned image.</p>}
     {block.isParagraph && <p>This text block is a formatted paragraph. Text replacement (including newlines) reflows natively while preserving the block ID. If the document was reopened and the original font is not in the font registry, select an explicit Replacement font below.</p>}
-    <label>Original text<textarea value={originalText} readOnly disabled={disabled || previewing || applying}
+    <label>Original text<textarea ref={originalInput} value={originalText} readOnly disabled={disabled || previewing || applying}
       onKeyDown={moveReadOnlySelection}
       onSelect={event => {
         if (!canReplace || !document?.capabilities.includes('text.style') || disabled || previewing || applying) return;
@@ -208,9 +228,11 @@ export function TextEditPanel({ document, page, selectedIds, engine, disabled = 
       <option value="">Preserve original font</option>
       {fonts.map((font) => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
     </select></label>
-    {!block.isParagraph && document?.capabilities.includes('text.style') && <fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId)}>
+    {!block.isParagraph && document?.capabilities.includes('text.style') && <fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId) || (Boolean(selectedObject?.locator.containerPath.length) && !wholeBlock)}>
       <legend>Format selected text</legend>
-      <p>Applies only to the selected characters. Blank fields preserve existing formatting. Font or size changes move the remaining text on this line; they do not wrap the paragraph.</p>
+      <p>{selectedObject?.locator.containerPath.length
+        ? 'Nested Form text supports whole-block formatting only; range formatting remains unavailable.'
+        : 'Applies only to the selected characters. Blank fields preserve existing formatting. Font or size changes move the remaining text on this line; they do not wrap the paragraph.'}</p>
       <label>Selection font<select value={formatFontId} onChange={event => setFormatFontId(event.target.value)}>
         <option value="">Preserve font</option>
         {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}

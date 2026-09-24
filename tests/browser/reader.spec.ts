@@ -174,14 +174,14 @@ test('real WASM manages pages, transforms objects and inserts vector PDF content
   const image = page.locator('.object-hitbox[data-object-type="image"]');
   await expect(image).toHaveCount(1);
   const imageId = await image.getAttribute('data-object-id');
-  const sample = (x: number, y: number) => page.locator('canvas').evaluate((element, point) => {
+  const sample = (x: number, y: number) => page.locator('canvas.pdf-canvas').evaluate((element, point) => {
     const canvas = element as HTMLCanvasElement;
     return [...canvas.getContext('2d')!.getImageData(Math.floor(canvas.width * point.x / 300), Math.floor(canvas.height * point.y / 300), 1, 1).data];
   }, { x, y });
   await expect.poll(() => sample(180, 120)).toEqual([255, 0, 0, 255]);
   await image.click();
-  await page.getByRole('spinbutton', { name: 'Width (pt)', exact: true }).fill('60');
-  await page.getByRole('spinbutton', { name: 'Height (pt)', exact: true }).fill('60');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Width (pt)', exact: true }).fill('60');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Height (pt)', exact: true }).fill('60');
   await page.getByRole('button', { name: 'Crop selected image to box', exact: true }).click();
   await expect.poll(() => sample(180, 120)).toEqual([255, 255, 255, 255]);
   await expect.poll(() => sample(65, 65)).toEqual([255, 0, 0, 255]);
@@ -206,7 +206,6 @@ test('real WASM manages pages, transforms objects and inserts vector PDF content
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
-  page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
   chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'saved-objects.pdf', mimeType: 'application/pdf', buffer: saved });
@@ -217,7 +216,7 @@ test('real WASM manages pages, transforms objects and inserts vector PDF content
   await expect(image).toHaveCount(1);
   await expect.poll(() => sample(65, 65)).toEqual([0, 255, 0, 255]);
   await page.getByRole('button', { name: 'Open page 1', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Font', exact: true }).selectOption('liberation-sans-bold');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('combobox', { name: 'Font', exact: true }).selectOption('liberation-sans-bold');
   await page.getByRole('textbox', { name: 'New text', exact: true }).fill('Bold text');
   await page.getByRole('button', { name: 'Insert text', exact: true }).click();
   await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(1);
@@ -226,7 +225,9 @@ test('real WASM manages pages, transforms objects and inserts vector PDF content
   const fontDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   const withFont = await readFile((await (await fontDownload).path())!);
+  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: /^objects\.pdf/ }).click();
   page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
+  await page.getByRole('button', { name: 'Close PDF', exact: true }).click();
   chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'saved-font.pdf', mimeType: 'application/pdf', buffer: withFont });
@@ -245,11 +246,11 @@ test('real WASM embeds CJK OpenType faces and preserves searchable text after re
   await page.getByRole('button', { name: 'Add blank page', exact: true }).click();
   await page.getByRole('button', { name: 'Open page 2', exact: true }).click();
   await page.getByText('Insert & format', { exact: true }).click();
-  await page.getByRole('spinbutton', { name: 'Height (pt)', exact: true }).fill('24');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Height (pt)', exact: true }).fill('24');
   const faces = ['noto-sans-cjk-sc-regular', 'noto-sans-cjk-sc-bold', 'noto-serif-cjk-sc-regular', 'noto-serif-cjk-sc-bold'];
   for (const [index, font] of faces.entries()) {
-    await page.getByRole('combobox', { name: 'Font', exact: true }).selectOption(font);
-    await page.getByRole('spinbutton', { name: 'Y (pt)', exact: true }).fill(String(36 + index * 40));
+    await page.getByRole('region', { name: 'Page and object editing' }).getByRole('combobox', { name: 'Font', exact: true }).selectOption(font);
+    await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Y (pt)', exact: true }).fill(String(36 + index * 40));
     await page.getByRole('textbox', { name: 'New text', exact: true }).fill(`第一行中文 ABC ${index + 1}`);
     await page.getByRole('button', { name: 'Insert text', exact: true }).click();
     await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(index + 1, { timeout: 30_000 });
@@ -275,7 +276,7 @@ test('real WASM embeds CJK OpenType faces and preserves searchable text after re
     await objects.nth(index).click();
     await expect(page.getByRole('textbox', { name: 'Original text', exact: true })).toHaveValue(`第一行中文 ABC ${index + 1}`);
   }
-  expect(await page.locator('canvas').evaluate((canvas: HTMLCanvasElement) => {
+  expect(await page.locator('canvas.pdf-canvas').evaluate((canvas: HTMLCanvasElement) => {
     const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
     let ink = 0;
     for (let offset = 0; offset < pixels.length; offset += 4) if (pixels[offset]! < 128) ink++;
@@ -303,13 +304,13 @@ test('real WASM imports a chosen collection face for editing and save/reopen', a
   await page.getByRole('button', { name: 'Add selected font', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Added Liberation Serif' })).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Replacement', exact: true })).toHaveValue('Imported draft');
-  await page.getByRole('button', { name: 'Discard draft', exact: true }).click();
+  await page.getByRole('region', { name: 'Manual text editing' }).getByRole('button', { name: 'Discard draft', exact: true }).click();
   // Registration alone is not a PDF edit.
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Add blank page', exact: true }).click();
   await page.getByRole('button', { name: 'Open page 2', exact: true }).click();
   await page.getByText('Insert & format', { exact: true }).click();
-  const font = page.getByRole('combobox', { name: 'Font', exact: true });
+  const font = page.getByRole('region', { name: 'Page and object editing' }).getByRole('combobox', { name: 'Font', exact: true });
   const importedId = await font.locator('option[value^="user-font-"]').getAttribute('value');
   expect(importedId).toBeTruthy();
   await font.selectOption(importedId!);
@@ -344,9 +345,9 @@ test('real WASM lays out multiline text boxes and rejects overflow before commit
   await page.getByRole('button', { name: 'Add blank page', exact: true }).click();
   await page.getByRole('button', { name: 'Open page 2', exact: true }).click();
   await page.getByText('Insert & format', { exact: true }).click();
-  await page.getByRole('combobox', { name: 'Font', exact: true }).selectOption('noto-sans-cjk-sc-regular');
-  await page.getByRole('spinbutton', { name: 'Width (pt)', exact: true }).fill('140');
-  await page.getByRole('spinbutton', { name: 'Height (pt)', exact: true }).fill('4');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('combobox', { name: 'Font', exact: true }).selectOption('noto-sans-cjk-sc-regular');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Width (pt)', exact: true }).fill('140');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Height (pt)', exact: true }).fill('4');
   await page.getByRole('spinbutton', { name: 'Line height (em)', exact: true }).fill('1.5');
   await page.getByRole('combobox', { name: 'Text alignment', exact: true }).selectOption('center');
   await page.getByRole('textbox', { name: 'New text', exact: true }).fill('第一行中文\nSecond line\n第三行');
@@ -355,7 +356,7 @@ test('real WASM lays out multiline text boxes and rejects overflow before commit
   await expect(page.getByRole('button', { name: 'Insert text', exact: true })).toBeDisabled();
   const objects = page.locator('.object-hitbox[data-object-type="text"]');
   await expect(objects).toHaveCount(0);
-  await page.getByRole('spinbutton', { name: 'Height (pt)', exact: true }).fill('100');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Height (pt)', exact: true }).fill('100');
   await page.getByRole('button', { name: 'Preview text box', exact: true }).click();
   await expect(page.getByText('Text fits box · 3 lines', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Insert text', exact: true }).click();
@@ -379,8 +380,8 @@ test('real WASM lays out multiline text boxes and rejects overflow before commit
     await objects.nth(index).click();
     await expect(page.getByRole('textbox', { name: 'Original text', exact: true })).toHaveValue(text);
   }
-  await page.getByRole('spinbutton', { name: 'Y (pt)', exact: true }).fill('140');
-  await page.getByRole('spinbutton', { name: 'Width (pt)', exact: true }).fill('80');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Y (pt)', exact: true }).fill('140');
+  await page.getByRole('region', { name: 'Page and object editing' }).getByRole('spinbutton', { name: 'Width (pt)', exact: true }).fill('80');
   await page.getByRole('textbox', { name: 'New text', exact: true }).fill('Wrap words over multiple lines automatically.');
   await page.getByRole('button', { name: 'Preview text box', exact: true }).click();
   await expect(page.getByText(/Text fits box · [2-9] lines/)).toBeVisible();
@@ -448,7 +449,8 @@ test('real local export protects, opens with a password, and removes protection 
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Original text', exact: true })).toHaveValue('Hello PDF Editor');
-  page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
+  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: 'protection.pdf' }).click();
+  await page.getByRole('button', { name: 'Close PDF', exact: true }).click();
   chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'decrypted.pdf', mimeType: 'application/pdf', buffer: decrypted });
@@ -496,7 +498,7 @@ test(`real WASM reads and preserves ${fixture.name} PDF without uploading it`, a
   await expect(page.getByText('reader-smoke.pdf', { exact: true }).or(page.locator('.status-dot-error'))).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.status-dot-error'), await page.locator('.editor-statusbar').innerText()).toHaveCount(0);
   await expect(page.getByText('reader-smoke.pdf', { exact: true })).toBeVisible();
-  const canvas = page.locator('canvas');
+  const canvas = page.locator('canvas.pdf-canvas');
   await expect(canvas).toBeVisible();
   await expect.poll(() => canvas.evaluate((element, fixture) => {
     const canvas = element as HTMLCanvasElement;
@@ -512,3 +514,57 @@ test(`real WASM reads and preserves ${fixture.name} PDF without uploading it`, a
   expect(posts).toEqual([]);
 });
 }
+
+test('web editor retains two independent PDFs and refuses a third until one closes', async ({ page }) => {
+  await page.goto('/editor/');
+  let chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'first.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
+  await expect(page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: 'first.pdf' })).toBeVisible();
+  await page.getByRole('button', { name: 'Select Text object' }).click();
+  await page.getByRole('textbox', { name: 'Replacement' }).fill('Hello AI Editor');
+  await page.getByRole('button', { name: 'Preview layout' }).click();
+  await page.getByRole('button', { name: 'Commit replacement' }).click();
+  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Hello AI Editor');
+
+  chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  const second = Buffer.from(syntheticPdf().toString('latin1').replaceAll('Hello PDF Editor', 'Other PDF Editor'), 'latin1');
+  await (await chooser).setFiles({ name: 'second.pdf', mimeType: 'application/pdf', buffer: second });
+  const tabs = page.getByRole('navigation', { name: 'Open PDFs' });
+  await expect(tabs.getByRole('button')).toHaveCount(2);
+  await expect(tabs.getByRole('button', { name: /first\.pdf/ })).toContainText('●');
+  await page.getByRole('button', { name: 'Select Text object' }).click();
+  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Other PDF Editor');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await expect(page.getByText(/can keep only 2 PDFs open/)).toBeVisible();
+
+  await tabs.getByRole('button', { name: /first\.pdf/ }).click();
+  await page.getByRole('button', { name: 'Select Text object' }).click();
+  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Hello AI Editor');
+  page.once('dialog', async dialog => {
+    page.once('dialog', discard => discard.accept());
+    await dialog.dismiss();
+  });
+  await page.getByRole('button', { name: 'Close PDF' }).click();
+  await expect(tabs.getByRole('button')).toHaveCount(1);
+  await expect(tabs.getByRole('button', { name: 'second.pdf' })).toHaveAttribute('aria-current', 'page');
+});
+
+test('PDF search locates each occurrence at its UTF-16 text range', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'search.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
+  const search = page.getByRole('region', { name: 'Search PDF' });
+  await search.getByText('Search PDF', { exact: true }).click();
+  await search.getByRole('textbox', { name: 'Find text' }).fill('l');
+  await search.getByRole('button', { name: 'Find', exact: true }).click();
+  const hits = search.getByRole('button', { name: /Page 1, character/ });
+  await expect(hits).toHaveCount(2);
+  await hits.nth(1).click();
+  const original = page.getByRole('textbox', { name: 'Original text' });
+  await expect(original).toHaveValue('Hello PDF Editor');
+  await expect(original).toHaveJSProperty('selectionStart', 3);
+  await expect(original).toHaveJSProperty('selectionEnd', 4);
+});

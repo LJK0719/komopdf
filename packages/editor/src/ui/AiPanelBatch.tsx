@@ -87,8 +87,10 @@ export function AiPanelBatch({
           const restored = await runner.restore(existing.id);
           if (isMountedRef.current && currentDocRef.current.id === document.id) {
             setTask(restored);
+            const restoredScope = (restored.scope as { scope?: string } | null)?.scope;
+            if (restoredScope === 'page' || restoredScope === 'document') setScope(restoredScope);
             if (restored.baseRevision !== currentDocRef.current.revision) {
-              setStatusText('Previous translation belongs to an older revision and is read-only. Reset to start a new task.');
+              setStatusText('Document changed. Refresh to reuse unchanged translated blocks and re-translate changed blocks.');
             } else if (restored.sourceIds.length !== 1 && restored.batches.some(batch => !batch.payload.sourceId)) {
               setStatusText('Previous task has no per-block source mapping. Reset to start a new task.');
             } else if (restored.status === 'completed') {
@@ -113,13 +115,18 @@ export function AiPanelBatch({
   }, [document.id]);
 
   const startTask = async () => {
-    if (disabled || busy || task?.status === 'running' || !runnerRef.current || !storeRef.current) return;
+    if (disabled || busy || task?.status === 'running' || (task && !staleTask) || !runnerRef.current || !storeRef.current) return;
     setError('');
     setBusy(true);
     setStatusText('Collecting text blocks…');
 
     try {
-      const pageIds = scope === 'page' ? [page.id] : document.pageOrder;
+      const taskScope = task && staleTask ? (task.scope as { scope?: 'page' | 'document' })?.scope ?? scope : scope;
+      const pageIds = taskScope === 'document' ? document.pageOrder
+        : [task && staleTask ? task.batches[0]?.payload.pageId ?? page.id : page.id];
+      if (pageIds.some(pageId => !document.pageOrder.includes(pageId))) {
+        throw new Error('Original page no longer exists; reset to start a new translation');
+      }
       const allBlocks: { pageId: string; pageNumber: number; block: TextBlock }[] = [];
 
       for (const pageId of pageIds) {
@@ -163,7 +170,7 @@ export function AiPanelBatch({
         baseRevision: document.revision,
         sourceIds: document.sourceIds,
         taskType: 'document.translate',
-        scope: { scope, pageCount: pageIds.length },
+        scope: { scope: taskScope, pageCount: pageIds.length },
         contentFingerprint: `doc-${document.id}-rev-${document.revision}-b${batches.length}`,
         model: 'gemini-3.8-flash-high',
         templateVersion: '1',
@@ -271,15 +278,12 @@ export function AiPanelBatch({
             throw new Error('AI response did not bind to requested evidence ID');
           }
 
-          // 实时更新 React 状态，展示每个已完成批次
-          if (isMountedRef.current && currentDocRef.current.id === _task.docId) {
-            const latestTask = await storeRef.current?.loadTask(taskId);
-            if (latestTask && isMountedRef.current && currentDocRef.current.id === _task.docId) {
-              setTask({ ...latestTask });
-            }
-          }
-
           return { translatedText };
+        },
+        updated => {
+          if (isMountedRef.current && currentDocRef.current.id === updated.docId) {
+            setTask({ ...updated });
+          }
         },
       );
 
@@ -417,14 +421,14 @@ export function AiPanelBatch({
         </label>
       </div>
 
-      {!task && (
+      {(!task || staleTask) && (
         <button
           type="button"
           className="button-primary"
           onClick={() => void startTask()}
           disabled={disabled || isRunning}
         >
-          {busy ? 'Preparing batch task…' : `Start Translation (${scope === 'page' ? 'Current Page' : 'Full Document'})`}
+          {busy ? 'Preparing batch task…' : staleTask ? 'Refresh changed blocks' : `Start Translation (${scope === 'page' ? 'Current Page' : 'Full Document'})`}
         </button>
       )}
 
@@ -480,7 +484,7 @@ export function AiPanelBatch({
       )}
 
       {error && <p role="alert" style={{ color: '#ff623d' }}>{error}</p>}
-      {staleTask && <p role="alert">Previous translation belongs to an older revision; reset to start a new task.</p>}
+      {staleTask && <p role="alert">Previous translation belongs to an older revision. Refresh to reuse unchanged blocks; old results cannot be written.</p>}
       {missingBatchSource && <p role="alert">Per-block source mapping is missing; reset to start a new task.</p>}
       {statusText && <p style={{ fontSize: '10px', color: '#666' }}>{statusText}</p>}
 
@@ -515,7 +519,7 @@ export function AiPanelBatch({
                     <button
                       type="button"
                       onClick={() => void handleWriteBlock(batch)}
-                      disabled={disabled || applyingBlockId === batch.id || isRunning}
+                      disabled={disabled || staleTask || applyingBlockId === batch.id || isRunning}
                       style={{ fontSize: '9px', padding: '1px 6px', fontWeight: 600 }}
                     >
                       {applyingBlockId === batch.id ? 'Writing…' : 'Write to PDF'}

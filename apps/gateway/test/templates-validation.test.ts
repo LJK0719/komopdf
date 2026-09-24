@@ -34,10 +34,11 @@ describe('feature templates and output validation', () => {
 
   it('intersects client commands with the server proposal schemas', () => {
     const prepared = prepareProviderInput(request('commands.plan'), 8192);
-    expect([...prepared.allowedCommands]).toEqual(['objects.delete', 'pages.rotate']);
+    expect([...prepared.allowedCommands]).toEqual(['objects.delete', 'pages.rotate', 'pages.insert']);
     const schema = JSON.stringify(prepared.input.responseSchema);
     expect(schema).toContain('pages.rotate');
-    expect(schema).not.toContain('pages.insert');
+    expect(schema).toContain('pages.insert');
+    expect(schema).not.toContain('pages.duplicate');
   });
 
   it('rejects command targets outside the supplied context', () => {
@@ -47,6 +48,37 @@ describe('feature templates and output validation', () => {
     });
     expect(() => parseAndValidateResult(raw, request('commands.plan'), prepared.expectedKind, prepared.allowedCommands, 1024 * 1024))
       .toThrow(OutputValidationError);
+  });
+
+  it('accepts only scoped page insertion, duplication and object copy proposals without generated IDs', () => {
+    const base = request('commands.plan');
+    const scoped: AiRequest = { ...base, context: { ...base.context,
+      availableCommands: ['pages.insert', 'pages.duplicate', 'objects.copy', 'objects.group'] } };
+    const prepared = prepareProviderInput(scoped, 8192);
+    expect([...prepared.allowedCommands]).toEqual(['objects.copy', 'pages.insert', 'pages.duplicate']);
+    const schema = JSON.stringify(prepared.input.responseSchema);
+    expect(schema).not.toContain('newPageIds');
+    expect(schema).not.toContain('newObjectIds');
+    const plan = (commands: unknown[]) => JSON.stringify({ kind: 'commandPlan', explanation: 'Edit', commands });
+    const validate = (commands: unknown[]) => parseAndValidateResult(plan(commands), scoped, 'commandPlan',
+      prepared.allowedCommands, 1024 * 1024);
+    expect(validate([
+      { type: 'pages.insert', referencePageId: 'p1', position: 'before' },
+      { type: 'pages.duplicate', pageIds: ['p1'], afterPageId: null },
+      { type: 'objects.copy', pageId: 'p1', objectIds: ['o1'], offset: { x: 8, y: 2 } },
+    ]).kind).toBe('commandPlan');
+    expect(() => validate([{ type: 'pages.insert', referencePageId: 'not-shared', position: 'after' }]))
+      .toThrow(/reference is not in request context/);
+    expect(() => validate([{ type: 'pages.duplicate', pageIds: ['p1'], afterPageId: 'not-shared' }]))
+      .toThrow(/position is not in request context/);
+    expect(() => validate([{ type: 'objects.copy', pageId: 'p1', objectIds: ['not-shared'] }]))
+      .toThrow(/does not match page/);
+    expect(() => validate([{ type: 'pages.insert', referencePageId: 'p1', position: 'after', pageId: 'fake' }]))
+      .toThrow(/output contract/);
+    expect(() => validate([{ type: 'pages.duplicate', pageIds: ['p1'], afterPageId: 'p1', newPageIds: ['fake'] }]))
+      .toThrow(/output contract/);
+    expect(() => validate([{ type: 'objects.copy', pageId: 'p1', objectIds: ['o1'], newObjectIds: ['fake'] }]))
+      .toThrow(/output contract/);
   });
 
   it('requires document translation to cover every evidence ID exactly once', () => {

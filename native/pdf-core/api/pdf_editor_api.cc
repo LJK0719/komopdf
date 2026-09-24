@@ -1517,10 +1517,38 @@ FPDF_PAGEOBJECT ObjectAtPath(FPDF_PAGE page, const std::vector<size_t>& path) {
   return object;
 }
 
+// The Form stream can be isolated, but rewriting tagged/marked content would
+// also require updating the document's structure tree and marked-content scopes.
+template <typename Index>
+bool NestedFormPathIsStructurallyEditable(FPDF_PAGE page,
+                                      FPDF_PAGEOBJECT leaf,
+                                      const std::vector<Index>& path) {
+  if (!page || !leaf || path.size() < 2 || FPDFPageObj_CountMarks(leaf) != 0)
+    return false;
+  const auto* native_page = CPDFPageFromFPDFPage(page);
+  if (!native_page || native_page->GetDict()->KeyExist("StructParents") ||
+      native_page->GetDict()->KeyExist("StructParent") ||
+      native_page->GetDocument()->GetRoot()->KeyExist("StructTreeRoot"))
+    return false;
+  FPDF_PAGEOBJECT ancestor = FPDFPage_GetObject(page, static_cast<int>(path[0]));
+  for (size_t depth = 1; depth < path.size(); ++depth) {
+    const auto* native = CPDFPageObjectFromFPDFPageObject(ancestor);
+    const auto* form = native ? native->AsForm() : nullptr;
+    if (!form || FPDFPageObj_CountMarks(ancestor) != 0 ||
+        form->form()->GetDict()->KeyExist("StructParents") ||
+        form->form()->GetDict()->KeyExist("StructParent"))
+      return false;
+    if (depth + 1 < path.size())
+      ancestor = FPDFFormObj_GetObject(ancestor, static_cast<unsigned long>(path[depth]));
+  }
+  return true;
+}
+
 struct EnumerationContext {
   std::string page_id;
   std::string source_id;
   FPDF_TEXTPAGE text_page;
+  FPDF_PAGE page;
   Matrix pdf_to_page;
   std::vector<ObjectData>* objects;
   std::vector<TextBlockData>* text_blocks;
@@ -1607,7 +1635,8 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
       block.bounds = data.bounds;
       block.transform = data.transform;
       block.is_ocr = IsOcrTextObject(object);
-      if (depth > 0 || !HasSupportedTextMarks(object)) {
+      if ((depth > 0 && !NestedFormPathIsStructurallyEditable(context->page, object, path)) ||
+          (depth == 0 && !HasSupportedTextMarks(object))) {
         block.editability = "geometry-only";
       }
       data.text_block = block;
@@ -1688,7 +1717,7 @@ bool BuildPageData(Document* document, uint32_t page_index, PageData* result) {
     return false;
   }
   EnumerationContext context{result->id,       document->source_id,
-                             text_page.get(),  pdf_to_page,
+                             text_page.get(),  page.get(), pdf_to_page,
                              &result->objects, &result->text_blocks};
   for (int object_index = 0; object_index < object_count; ++object_index) {
     FPDF_PAGEOBJECT object = FPDFPage_GetObject(page.get(), object_index);
@@ -2252,6 +2281,12 @@ bool PrepareObjectHolder(
     prepared_path->reset();
     return true;
   }
+  if (!NestedFormPathIsStructurallyEditable(
+          page, ObjectAtPath(page, object_path), object_path)) {
+    SetError("UNSUPPORTED_CAPABILITY",
+             "Nested marked/tagged Form objects cannot be rewritten safely.");
+    return false;
+  }
   auto prepared = pdf_editor::PrepareFormPath(
       native_page,
       std::span<const size_t>(object_path.data(), object_path.size() - 1));
@@ -2281,7 +2316,8 @@ bool GenerateEditedObjectHolder(
 
 bool GetNormalizedObjectBounds(FPDF_PAGE page,
                                FPDF_PAGEOBJECT object,
-                               Rect* bounds) {
+                               Rect* bounds,
+                               const Matrix& parent_to_pdf = Matrix{}) {
   CPDF_Page* native_page = CPDFPageFromFPDFPage(page);
   if (!native_page) {
     SetUnexpectedError();
@@ -2299,7 +2335,8 @@ bool GetNormalizedObjectBounds(FPDF_PAGE page,
     SetUnexpectedError();
     return false;
   }
-  *bounds = TransformBounds(left, bottom, right, top, pdf_to_page);
+  *bounds = TransformBounds(left, bottom, right, top,
+                            parent_to_pdf.Then(pdf_to_page));
   return true;
 }
 
@@ -2359,7 +2396,8 @@ bool SetActualText(FPDF_PAGEOBJECT object,
 
 bool GetNormalizedTextLayoutFrame(FPDF_PAGE page,
                                   FPDF_PAGEOBJECT object,
-                                  Rect* frame) {
+                                  Rect* frame,
+                                  const Matrix& parent_to_pdf = Matrix{}) {
   auto* native_page = CPDFPageFromFPDFPage(page);
   auto* native_object = CPDFPageObjectFromFPDFPageObject(object);
   auto* text = native_object ? native_object->AsText() : nullptr;
@@ -2370,7 +2408,7 @@ bool GetNormalizedTextLayoutFrame(FPDF_PAGE page,
   float descent = 0;
   if (!font || !FPDFFont_GetAscent(font, text->GetFontSize(), &ascent) ||
       !FPDFFont_GetDescent(font, text->GetFontSize(), &descent)) {
-    return GetNormalizedObjectBounds(page, object, frame);
+    return GetNormalizedObjectBounds(page, object, frame, parent_to_pdf);
   }
   const auto& positions = text->GetCharPositions();
   const auto& codes = text->GetCharCodes();
@@ -2382,6 +2420,7 @@ bool GetNormalizedTextLayoutFrame(FPDF_PAGE page,
   const Matrix unit_scale{user_unit, 0, 0, user_unit, 0, 0};
   const Matrix matrix =
       MatrixFromCfx(text->GetTextMatrix())
+          .Then(parent_to_pdf)
           .Then(MatrixFromCfx(native_page->GetDisplayMatrix()))
           .Then(unit_scale);
   // Ink bearings vary per glyph. Layout uses baseline/advance and font metrics,
@@ -2800,9 +2839,11 @@ bool ApplyTextReplace(
                         command.target_id, true, &target)) {
     return false;
   }
-  if (target.path.size() != 1) {
+  const bool nested = target.path.size() > 1;
+  if (nested && (!NestedFormPathIsStructurallyEditable(page.get(), target.object, target.path) ||
+                 ParagraphMetadata(target.object))) {
     SetError("UNSUPPORTED_CAPABILITY",
-             "Nested Form XObject text cannot be edited.");
+             "Nested marked/tagged Form text or paragraph structures cannot be rewritten safely.");
     return false;
   }
   if (ParagraphMetadata(target.object)) {
@@ -2842,27 +2883,37 @@ bool ApplyTextReplace(
   if (!GetSupportedActualTextMark(target.object, &actual_text_mark)) {
     return false;
   }
+  Matrix parent_to_pdf;
+  if (nested && !ParentFormToPdf(page.get(), target.path, &parent_to_pdf))
+    return false;
   Rect original_bounds;
   Rect original_frame;
   if (!GetNormalizedTextLayoutFrame(page.get(), target.object,
-                                    &original_frame) ||
-      !GetNormalizedObjectBounds(page.get(), target.object, &original_bounds)) {
+                                    &original_frame, parent_to_pdf) ||
+      !GetNormalizedObjectBounds(page.get(), target.object, &original_bounds,
+                                 parent_to_pdf)) {
     return false;
   }
+  CPDF_PageObjectHolder* holder = nullptr;
+  std::optional<pdf_editor::PreparedFormPath> prepared_path;
+  if (nested && !PrepareObjectHolder(page.get(), target.path, &holder, &prepared_path))
+    return false;
   if (updated_text.empty()) {
     // PDFium drops empty text on reparsing, so delete the object and its
     // identity together rather than retaining an unsavable empty placeholder.
-    if (!FPDFPage_RemoveObject(page.get(), target.object)) {
+    if (nested ? !holder->RemovePageObject(native_object)
+               : !FPDFPage_RemoveObject(page.get(), target.object)) {
       SetError("CORE_UNAVAILABLE", "The cleared text object could not be removed.");
       return false;
     }
-    FPDFPageObj_Destroy(target.object);
-    auto& identities = metadata->pages[page_index].objects;
-    identities.erase(identities.begin() + target.path[0]);
-    if (!FPDFPage_GenerateContent(page.get())) {
-      SetError("CORE_UNAVAILABLE", "The cleared page content could not be generated.");
+    if (!nested) FPDFPageObj_Destroy(target.object);
+    auto* identities = &metadata->pages[page_index].objects;
+    for (size_t depth = 0; depth + 1 < target.path.size(); ++depth)
+      identities = &(*identities)[target.path[depth]].children;
+    identities->erase(identities->begin() + static_cast<std::ptrdiff_t>(target.path.back()));
+    if (!GenerateEditedObjectHolder(page.get(), prepared_path,
+                                    "The cleared text content could not be generated."))
       return false;
-    }
     if (layout_bounds) *layout_bounds = {original_bounds.x, original_bounds.y, 0, 0};
     if (overflow) *overflow = false;
     return true;
@@ -2885,11 +2936,9 @@ bool ApplyTextReplace(
       !SetActualText(target.object, actual_text_mark, updated_text) ||
       (search_layer && !FitOcrReplacement(native_text, original_ocr.get()) &&
        !FitTextToBounds(page.get(), target.object, original_bounds)) ||
-      !FPDFPage_GenerateContent(page.get())) {
-    if (g_error_code.empty()) {
-      SetError("CORE_UNAVAILABLE",
-               "The edited page content could not be generated.");
-    }
+      (nested && !NestedObjectFitsForm(page.get(), target.object, target.path)) ||
+      !GenerateEditedObjectHolder(
+          page.get(), prepared_path, "The edited text content could not be generated.")) {
     return false;
   }
 
@@ -2898,7 +2947,7 @@ bool ApplyTextReplace(
     if (updated_text.empty()) {
       edited_bounds = {original_bounds.x, original_bounds.y, 0, 0};
     } else if (!GetNormalizedObjectBounds(page.get(), target.object,
-                                          &edited_bounds)) {
+                                          &edited_bounds, parent_to_pdf)) {
       return false;
     }
     if (layout_bounds) {
@@ -2907,7 +2956,7 @@ bool ApplyTextReplace(
     if (overflow) {
       Rect edited_frame;
       if (!GetNormalizedTextLayoutFrame(page.get(), target.object,
-                                        &edited_frame)) {
+                                        &edited_frame, parent_to_pdf)) {
         return false;
       }
       *overflow = !search_layer && (
@@ -3139,9 +3188,11 @@ bool ApplyTextStyle(
                           true, &target)) {
       return false;
     }
-    if (target.path.size() != 1) {
+    const bool nested = target.path.size() > 1;
+    if (nested && ((command.flags & kTextStyleRangeFlag) ||
+                   !NestedFormPathIsStructurallyEditable(page.get(), target.object, target.path))) {
       SetError("UNSUPPORTED_CAPABILITY",
-               "Nested Form XObject text styling is not supported.");
+               "Nested marked/tagged text and nested range formatting cannot be rewritten safely.");
       return false;
     }
     CPDF_PageObject* native_object =
@@ -3156,6 +3207,10 @@ bool ApplyTextStyle(
     if (!GetObjectText(page.get(), target.object, &current_text)) {
       return false;
     }
+    CPDF_PageObjectHolder* holder = nullptr;
+    std::optional<pdf_editor::PreparedFormPath> prepared_path;
+    if (nested && !PrepareObjectHolder(page.get(), target.path, &holder, &prepared_path))
+      return false;
     if (command.flags & kTextStyleRangeFlag) {
       if (!ApplyTextRangeStyle(document, pdf, page.get(), metadata, page_index,
                                target, native_text, current_text, command,
@@ -3164,6 +3219,10 @@ bool ApplyTextStyle(
                                 resources, font_cache)) {
       return false;
     }
+    if (nested && (!NestedObjectFitsForm(page.get(), target.object, target.path) ||
+                   !GenerateEditedObjectHolder(
+                       page.get(), prepared_path, "The styled Form content could not be generated.")))
+      return false;
   }
   if (!FPDFPage_GenerateContent(page.get())) {
     SetError("CORE_UNAVAILABLE",

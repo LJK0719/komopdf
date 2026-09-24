@@ -50,6 +50,7 @@ function validateCommand(request: AiRequest, command: ProposedCommand, allowedCo
       return;
     case 'objects.transform':
     case 'objects.delete':
+    case 'objects.copy':
     case 'objects.align':
     case 'objects.distribute':
       assert(pageIds.has(command.pageId), 'Object command page is not in request context');
@@ -59,7 +60,14 @@ function validateCommand(request: AiRequest, command: ProposedCommand, allowedCo
     case 'pages.crop':
     case 'pages.delete':
     case 'pages.reorder':
+    case 'pages.duplicate':
       for (const pageId of command.pageIds) assert(pageIds.has(pageId), 'Page command target is not in request context');
+      if (command.type === 'pages.duplicate' && command.afterPageId !== null) {
+        assert(pageIds.has(command.afterPageId), 'Page insertion position is not in request context');
+      }
+      return;
+    case 'pages.insert':
+      assert(pageIds.has(command.referencePageId), 'Page insertion reference is not in request context');
       return;
     case 'form.fill': {
       assert(fieldIds.has(command.fieldId), 'Form command target is not in request context');
