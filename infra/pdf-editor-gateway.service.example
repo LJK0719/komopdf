@@ -9,7 +9,7 @@ Group=pdf-editor
 WorkingDirectory=/opt/pdf-editor/current
 # 宿主凭证文件只允许 root 读取；systemd 为服务提供受限的凭证副本。
 LoadCredential=gemini:/etc/pdf-editor/credentials/gemini
-ExecStart=/usr/bin/node --max-old-space-size=256 apps/gateway/dist/cli.mjs --host 127.0.0.1 --port 8787 --config /etc/pdf-editor/gateway.config.json --credential-file %d/gemini
+ExecStart=/opt/pdf-editor/runtime/node --max-old-space-size=256 apps/gateway/dist/cli.mjs --host 127.0.0.1 --port 8787 --config /etc/pdf-editor/gateway.config.json --credential-file %d/gemini
 MemoryMax=512M
 Restart=on-failure
 RestartSec=3s
