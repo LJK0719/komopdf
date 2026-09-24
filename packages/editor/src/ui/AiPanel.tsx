@@ -29,6 +29,8 @@ import { AiPanelExtraction } from './AiPanelExtraction.js';
 import { AiPanelBatch } from './AiPanelBatch.js';
 import { captureRegionImage } from './AiPanelImage.js';
 import { AiPanelForm, type FormSuggestionItem } from './AiPanelForm.js';
+import { analyzeFullDocument, collectDocumentPassages, isExhaustiveQuestion, selectRelevantPassages,
+  type DocumentAnalysis, type DocumentPassage } from './document-ai-context.js';
 
 type Props = {
   document: DocumentInfo | null;
@@ -84,6 +86,10 @@ export function AiPanel(props: Props) {
   const [tone, setTone] = useState('concise');
   const [targetCharLength, setTargetCharLength] = useState<number | ''>('');
   const [askScope, setAskScope] = useState<'selection' | 'page' | 'document'>('page');
+  const [scanAllPages, setScanAllPages] = useState(false);
+  const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
+  const [analysisProgress, setAnalysisProgress] = useState('');
+  const [retrievalNote, setRetrievalNote] = useState('');
   const [fontId, setFontId] = useState('');
 
   const [busy, setBusy] = useState(false);
@@ -137,6 +143,9 @@ export function AiPanel(props: Props) {
     setFormItems([]);
     setSelectedFormIds(new Set());
     setRawFormCommands([]);
+    setAnalysis(null);
+    setAnalysisProgress('');
+    setRetrievalNote('');
   };
 
   const needsSourceConsent = Boolean(
@@ -223,6 +232,22 @@ export function AiPanel(props: Props) {
     try {
       const document = props.document;
       const currentPage = props.page;
+      if (askScope === 'document' && (feature === 'document.summarize' ||
+        (feature === 'document.ask' && (scanAllPages || isExhaustiveQuestion(instruction))))) {
+        setAnalysis(await analyzeFullDocument({
+          engine: props.engine, document, authorization,
+          endpoint: props.endpoint ?? '/api/v1/ai/requests', feature,
+          instruction: instruction.trim() || defaultInstructionFor(feature, tone), signal: abort.signal,
+          currentDocument: () => {
+            const info = current.current.document;
+            if (!info) throw new Error('Document closed during analysis');
+            return { id: info.id, revision: info.revision };
+          },
+          onProgress: setAnalysisProgress,
+        }));
+        setAnalysisProgress('');
+        return;
+      }
 
       // A10 Form handling
       let pageFormFields: FormFieldInfo[] = [];
@@ -238,6 +263,7 @@ export function AiPanel(props: Props) {
       }
 
       let evidenceBlocks: TextBlock[] = [];
+      let rankedPassages: DocumentPassage[] | null = null;
       const pageScopeId = currentPage.id;
       let effectiveScope: 'selection' | 'page' | 'document' = 'page';
 
@@ -247,18 +273,12 @@ export function AiPanel(props: Props) {
           const selected = currentPage.objects.filter(obj => props.selectedIds.includes(obj.id));
           evidenceBlocks = [...new Map(selected.flatMap(obj => (obj.textBlock ? [[obj.textBlock.id, obj.textBlock] as const] : []))).values()];
         } else if (askScope === 'document') {
-          let collectedChars = 0;
-          for (const pid of document.pageOrder) {
-            const blocks = await props.engine.extract({ docId: document.id, pageIds: [pid] });
-            for (const b of blocks) {
-              const textLen = b.runs.map(r => r.text).join('').length;
-              if (collectedChars + textLen <= 36_000 && evidenceBlocks.length < 24) {
-                evidenceBlocks.push(b);
-                collectedChars += textLen;
-              }
-            }
-            if (evidenceBlocks.length >= 24 || collectedChars >= 36_000) break;
-          }
+          setAnalysisProgress('Searching document locally…');
+          const passages = await collectDocumentPassages(props.engine, document, abort.signal);
+          rankedPassages = selectRelevantPassages(passages, instruction.trim());
+          if (!rankedPassages.length) throw new Error('No matching text found. Try other search terms or enable Scan every page.');
+          setRetrievalNote(`Searched ${document.pageOrder.length} pages; selected ${rankedPassages.length} relevant passages from ${passages.length}. This answer is not exhaustive.`);
+          setAnalysisProgress('');
         } else {
           evidenceBlocks = [...new Map(currentPage.objects.flatMap(obj => (obj.textBlock ? [[obj.textBlock.id, obj.textBlock] as const] : []))).values()];
         }
@@ -270,11 +290,15 @@ export function AiPanel(props: Props) {
         effectiveScope = props.selectedIds.length ? 'selection' : 'page';
       }
 
-      if (feature !== 'image.explain' && feature !== 'form.suggest' && evidenceBlocks.length === 0) {
+      if (feature !== 'image.explain' && feature !== 'form.suggest' && evidenceBlocks.length === 0 && !rankedPassages?.length) {
         throw new Error('No extractable text in current scope. For scanned documents, use desktop local OCR.');
       }
 
-      const evidence = evidenceBlocks.map((block, index) => ({
+      const evidence = rankedPassages ? rankedPassages.map((passage, index) => ({
+        id: `e${index + 1}`, docId: document.id, revision: document.revision,
+        pageId: passage.pageId, pageNumber: passage.pageNumber, blockId: passage.blockId,
+        text: passage.text, characterRange: passage.range, bounds: passage.bounds,
+      })) : evidenceBlocks.map((block, index) => ({
         id: `e${index + 1}`,
         docId: document.id,
         revision: document.revision,
@@ -291,7 +315,9 @@ export function AiPanel(props: Props) {
         throw new Error(`Text exceeds single request budget (${totalCharacters} > ${charBudget} characters). Please narrow selection or use batch reading translation.`);
       }
 
-      const localSources: LocalEvidenceSource[] = evidenceBlocks.map((block, index) => {
+      const localSources: LocalEvidenceSource[] = rankedPassages ? rankedPassages.map((passage, index) => ({
+        evidenceId: evidence[index]!.id, sourceId: passage.sourceId, blockText: passage.blockText,
+      })) : evidenceBlocks.map((block, index) => {
         const sourceId = block.sourceId ?? (document.sourceIds.length === 1 ? document.sourceIds[0] : undefined);
         if (!sourceId || !document.sourceIds.includes(sourceId)) {
           throw new Error('Text block missing source mapping, cannot determine AI authorization scope');
@@ -324,15 +350,18 @@ export function AiPanel(props: Props) {
       const availableCommands = feature === 'commands.plan'
         ? ['pages.rotate', 'pages.crop', 'pages.delete', 'pages.reorder', 'objects.delete', 'objects.align', 'objects.distribute', 'objects.transform', 'text.style']
         : feature === 'blocks.organize'
-          ? ['text.style', 'objects.align', 'objects.distribute', 'objects.transform', 'objects.delete']
+          ? ['text.style', 'text.reflow', 'objects.align', 'objects.distribute', 'objects.transform', 'objects.delete']
           : feature === 'form.suggest'
             ? ['form.fill']
             : undefined;
 
       const advertisedCommands = availableCommands?.filter(command => document.capabilities.includes(command as CommandType));
 
+      if (feature === 'blocks.organize' && !props.selectedIds.length) {
+        throw new Error('Select text blocks or other objects to organize before asking AI');
+      }
       const objectsMetadata = (feature === 'commands.plan' || feature === 'blocks.organize')
-        ? currentPage.objects.map(obj => ({
+        ? currentPage.objects.filter(obj => feature !== 'blocks.organize' || props.selectedIds.includes(obj.id)).map(obj => ({
             id: obj.id,
             pageId: obj.pageId,
             type: obj.type,
@@ -411,7 +440,7 @@ export function AiPanel(props: Props) {
           fields: fieldsMap,
           ...(fonts.length ? { fontIds: new Set(fonts.map(f => f.id)) } : {}),
         };
-        return createAiTransaction(req, resp, ctx, txId);
+        return createAiTransaction(req, resp, ctx, txId, feature === 'blocks.organize' ? fontId || undefined : undefined);
       };
 
       const workflow = new AiWorkflow<CommitResult>({
@@ -480,6 +509,7 @@ export function AiPanel(props: Props) {
           setFormItems(items);
           setSelectedFormIds(new Set(items.map(i => i.fieldId)));
         } else if (rawResult.preview) {
+          await props.engine.previewTransaction(rawResult.preview.transaction);
           setCommandPlanPreview(rawResult.preview);
         }
       }
@@ -487,6 +517,7 @@ export function AiPanel(props: Props) {
       setError(abort.signal.aborted ? 'Request cancelled' : caught instanceof Error ? caught.message : 'AI request failed');
     } finally {
       controller.current = null;
+      setAnalysisProgress('');
       setBusy(false);
     }
   };
@@ -693,7 +724,7 @@ export function AiPanel(props: Props) {
       (outcome.response.document.id !== props.document.id ||
         outcome.response.document.baseRevision !== props.document.revision),
   );
-  const answerText = result?.kind === 'answer' ? result.text : delta;
+  const answerText = analysis?.overview ?? (result?.kind === 'answer' ? result.text : delta);
 
   return (
     <section className="ai-composer" aria-label="komo AI">
@@ -821,18 +852,23 @@ export function AiPanel(props: Props) {
               >
                 <option value="selection">Selected text</option>
                 <option value="page">Extractable text on current page</option>
-                <option value="document">Entire document search (up to 24 blocks / 36k chars)</option>
+                <option value="document">{feature === 'document.summarize' ? 'Entire document (batched)' : 'Search all pages for relevant passages'}</option>
               </select>
             </label>
           )}
+          {askScope === 'document' && feature === 'document.ask' && <label>
+            <input type="checkbox" checked={scanAllPages} disabled={props.disabled || busy}
+              onChange={event => setScanAllPages(event.target.checked)} /> Scan every page for an exhaustive answer
+          </label>}
 
-          {['text.translate', 'text.proofread', 'text.rewrite', 'text.fit'].includes(feature) && (
+          {['text.translate', 'text.proofread', 'text.rewrite', 'text.fit', 'blocks.organize'].includes(feature) && (
             <label>
-              Replacement font
+              {feature === 'blocks.organize' ? 'Font for merged paragraph (optional)' : 'Replacement font'}
               <select
                 value={fontId}
                 onChange={e => {
                   setFontId(e.target.value);
+                  if (feature === 'blocks.organize') resetResults();
                   if (candidateItems.length > 0 && props.document && snapshot) {
                     const newFont = e.target.value;
                     void (async () => {
@@ -916,6 +952,9 @@ export function AiPanel(props: Props) {
       )}
 
       {error && <p role="alert" style={{ color: '#ff623d' }}>{error}</p>}
+      {analysisProgress && <p role="status">{analysisProgress}</p>}
+      {retrievalNote && <p role="status">{retrievalNote}</p>}
+      {analysis && <p role="status">Scanned {analysis.pagesScanned} pages; {analysis.pagesWithText} contained extractable text ({analysis.passagesScanned} passages). Scanned pages without text require desktop OCR. Section findings and source locations follow.</p>}
 
       {answerText && (
         <div style={{ marginTop: '8px', padding: '10px', background: '#fffdf6', border: '1px solid #c2c1ba', borderRadius: '2px' }}>
@@ -923,6 +962,19 @@ export function AiPanel(props: Props) {
           <p style={{ whiteSpace: 'pre-wrap', fontSize: '11px', lineHeight: 1.6, margin: '6px 0 0' }}>{answerText}</p>
         </div>
       )}
+
+      {analysis && <div style={{ display: 'grid', gap: '8px', marginTop: '8px' }}>
+        {analysis.sections.map((section, index) => <details key={index}>
+          <summary>Section {index + 1} · {section.citations.length} source citations</summary>
+          <p style={{ whiteSpace: 'pre-wrap' }}>{section.text}</p>
+          {section.citations.map((citation, citationIndex) => <button key={citationIndex} type="button"
+            disabled={!props.onLocate || props.document?.id !== analysis.document.id || props.document?.revision !== analysis.document.revision}
+            onClick={() => props.onLocate?.(citation.pageId, citation.blockId)}>
+            Page {citation.pageNumber}{citation.quote ? ` · ${citation.quote}` : ''}
+          </button>)}
+          {!section.citations.length && <p>No PDF citation was verified for this section.</p>}
+        </details>)}
+      </div>}
 
       {result?.kind === 'answer' && snapshot && props.document && result.citations.length > 0 && (
         <div style={{ marginTop: '6px', display: 'grid', gap: '4px' }}>
@@ -1030,9 +1082,16 @@ export function AiPanel(props: Props) {
                 {i + 1}. <strong>{cmd.type}</strong>
                 {'pageIds' in cmd && <span> · Pages: {cmd.pageIds.join(', ')}</span>}
                 {'objectIds' in cmd && <span> · Objects: {cmd.objectIds.length}</span>}
+                {cmd.type === 'text.reflow' && <span> · Text blocks in order: {cmd.blockIds.join(', ')}</span>}
               </div>
             ))}
           </div>
+          {commandPlanPreview?.transaction.commands.filter(cmd => cmd.type === 'text.reflow').map(cmd =>
+            <div key={cmd.objectId} style={{ fontSize: '10px' }}>
+              <strong>Merged text and target box (pt)</strong>
+              <p style={{ whiteSpace: 'pre-wrap' }}>{cmd.text}</p>
+              <p>{cmd.bounds.x}, {cmd.bounds.y} · {cmd.bounds.width} × {cmd.bounds.height}</p>
+            </div>)}
 
           <button
             type="button"
