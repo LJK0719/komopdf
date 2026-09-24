@@ -197,6 +197,49 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });
 
+test('real WASM saves a multi-stroke handwritten visual signature as one undoable ink transaction', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'signature-source.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
+  await expect(page.getByText('signature-source.pdf', { exact: true })).toBeVisible({ timeout: 60_000 });
+  const panel = page.getByRole('region', { name: 'Handwritten signature' });
+  const area = panel.getByRole('img', { name: 'Signature drawing area' });
+  await area.scrollIntoViewIfNeeded();
+  const rect = await area.boundingBox();
+  if (!rect) throw new Error('Signature drawing area is unavailable');
+  await page.mouse.move(rect.x + 30, rect.y + 35);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + 100, rect.y + 80, { steps: 5 });
+  await page.mouse.up();
+  await page.mouse.move(rect.x + 130, rect.y + 55);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + 190, rect.y + 85, { steps: 5 });
+  await page.mouse.up();
+  await expect(area.locator('polyline')).toHaveCount(2);
+  await expect(panel.getByRole('button', { name: 'Place signature' })).toBeEnabled();
+  await panel.getByRole('button', { name: 'Place signature' }).click();
+  const list = page.locator('.document-tools-list');
+  await expect(list.locator('li')).toHaveCount(2);
+  await expect(list).toContainText('ink');
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(list.locator('li')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(list.locator('li')).toHaveCount(2);
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const saved = await readFile((await (await download).path())!);
+  page.once('dialog', async dialog => {
+    page.once('dialog', discard => discard.accept());
+    await dialog.dismiss();
+  });
+  const reopen = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await reopen).setFiles({ name: 'signature-saved.pdf', mimeType: 'application/pdf', buffer: saved });
+  await expect(list.locator('li')).toHaveCount(2);
+  await expect(page.locator('.status-dot-error')).toHaveCount(0);
+});
+
 function syntheticPdf(pageAttributes = '/MediaBox [0 0 300 300]'): Buffer {
   const stream = 'q 1 0 0 rg 20 20 50 50 re f Q\nBT /F1 18 Tf 20 240 Td (Hello PDF Editor) Tj ET';
   const objects = [
