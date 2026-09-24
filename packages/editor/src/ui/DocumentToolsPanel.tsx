@@ -25,6 +25,13 @@ type Props = {
 
 type BoundsDraft = { x: string; y: string; width: string; height: string };
 type FormValue = FormFieldInfo['value'];
+type FieldPropertiesDraft = {
+  readOnly: boolean;
+  required: boolean;
+  multiple: boolean;
+  tooltip: string;
+  maxLen: string;
+};
 
 const DEFAULT_FORM_FONT_ID = 'noto-sans-cjk-sc-regular';
 
@@ -43,7 +50,7 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   const [fieldReadOnly, setFieldReadOnly] = useState(false);
   const [fieldRequired, setFieldRequired] = useState(false);
   const [fieldMultiple, setFieldMultiple] = useState(false);
-  const [fieldPropertyDrafts, setFieldPropertyDrafts] = useState<Record<string, { readOnly: boolean; required: boolean; multiple: boolean }>>({});
+  const [fieldPropertyDrafts, setFieldPropertyDrafts] = useState<Record<string, FieldPropertiesDraft>>({});
   const [annotations, setAnnotations] = useState<PdfAnnotationInfo[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [fields, setFields] = useState<FormFieldInfo[]>([]);
@@ -102,8 +109,13 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
       setAnnotations(nextAnnotations);
       setFields(nextFields);
       setFieldDrafts(Object.fromEntries(nextFields.map(field => [field.id, copyFormValue(field.value)])));
-      setFieldPropertyDrafts(Object.fromEntries(nextFields.map(field => [field.id,
-        { readOnly: field.readOnly, required: field.required, multiple: field.multiple ?? false }])));
+      setFieldPropertyDrafts(Object.fromEntries(nextFields.map(field => [field.id, {
+        readOnly: field.readOnly,
+        required: field.required,
+        multiple: field.multiple ?? false,
+        tooltip: field.tooltip ?? '',
+        maxLen: field.maxLen !== undefined && field.maxLen > 0 ? String(field.maxLen) : '',
+      }])));
       setDataScope(expectedScope);
     }).catch(caught => {
       if (loadSequence.current === sequence && scopeRef.current === expectedScope) {
@@ -257,9 +269,22 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   async function updateField(field: FormFieldInfo): Promise<void> {
     const draft = fieldPropertyDrafts[field.id];
     if (!draft) return;
-    await execute({ type: 'form.update', fieldId: field.id,
-      readOnly: draft.readOnly, required: draft.required,
-      ...(field.choiceKind === 'list' ? { multiple: draft.multiple } : {}) });
+    const trimmedTooltip = draft.tooltip.trim();
+    const parsedMaxLen = draft.maxLen.trim() === '' ? 0 : Number(draft.maxLen.trim());
+    if (Number.isNaN(parsedMaxLen) || parsedMaxLen < 0 || !Number.isInteger(parsedMaxLen)) {
+      setError('Maximum length must be a non-negative integer');
+      return;
+    }
+    await execute({
+      type: 'form.update',
+      fieldId: field.id,
+      readOnly: draft.readOnly,
+      required: draft.required,
+      ...(field.choiceKind === 'list' ? { multiple: draft.multiple } : {}),
+      ...(trimmedTooltip !== (field.tooltip ?? '') ? { tooltip: trimmedTooltip === '' ? null : trimmedTooltip } : {}),
+      ...(field.type === 'text' && parsedMaxLen !== (field.maxLen ?? 0)
+        ? { maxLen: parsedMaxLen === 0 ? null : parsedMaxLen } : {}),
+    });
   }
 
   function useSelectionBounds(): void {
@@ -344,13 +369,24 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
         {currentFields.length > 0 ? <div className="document-fields-list">
           {currentFields.map(field => {
             const draft = fieldDrafts[field.id] ?? field.value;
-            const properties = fieldPropertyDrafts[field.id] ?? { readOnly: field.readOnly, required: field.required, multiple: field.multiple ?? false };
+            const properties = fieldPropertyDrafts[field.id] ?? {
+              readOnly: field.readOnly,
+              required: field.required,
+              multiple: field.multiple ?? false,
+              tooltip: field.tooltip ?? '',
+              maxLen: field.maxLen !== undefined && field.maxLen > 0 ? String(field.maxLen) : '',
+            };
+            const currentTooltip = field.tooltip ?? '';
+            const currentMaxLen = field.maxLen !== undefined && field.maxLen > 0 ? String(field.maxLen) : '';
+            const tooltipChanged = properties.tooltip.trim() !== currentTooltip;
+            const maxLenChanged = field.type === 'text' && (properties.maxLen.trim() !== currentMaxLen);
             const propertiesChanged = properties.readOnly !== field.readOnly || properties.required !== field.required ||
-              (field.choiceKind === 'list' && properties.multiple !== (field.multiple ?? false));
+              (field.choiceKind === 'list' && properties.multiple !== (field.multiple ?? false)) ||
+              tooltipChanged || maxLenChanged;
             return <div className="document-field" key={field.id}>
               <div className="document-field-heading">
                 <strong>{field.name}</strong>
-                <span>{field.choiceKind ?? field.type}{field.required ? ' · required' : ''}{field.readOnly ? ' · read-only' : ''}{field.multiple ? ' · multi-select' : ''}</span>
+                <span>{field.choiceKind ?? field.type}{field.required ? ' · required' : ''}{field.readOnly ? ' · read-only' : ''}{field.multiple ? ' · multi-select' : ''}{field.maxLen ? ` · max: ${field.maxLen}` : ''}</span>
               </div>
               {fieldEditor(field, draft, locked || field.readOnly || !supportsFormFill, value => {
                 setFieldDrafts(current => ({ ...current, [field.id]: value }));
@@ -368,6 +404,15 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
                   disabled={locked || !document.permissions.modify}
                   onChange={event => setFieldPropertyDrafts(current => ({ ...current,
                     [field.id]: { ...properties, multiple: event.target.checked } }))} />Multiple selections</label>}
+                <label>Tooltip<input type="text" value={properties.tooltip} placeholder="No tooltip"
+                  disabled={locked || !document.permissions.modify}
+                  onChange={event => setFieldPropertyDrafts(current => ({ ...current,
+                    [field.id]: { ...properties, tooltip: event.target.value } }))} /></label>
+                {field.type === 'text' && <label>Max length<input type="number" min="0" step="1"
+                  value={properties.maxLen} placeholder="No limit"
+                  disabled={locked || !document.permissions.modify}
+                  onChange={event => setFieldPropertyDrafts(current => ({ ...current,
+                    [field.id]: { ...properties, maxLen: event.target.value } }))} /></label>}
                 <button type="button" disabled={locked || !document.permissions.modify || !propertiesChanged}
                   onClick={() => void run(() => updateField(field))}>Apply field properties</button>
               </div>}
@@ -456,6 +501,9 @@ function buildFieldContext(fields: FormFieldInfo[], currentPageId: string) {
       readOnly: field.readOnly,
       ...(field.choiceKind ? { choiceKind: field.choiceKind } : {}),
       ...(field.multiple !== undefined ? { multiple: field.multiple } : {}),
+      value: field.value,
+      ...(field.maxLen !== undefined ? { maxLen: field.maxLen } : {}),
+      ...(field.tooltip !== undefined ? { tooltip: field.tooltip } : {}),
     }] as const]
     : []));
 }

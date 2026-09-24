@@ -19,7 +19,8 @@ export type CommandContext = {
   document: DocumentInfo;
   pages: ReadonlyMap<string, PageModel>;
   fields?: ReadonlyMap<string, { pageId: string; type: 'text' | 'checkbox' | 'radio' | 'choice';
-    options?: readonly string[]; readOnly?: boolean; choiceKind?: 'combo' | 'list'; multiple?: boolean }>;
+    options?: readonly string[]; readOnly?: boolean; choiceKind?: 'combo' | 'list'; multiple?: boolean;
+    value?: string | boolean | string[] | undefined; maxLen?: number | undefined; tooltip?: string | undefined }>;
   annotations?: ReadonlyMap<string, { pageId: string; subtype: string }>;
   resourceIds?: ReadonlySet<string>;
   fontIds?: ReadonlySet<string>;
@@ -271,21 +272,40 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         if (field.readOnly) invalid('Form field is read-only');
         if (field.type === 'checkbox' && typeof command.value !== 'boolean') invalid('Checkbox field requires a boolean value');
         if (field.type === 'text' && typeof command.value !== 'string') invalid('Text field requires a string value');
+        if (field.type === 'text' && typeof command.value === 'string' && field.maxLen !== undefined && field.maxLen > 0) {
+          if (command.value.length > field.maxLen) invalid('Text value exceeds field maximum length');
+        }
         if (field.type === 'radio' && (typeof command.value !== 'string' || !field.options?.includes(command.value))) invalid('Radio value is not among field options');
         if (field.type === 'choice') {
           const values = Array.isArray(command.value) ? command.value : [command.value];
           if (values.some(value => typeof value !== 'string' || !field.options?.includes(value))) invalid('Choice value is not among field options');
           if (values.length > 1 && !field.multiple) invalid('Multiple values require a multi-select list field');
         }
+        fields.set(command.fieldId, { ...field, value: command.value });
         break;
       }
       case 'form.update': {
         const field = fields.get(command.fieldId);
         if (!field || !pageIds.has(field.pageId)) invalid('Form field does not exist or page was deleted');
         if (command.multiple !== undefined && field.choiceKind !== 'list') invalid('Only list fields support multiple choices');
+        if (command.maxLen !== undefined && field.type !== 'text') invalid('MaxLen is only supported for text fields');
+        if (command.maxLen !== undefined && command.maxLen !== null && command.maxLen > 0) {
+          if (typeof field.value === 'string' && field.value.length > command.maxLen) {
+            invalid('Text field current value exceeds requested maximum length');
+          }
+        }
+        const nextMaxLen = command.maxLen !== undefined
+          ? (command.maxLen === null || command.maxLen === 0 ? undefined : command.maxLen)
+          : field.maxLen;
+        const nextTooltip = command.tooltip !== undefined
+          ? (command.tooltip === null || command.tooltip === '' ? undefined : command.tooltip)
+          : field.tooltip;
         fields.set(command.fieldId, { ...field,
           readOnly: command.readOnly ?? field.readOnly ?? false,
-          multiple: command.multiple ?? field.multiple ?? false });
+          multiple: command.multiple ?? field.multiple ?? false,
+          ...(nextMaxLen !== undefined ? { maxLen: nextMaxLen } : { maxLen: undefined }),
+          ...(nextTooltip !== undefined ? { tooltip: nextTooltip } : { tooltip: undefined }),
+        });
         break;
       }
     }

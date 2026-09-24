@@ -28,6 +28,11 @@ describe('共享数据契约', () => {
     expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1' }).success).toBe(false);
     expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', readOnly: false }).success).toBe(true);
     expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', multiple: true, required: true }).success).toBe(true);
+    expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', tooltip: 'Help text' }).success).toBe(true);
+    expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', tooltip: null }).success).toBe(true);
+    expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', maxLen: 10 }).success).toBe(true);
+    expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', maxLen: null }).success).toBe(true);
+    expect(editCommandSchema.safeParse({ type: 'form.update', fieldId: 'f1', maxLen: -1 }).success).toBe(false);
     const create = { type: 'form.create', pageId: 'p1', fieldId: 'f2', name: 'List',
       fieldType: 'list', bounds: { x: 0, y: 0, width: 40, height: 40 }, options: ['A'], fontId: 'font' };
     expect(editCommandSchema.safeParse({ ...create, multiple: true }).success).toBe(true);

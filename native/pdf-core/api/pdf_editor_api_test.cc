@@ -2405,8 +2405,94 @@ void TestFormFieldAttributes(const std::string& font_id) {
               std::string(pde_describe_forms(empty_reopen)).find(
                   "\"multiple\":true,\"value\":[]") != std::string::npos,
           "empty multi-select flag and value survive save/reopen");
-  Require(pde_close(empty_reopen) == 1 && pde_close(doc) == 1,
-          "close form attribute fixtures");
+  Require(pde_close(empty_reopen) == 1, "close empty list reopen fixture");
+  revision = pde_document_revision(doc);
+
+  // Test tooltip (/TU) and maxLen (/MaxLen) on text field "attrs-text":
+  // 1. Initial state: "attrs-text" currently has value "Editable" (length 8).
+  // 2. Setting maxLen = 5 conflicts with current value (length 8 > 5) -> MUST REJECT!
+  update = {}; update.type = 28; update.target_id = "attrs-text";
+  update.flags = 8; update.values[3] = 5;
+  Require(pde_apply_commands(doc, revision, "reject-maxlen-conflict", &update, 1) == nullptr &&
+              pde_document_revision(doc) == revision,
+          "new maxLen smaller than current value length is rejected without truncating");
+
+  // 3. Setting maxLen = 10 (>= 8) and setting tooltip = "User instructions" succeeds
+  update.flags = 8 | 16; update.values[3] = 10; update.text_utf8 = "User instructions";
+  Require(pde_apply_commands(doc, revision++, "set-maxlen-and-tooltip", &update, 1) != nullptr,
+          "update sets tooltip and maxLen on text field");
+  std::string with_props = RequireResult(pde_describe_forms(doc), "describe field with tooltip and maxLen");
+  Require(with_props.find("\"tooltip\":\"User instructions\"") != std::string::npos &&
+              with_props.find("\"maxLen\":10") != std::string::npos,
+          "tooltip and maxLen are serialized in describe_forms");
+
+  // 4. form.fill length gating: filling 14 chars (> 10) is rejected
+  fill = {}; fill.type = 18; fill.target_id = "attrs-text"; fill.text_utf8 = "Too long text!";
+  Require(pde_apply_commands(doc, revision, "reject-fill-exceeding-maxlen", &fill, 1) == nullptr &&
+              pde_document_revision(doc) == revision,
+          "form.fill rejects value exceeding maxLen");
+
+  // 5. form.fill within limit: filling 9 chars (<= 10) succeeds
+  fill.text_utf8 = "NineChars";
+  Require(pde_apply_commands(doc, revision++, "fill-within-maxlen", &fill, 1) != nullptr,
+          "form.fill succeeds when text length <= maxLen");
+  std::string filled_props = RequireResult(pde_describe_forms(doc), "describe field filled within maxLen");
+  Require(filled_props.find("\"value\":\"NineChars\"") != std::string::npos &&
+              filled_props.find("\"tooltip\":\"User instructions\"") != std::string::npos &&
+              filled_props.find("\"maxLen\":10") != std::string::npos,
+          "fill preserves tooltip and maxLen");
+
+  // 6. Preservation semantics: updating readOnly without tooltip/maxLen flags preserves them
+  update = {}; update.type = 28; update.target_id = "attrs-text";
+  update.flags = 1; update.values[0] = 1; // set readOnly
+  Require(pde_apply_commands(doc, revision++, "preserve-props-update-readonly", &update, 1) != nullptr,
+          "updating readOnly preserves tooltip and maxLen");
+  std::string preserved_props = RequireResult(pde_describe_forms(doc), "describe preserved props");
+  Require(preserved_props.find("\"readOnly\":true") != std::string::npos &&
+              preserved_props.find("\"tooltip\":\"User instructions\"") != std::string::npos &&
+              preserved_props.find("\"maxLen\":10") != std::string::npos,
+          "omitted tooltip and maxLen remain preserved");
+
+  // 7. Clear semantics: clear tooltip (flags |= 16, text_utf8 = "") and clear maxLen (flags |= 8, values[3] = 0)
+  update = {}; update.type = 28; update.target_id = "attrs-text";
+  update.flags = 8 | 16; update.values[3] = 0; update.text_utf8 = "";
+  Require(pde_apply_commands(doc, revision++, "clear-tooltip-and-maxlen", &update, 1) != nullptr,
+          "clearing tooltip and maxLen succeeds");
+  std::string cleared_props = RequireResult(pde_describe_forms(doc), "describe cleared props");
+  Require(cleared_props.find("\"tooltip\"") == std::string::npos &&
+              cleared_props.find("\"maxLen\"") == std::string::npos,
+          "cleared tooltip and maxLen are absent from describe_forms");
+
+  // 8. Undo/redo restores tooltip and maxLen
+  Require(pde_undo(doc) != nullptr, "undo clear tooltip and maxLen");
+  std::string undone_props = RequireResult(pde_describe_forms(doc), "describe undone props");
+  Require(undone_props.find("\"tooltip\":\"User instructions\"") != std::string::npos &&
+              undone_props.find("\"maxLen\":10") != std::string::npos,
+          "undo restores previous tooltip and maxLen");
+
+  Require(pde_redo(doc) != nullptr, "redo clear tooltip and maxLen");
+  std::string redone_props = RequireResult(pde_describe_forms(doc), "describe redone props");
+  Require(redone_props.find("\"tooltip\"") == std::string::npos &&
+              redone_props.find("\"maxLen\"") == std::string::npos,
+          "redo re-clears tooltip and maxLen");
+
+  // Undo back to state where tooltip and maxLen are set, save and reopen to test roundtrip
+  Require(pde_undo(doc) != nullptr, "undo again to state with props");
+  const auto rendered_with_props = RenderPixels(doc, 0, 400, 300);
+  Require(pde_save_memory(doc) != nullptr, "save document with tooltip and maxLen");
+  const std::vector<uint8_t> props_saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t props_reopen = pde_open_memory(props_saved.data(), static_cast<uint32_t>(props_saved.size()),
+      "props-reopen", "props-saved", nullptr);
+  Require(props_reopen != 0, "reopen document with tooltip and maxLen");
+  const std::string reopened_forms = RequireResult(pde_describe_forms(props_reopen), "describe reopened forms");
+  Require(reopened_forms.find("\"tooltip\":\"User instructions\"") != std::string::npos &&
+              reopened_forms.find("\"maxLen\":10") != std::string::npos,
+          "tooltip and maxLen survive save and reopen");
+  Require(RenderPixels(props_reopen, 0, 400, 300) == rendered_with_props,
+          "pixel appearance survives save and reopen with tooltip and maxLen");
+  Require(pde_close(props_reopen) == 1, "close reopened props fixture");
+
+  Require(pde_close(doc) == 1, "close form attribute fixtures");
 }
 
 void TestExtractPagesMemory() {

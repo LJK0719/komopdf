@@ -6108,4 +6108,4 @@ for (const prop of Object.keys(Module)) {
 export default Module;
 
 
-export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi3-58df0b5171a383761e7c";
+export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi3-4d8c05b9a7da4d5e819c";

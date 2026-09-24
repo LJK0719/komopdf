@@ -305,4 +305,72 @@ describe('CommandRegistry & AI Plan 契约边界验证', () => {
       expect.objectContaining({ code: 'UNSUPPORTED_CAPABILITY', message: expect.stringContaining('Current engine does not support') })
     );
   });
+
+  it('form.update 和 form.fill 严格执行 MaxLen 门禁，并在现值冲突时拒绝而非截断', () => {
+    const formContext: CommandContext = {
+      ...context,
+      document: {
+        ...baseDocument,
+        capabilities: [...baseDocument.capabilities, 'form.update', 'form.fill'],
+      },
+      fields: new Map([
+        ['field-text-1', {
+          pageId: 'page-1',
+          type: 'text',
+          readOnly: false,
+          value: 'Hello World', // 11 characters
+          tooltip: 'Initial tip',
+        }],
+      ]),
+    };
+
+    // 1. 新增 MaxLen (5) < 现值长度 (11)，必须拒绝整笔候选而非截断
+    const conflictTx = {
+      id: 'tx-maxlen-conflict',
+      docId: 'doc-1',
+      baseRevision: 1,
+      source: 'manual' as const,
+      commands: [
+        { type: 'form.update' as const, fieldId: 'field-text-1', maxLen: 5 },
+      ],
+    };
+    expect(() => validateTransaction(conflictTx, formContext)).toThrow('Text field current value exceeds requested maximum length');
+
+    // 2. 新增 MaxLen (20) >= 现值长度 (11)，且更新 tooltip 为 'New tip'，应通过
+    const validUpdateTx = {
+      id: 'tx-update-valid',
+      docId: 'doc-1',
+      baseRevision: 1,
+      source: 'manual' as const,
+      commands: [
+        { type: 'form.update' as const, fieldId: 'field-text-1', maxLen: 20, tooltip: 'New tip' },
+      ],
+    };
+    expect(() => validateTransaction(validUpdateTx, formContext)).not.toThrow();
+
+    // 3. 在同一事务中，若 update 将 maxLen 设为 5，后续 fill 超过 5，应被长度门禁拒绝
+    const fillExceedTx = {
+      id: 'tx-fill-exceed',
+      docId: 'doc-1',
+      baseRevision: 1,
+      source: 'manual' as const,
+      commands: [
+        { type: 'form.update' as const, fieldId: 'field-text-1', maxLen: 15 },
+        { type: 'form.fill' as const, fieldId: 'field-text-1', value: 'This text is definitely longer than fifteen' },
+      ],
+    };
+    expect(() => validateTransaction(fillExceedTx, formContext)).toThrow('Text value exceeds field maximum length');
+
+    // 4. 清除 MaxLen (maxLen: null 或 0) 和清除 tooltip (tooltip: null)
+    const clearTx = {
+      id: 'tx-clear-properties',
+      docId: 'doc-1',
+      baseRevision: 1,
+      source: 'manual' as const,
+      commands: [
+        { type: 'form.update' as const, fieldId: 'field-text-1', maxLen: null, tooltip: null },
+      ],
+    };
+    expect(() => validateTransaction(clearTx, formContext)).not.toThrow();
+  });
 });

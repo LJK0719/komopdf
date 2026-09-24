@@ -1255,6 +1255,8 @@ function validateFormFieldInfo(value: unknown, document: DocumentInfo): FormFiel
         || (field.multiple !== undefined && typeof field.multiple !== 'boolean')
         || (field.choiceKind !== undefined && (field.type !== 'choice' || !['combo', 'list'].includes(field.choiceKind as string)))
         || (field.multiple === true && field.choiceKind !== 'list')
+        || (field.tooltip !== undefined && typeof field.tooltip !== 'string')
+        || (field.maxLen !== undefined && (!Number.isInteger(field.maxLen) || (field.maxLen as number) < 0))
         || !Array.isArray(field.options) || field.options.some(option => typeof option !== 'string')
         || !Array.isArray(field.widgets)
         || field.widgets.some(widget => !isRecord(widget)

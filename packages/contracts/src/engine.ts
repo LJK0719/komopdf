@@ -17,6 +17,8 @@ export type FormFieldInfo = {
   value: string | boolean | string[]; readOnly: boolean; required: boolean;
   multiple?: boolean; choiceKind?: 'combo' | 'list'; options: string[];
   widgets: { pageId: string; bounds: Rect }[];
+  tooltip?: string;
+  maxLen?: number;
 };
 export type OutlineEntry = { title: string; pageId: string | null; level: number };
 export type PdfAnnotationInfo = {

@@ -68,6 +68,14 @@ std::string SerializeForms(const Document& document) {
     result += ",\"multiple\":";
     result += (type == FormFieldType::kListBox &&
                (field->GetFieldFlags() & (1U << 21))) ? "true" : "false";
+    const WideString tooltip = field->GetAlternateName();
+    if (!tooltip.IsEmpty()) {
+      result += ",\"tooltip\":"; AppendJsonString(&result, FormUtf8(tooltip));
+    }
+    const int max_len = field->GetMaxLen();
+    if (type == FormFieldType::kTextField && max_len > 0) {
+      result += ",\"maxLen\":" + std::to_string(max_len);
+    }
     result += ",\"value\":";
     if (type == FormFieldType::kCheckBox) {
       bool checked = false;
@@ -321,16 +329,96 @@ bool ApplyDocumentTool(
     CPDF_FormField* field = FindFormField(document, &form, command.target_id);
     if (!field) return false;
     if (command.type == EditType::kFormUpdate) {
-      const auto property = [&](uint32_t bit, size_t index) -> std::optional<bool> {
-        return command.flags & bit ? std::optional<bool>(command.values[index] != 0)
-                                   : std::nullopt;
-      };
-      if (!pdf_editor::UpdateFormField(pdf, FormUtf8(field->GetFullName()),
-              property(1U, 0), property(2U, 1), property(4U, 2), &error)) {
-        SetError("UNSUPPORTED_CAPABILITY", std::move(error)); return false;
+      if (command.flags & 8U) {
+        if (field->GetType() != CPDF_FormField::kText) {
+          SetError("INVALID_REQUEST", "MaxLen is only supported for text fields.");
+          return false;
+        }
+        const int new_max_len = static_cast<int>(command.values[3]);
+        if (new_max_len > 0) {
+          const WideString current_val = field->GetValue();
+          if (static_cast<int>(current_val.GetLength()) > new_max_len) {
+            SetError("INVALID_REQUEST", "Text field current value exceeds requested maximum length.");
+            return false;
+          }
+        }
+      }
+
+      CPDF_Dictionary* field_dict = const_cast<CPDF_Dictionary*>(field->GetFieldDict().Get());
+      if (!field_dict) {
+        SetError("CORE_UNAVAILABLE", "Form field dictionary is missing.");
+        return false;
+      }
+
+      if (command.flags & 8U) {
+        const int new_max_len = static_cast<int>(command.values[3]);
+        if (new_max_len > 0) {
+          field_dict->SetNewFor<CPDF_Number>("MaxLen", new_max_len);
+        } else {
+          field_dict->RemoveFor("MaxLen");
+        }
+        for (int i = 0; i < field->CountControls(); ++i) {
+          if (CPDF_FormControl* control = field->GetControl(i)) {
+            if (CPDF_Dictionary* widget_dict = const_cast<CPDF_Dictionary*>(control->GetWidgetDict().Get())) {
+              if (widget_dict != field_dict) {
+                if (new_max_len > 0 && widget_dict->KeyExist("MaxLen")) {
+                  widget_dict->SetNewFor<CPDF_Number>("MaxLen", new_max_len);
+                } else if (new_max_len == 0) {
+                  widget_dict->RemoveFor("MaxLen");
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (command.flags & 16U) {
+        if (!command.text.empty()) {
+          const WideString wide_tu = WideString::FromUTF8(ByteStringView(command.text));
+          field_dict->SetNewFor<CPDF_String>("TU", wide_tu.AsStringView());
+        } else {
+          field_dict->RemoveFor("TU");
+        }
+        for (int i = 0; i < field->CountControls(); ++i) {
+          if (CPDF_FormControl* control = field->GetControl(i)) {
+            if (CPDF_Dictionary* widget_dict = const_cast<CPDF_Dictionary*>(control->GetWidgetDict().Get())) {
+              if (widget_dict != field_dict) {
+                if (!command.text.empty() && widget_dict->KeyExist("TU")) {
+                  const WideString wide_tu = WideString::FromUTF8(ByteStringView(command.text));
+                  widget_dict->SetNewFor<CPDF_String>("TU", wide_tu.AsStringView());
+                } else if (command.text.empty()) {
+                  widget_dict->RemoveFor("TU");
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (command.flags & 7U) {
+        const auto property = [&](uint32_t bit, size_t index) -> std::optional<bool> {
+          return command.flags & bit ? std::optional<bool>(command.values[index] != 0)
+                                     : std::nullopt;
+        };
+        if (!pdf_editor::UpdateFormField(pdf, FormUtf8(field->GetFullName()),
+                property(1U, 0), property(2U, 1), property(4U, 2), &error)) {
+          SetError("UNSUPPORTED_CAPABILITY", std::move(error)); return false;
+        }
       }
       return true;
     }
+
+    if (field->GetType() == CPDF_FormField::kText && (command.flags == 0)) {
+      const int max_len = field->GetMaxLen();
+      if (max_len > 0) {
+        const WideString wide_text = WideString::FromUTF8(ByteStringView(command.text));
+        if (static_cast<int>(wide_text.GetLength()) > max_len) {
+          SetError("INVALID_REQUEST", "Text value exceeds field maximum length.");
+          return false;
+        }
+      }
+    }
+
     pdf_editor::FormValue value;
     if (command.flags & 1U) value.checked = command.values[0] != 0;
     else if (command.flags & 2U) value.selected_values = command.ids;

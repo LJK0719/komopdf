@@ -191,4 +191,41 @@ describe('ABI 3 command encoding', () => {
       bounds: { x: 0, y: 0, width: 10, height: 10 }, points: [],
     }])).toThrow('at least two points');
   });
+
+  it('encodes form.update with tooltip and maxLen preserving and clearing semantics', () => {
+    const { record } = packed([
+      // 1. 设置 tooltip 和 maxLen
+      { type: 'form.update', fieldId: 'field-text-1', readOnly: true, required: false, maxLen: 15, tooltip: 'Sample tooltip' },
+      // 2. 清除 tooltip 和 maxLen
+      { type: 'form.update', fieldId: 'field-text-2', maxLen: null, tooltip: null },
+      // 3. 保留 tooltip 和 maxLen（仅改 readOnly）
+      { type: 'form.update', fieldId: 'field-text-3', readOnly: false },
+    ]);
+
+    // Record 0: flags = 1 (readOnly) | 2 (required) | 8 (maxLen) | 16 (tooltip) = 27
+    const rec0 = record(0);
+    expect(rec0.fields[0]).toBe(28);
+    expect(rec0.string(2)).toBe('field-text-1');
+    expect(rec0.fields[10]).toBe(1 | 2 | 8 | 16);
+    expect(rec0.values[0]).toBe(1); // readOnly = true
+    expect(rec0.values[1]).toBe(0); // required = false
+    expect(rec0.values[3]).toBe(15); // maxLen = 15
+    expect(rec0.string(4)).toBe('Sample tooltip');
+
+    // Record 1: flags = 8 (maxLen) | 16 (tooltip) = 24
+    const rec1 = record(1);
+    expect(rec1.fields[0]).toBe(28);
+    expect(rec1.string(2)).toBe('field-text-2');
+    expect(rec1.fields[10]).toBe(8 | 16);
+    expect(rec1.values[3]).toBe(0); // maxLen = 0 (cleared)
+    expect(rec1.string(4)).toBe(''); // tooltip = '' (cleared)
+
+    // Record 2: flags = 1 (readOnly)
+    const rec2 = record(2);
+    expect(rec2.fields[0]).toBe(28);
+    expect(rec2.string(2)).toBe('field-text-3');
+    expect(rec2.fields[10]).toBe(1);
+    expect(rec2.values[0]).toBe(0); // readOnly = false
+    expect(rec2.fields[4]).toBe(0); // tooltip omitted (null pointer in ABI3)
+  });
 });
