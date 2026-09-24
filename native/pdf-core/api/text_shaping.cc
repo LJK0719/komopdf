@@ -289,6 +289,7 @@ bool ShapeScriptRun(hb_font_t* font,
                     TextDirection direction,
                     uint32_t bidi_run_index,
                     float unit_scale,
+                    uint32_t font_index,
                     std::vector<ShapedGlyph>* glyphs,
                     std::string* error_message) {
   std::unique_ptr<hb_buffer_t, decltype(&hb_buffer_destroy)> buffer(
@@ -371,6 +372,7 @@ bool ShapeScriptRun(hb_font_t* font,
         following == cluster_starts.end() ? script_run.end_utf16 : *following;
     ShapedGlyph glyph;
     glyph.glyph_id = infos[index].codepoint;
+    glyph.font_index = font_index;
     glyph.x_advance = positions[index].x_advance * unit_scale;
     glyph.y_advance = positions[index].y_advance * unit_scale;
     glyph.x_offset = positions[index].x_offset * unit_scale;
@@ -388,26 +390,29 @@ bool ShapeScriptRun(hb_font_t* font,
   return true;
 }
 
-void ApplyLetterSpacing(float letter_spacing,
+void ApplyLetterSpacing(std::span<const ShapingStyleRun> styles,
                         BidiVisualRun* run,
                         std::vector<ShapedGlyph>* glyphs) {
   const size_t begin = run->glyph_start;
   const size_t end = begin + run->glyph_count;
-  if (letter_spacing != 0 && begin < end) {
-    size_t first = begin;
-    while (first < end) {
-      size_t limit = first + 1;
-      while (limit < end &&
-             (*glyphs)[limit].cluster.start ==
-                 (*glyphs)[first].cluster.start &&
-             (*glyphs)[limit].cluster.end == (*glyphs)[first].cluster.end) {
-        ++limit;
-      }
-      if (limit < end) {
-        (*glyphs)[limit - 1].x_advance += letter_spacing;
-      }
-      first = limit;
+  size_t first = begin;
+  while (first < end) {
+    size_t limit = first + 1;
+    while (limit < end &&
+           (*glyphs)[limit].cluster.start == (*glyphs)[first].cluster.start &&
+           (*glyphs)[limit].cluster.end == (*glyphs)[first].cluster.end) {
+      ++limit;
     }
+    if (limit < end) {
+      const uint32_t position = (*glyphs)[first].cluster.start;
+      for (const auto& style : styles) {
+        if (style.range.start <= position && position < style.range.end) {
+          (*glyphs)[limit - 1].x_advance += style.letter_spacing;
+          break;
+        }
+      }
+    }
+    first = limit;
   }
 
   run->x_advance = 0;
@@ -490,18 +495,20 @@ void CollectMissingGlyphs(hb_font_t* font,
 
 }  // namespace
 
-bool ShapeText(std::span<const uint8_t> sfnt,
-               std::string_view utf8,
-               const TextShapingOptions& options,
-               ShapedText* result,
-               std::string* error_message) {
+bool ShapeTextImpl(std::span<const uint8_t> sfnt,
+                   std::string_view utf8,
+                   const TextShapingOptions& options,
+                   std::span<const ShapingStyleRun> styles,
+                   ShapedText* result,
+                   std::string* error_message) {
   if (error_message) {
     error_message->clear();
   }
   if (!result) {
     return Fail("A text shaping output object is required.", error_message);
   }
-  if (sfnt.empty() || sfnt.size() > std::numeric_limits<unsigned int>::max()) {
+  if (styles.empty() &&
+      (sfnt.empty() || sfnt.size() > std::numeric_limits<unsigned int>::max())) {
     return Fail("Text shaping requires a standalone SFNT font face.",
                 error_message);
   }
@@ -520,31 +527,54 @@ bool ShapeText(std::span<const uint8_t> sfnt,
     return false;
   }
 
-  std::unique_ptr<hb_blob_t, decltype(&hb_blob_destroy)> blob(
-      hb_blob_create_or_fail(reinterpret_cast<const char*>(sfnt.data()),
-                             static_cast<unsigned int>(sfnt.size()),
-                             HB_MEMORY_MODE_READONLY, nullptr, nullptr),
-      &hb_blob_destroy);
-  if (!blob) {
-    return Fail("HarfBuzz could not read the SFNT bytes.", error_message);
+  std::vector<ShapingStyleRun> default_styles;
+  if (styles.empty() && !decoded.logical_text.empty()) {
+    default_styles.push_back({{0, static_cast<uint32_t>(decoded.logical_text.size())},
+                              sfnt, options.font_size, options.letter_spacing, 0});
+    styles = default_styles;
   }
-  std::unique_ptr<hb_face_t, decltype(&hb_face_destroy)> face(
-      hb_face_create_or_fail(blob.get(), 0), &hb_face_destroy);
-  if (!face || hb_face_get_glyph_count(face.get()) == 0 ||
-      hb_face_get_upem(face.get()) == 0) {
-    return Fail("HarfBuzz could not create a usable SFNT face.", error_message);
+  struct ShapingFont {
+    std::unique_ptr<hb_blob_t, decltype(&hb_blob_destroy)> blob{nullptr, &hb_blob_destroy};
+    std::unique_ptr<hb_face_t, decltype(&hb_face_destroy)> face{nullptr, &hb_face_destroy};
+    std::unique_ptr<hb_font_t, decltype(&hb_font_destroy)> font{nullptr, &hb_font_destroy};
+    float scale = 0;
+  };
+  std::vector<ShapingFont> fonts;
+  fonts.reserve(styles.size());
+  uint32_t next_start = 0;
+  for (const ShapingStyleRun& style : styles) {
+    if (style.range.start != next_start || style.range.end <= next_start ||
+        style.range.end > decoded.logical_text.size() ||
+        !std::isfinite(style.font_size) || style.font_size <= 0 ||
+        !std::isfinite(style.letter_spacing) || style.sfnt.empty() ||
+        style.sfnt.size() > std::numeric_limits<unsigned int>::max()) {
+      return Fail("Shaping styles must cover whole ordered UTF-16 ranges with valid fonts and sizes.", error_message);
+    }
+    next_start = style.range.end;
+    ShapingFont item;
+    item.blob.reset(hb_blob_create_or_fail(
+        reinterpret_cast<const char*>(style.sfnt.data()),
+        static_cast<unsigned int>(style.sfnt.size()),
+        HB_MEMORY_MODE_READONLY, nullptr, nullptr));
+    item.face.reset(item.blob ? hb_face_create_or_fail(item.blob.get(), 0) : nullptr);
+    if (!item.face || hb_face_get_glyph_count(item.face.get()) == 0 ||
+        hb_face_get_upem(item.face.get()) == 0) {
+      return Fail("HarfBuzz could not create a usable SFNT face.", error_message);
+    }
+    item.font.reset(hb_font_create(item.face.get()));
+    if (!item.font || item.font.get() == hb_font_get_empty()) {
+      return Fail("HarfBuzz could not create a font for shaping.", error_message);
+    }
+    hb_ot_font_set_funcs(item.font.get());
+    const unsigned int upem = hb_face_get_upem(item.face.get());
+    hb_font_set_scale(item.font.get(), static_cast<int>(upem), static_cast<int>(upem));
+    hb_font_set_ptem(item.font.get(), style.font_size);
+    item.scale = style.font_size / upem;
+    fonts.push_back(std::move(item));
   }
-  std::unique_ptr<hb_font_t, decltype(&hb_font_destroy)> font(
-      hb_font_create(face.get()), &hb_font_destroy);
-  if (!font || font.get() == hb_font_get_empty()) {
-    return Fail("HarfBuzz could not create a font for shaping.", error_message);
+  if (next_start != decoded.logical_text.size()) {
+    return Fail("Shaping styles must cover the entire logical text.", error_message);
   }
-  hb_ot_font_set_funcs(font.get());
-  const unsigned int units_per_em = hb_face_get_upem(face.get());
-  hb_font_set_scale(font.get(), static_cast<int>(units_per_em),
-                    static_cast<int>(units_per_em));
-  hb_font_set_ptem(font.get(), options.font_size);
-  const float unit_scale = options.font_size / units_per_em;
 
   const hb_language_t language =
       options.language.empty()
@@ -557,6 +587,14 @@ bool ShapeText(std::span<const uint8_t> sfnt,
   if (!CollectGraphemeBoundaries(decoded, &shaped.grapheme_boundaries,
                                  error_message)) {
     return false;
+  }
+  for (const ShapingStyleRun& style : styles) {
+    if (!std::binary_search(shaped.grapheme_boundaries.begin(),
+                            shaped.grapheme_boundaries.end(), style.range.start) ||
+        !std::binary_search(shaped.grapheme_boundaries.begin(),
+                            shaped.grapheme_boundaries.end(), style.range.end)) {
+      return Fail("Shaping style boundaries must preserve complete graphemes.", error_message);
+    }
   }
   if (decoded.icu_text.empty()) {
     shaped.base_direction =
@@ -636,13 +674,29 @@ bool ShapeText(std::span<const uint8_t> sfnt,
                          error_message)) {
       return false;
     }
-    if (direction == TextDirection::kRightToLeft) {
-      std::reverse(script_runs.begin(), script_runs.end());
-    }
+    std::vector<std::pair<ScriptRun, size_t>> styled_runs;
     for (const ScriptRun& script_run : script_runs) {
-      if (!ShapeScriptRun(font.get(), language, decoded, script_run, direction,
-                          static_cast<uint32_t>(visual_index), unit_scale,
-                          &shaped.glyphs, error_message)) {
+      uint32_t cursor = script_run.start_utf16;
+      for (size_t index = 0; index < styles.size() && cursor < script_run.end_utf16; ++index) {
+        const auto& style = styles[index];
+        if (style.range.end <= cursor || style.range.start >= script_run.end_utf16) continue;
+        const uint32_t end = std::min(script_run.end_utf16, style.range.end);
+        styled_runs.push_back({{cursor, end, script_run.script}, index});
+        cursor = end;
+      }
+      if (cursor != script_run.end_utf16) {
+        return Fail("A script run is missing a font style.", error_message);
+      }
+    }
+    if (direction == TextDirection::kRightToLeft) {
+      std::reverse(styled_runs.begin(), styled_runs.end());
+    }
+    for (const auto& [script_run, index] : styled_runs) {
+      const auto& style = styles[index];
+      if (!ShapeScriptRun(fonts[index].font.get(), language, decoded, script_run,
+                          direction, static_cast<uint32_t>(visual_index),
+                          fonts[index].scale, style.font_index, &shaped.glyphs,
+                          error_message)) {
         return false;
       }
     }
@@ -651,13 +705,45 @@ bool ShapeText(std::span<const uint8_t> sfnt,
       return Fail("The shaped glyph result is too large.", error_message);
     }
     visual_run.glyph_count = static_cast<uint32_t>(glyph_count);
-    ApplyLetterSpacing(options.letter_spacing, &visual_run, &shaped.glyphs);
+    ApplyLetterSpacing(styles, &visual_run, &shaped.glyphs);
     shaped.visual_runs.push_back(visual_run);
   }
 
-  CollectMissingGlyphs(font.get(), decoded, &shaped);
+  // A .notdef is surfaced to the paragraph caller together with its exact
+  // UTF-16 cluster; fonts can differ on either side of a style boundary.
+  if (styles.size() == 1) {
+    CollectMissingGlyphs(fonts[0].font.get(), decoded, &shaped);
+  } else for (const ShapedGlyph& glyph : shaped.glyphs) {
+    if (glyph.glyph_id != 0) continue;
+    for (const DecodedCodePoint& point : decoded.code_points) {
+      if (point.start_utf16 >= glyph.cluster.end) break;
+      if (point.end_utf16 > glyph.cluster.start && IsVisibleCodePoint(point.value)) {
+        shaped.missing_glyphs.push_back({point.value, {point.start_utf16, point.end_utf16}});
+        break;
+      }
+    }
+  }
   *result = std::move(shaped);
   return true;
+}
+
+bool ShapeText(std::span<const uint8_t> sfnt,
+               std::string_view utf8,
+               const TextShapingOptions& options,
+               ShapedText* result,
+               std::string* error_message) {
+  return ShapeTextImpl(sfnt, utf8, options, {}, result, error_message);
+}
+
+bool ShapeStyledText(std::string_view utf8,
+                     const TextShapingOptions& options,
+                     std::span<const ShapingStyleRun> styles,
+                     ShapedText* result,
+                     std::string* error_message) {
+  if (styles.empty()) {
+    return Fail("Styled shaping requires a font for every character.", error_message);
+  }
+  return ShapeTextImpl({}, utf8, options, styles, result, error_message);
 }
 
 }  // namespace pdf_editor

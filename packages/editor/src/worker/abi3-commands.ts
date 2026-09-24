@@ -45,7 +45,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
   };
   const style = (input: TextStyle, insert: boolean, paragraph = false) => {
     const supported = ['fontId', 'fontSize', 'color', 'characterSpacing',
-      ...(insert ? ['lineHeight', 'alignment'] : []), ...(paragraph ? ['underline'] : [])];
+      ...(insert ? ['lineHeight', 'alignment'] : ['underline']), ...(paragraph ? ['underline'] : [])];
     if (Object.keys(input).some(key => !supported.includes(key))) {
       throw new EngineError('UNSUPPORTED_CAPABILITY', 'This core does not yet support the requested text style');
     }
@@ -58,6 +58,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
     if (insert && input.alignment === 'center') flags |= 32;
     if (insert && input.alignment === 'right') flags |= 64;
     if (insert && input.alignment === 'justify') throw new EngineError('UNSUPPORTED_CAPABILITY', 'Justified text is not supported by this layout engine yet');
+    if (!insert && input.underline !== undefined) { flags |= 32; values[5] = input.underline ? 1 : 0; }
     if (paragraph && input.underline) flags |= 2048;
     if (insert && (flags & 3) !== 3) throw new EngineError('INVALID_REQUEST', 'New text requires an explicit font and font size');
     fields[10] = flags;

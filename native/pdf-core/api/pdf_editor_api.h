@@ -114,7 +114,11 @@ const char* pde_apply_text(uint32_t document,
 // values[9] as a line-height multiplier, and mutually exclusive flags 32/64
 // select center/right alignment (neither means left). For type 2, flag 16
 // enables start_utf16/end_utf16 range formatting of exactly one block in ids;
-// flags 1/2/4/8 and their values retain the whole-block style layout.
+// flags 1/2/4/8 and their values retain the whole-block style layout. For a
+// top-level logical paragraph only, type-2 flag 32 sets real vector underline
+// from values[5] (exactly 0=off, 1=on), for either a range or the full block.
+// Ordinary TextObjects reject flag 32. Range endpoints must be whole graphemes
+// and must not cut a previously shaped glyph cluster.
 // Type 3 also accepts 128=invisible, 256=fitBounds (requires invisible),
 // 512=OCR (requires both), 1024=logical paragraph (mutually exclusive),
 // or 2048=real paragraph underline (requires 1024). Type 20 can use 2048 too.

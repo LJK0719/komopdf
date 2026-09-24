@@ -1,5 +1,9 @@
 #include "pdf_editor_api.h"
 #include "native_file_path.h"
+#include "text_shaping.h"
+#include "public/fpdf_edit.h"
+#include "public/fpdf_text.h"
+#include "public/fpdfview.h"
 
 #include <array>
 #include <chrono>
@@ -10,6 +14,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -1448,6 +1453,7 @@ struct FontTestOptions {
   std::string ttf_path;
   std::string otf_path;
   std::string ttc_path;
+  std::string restricted_pdf_path;
   uint32_t ttc_face = 1;
 
   bool enabled() const {
@@ -1467,6 +1473,8 @@ FontTestOptions ParseFontTestOptions(int argc, char** argv) {
       options.otf_path = value;
     } else if (flag == "--font-ttc") {
       options.ttc_path = value;
+    } else if (flag == "--restricted-pdf") {
+      options.restricted_pdf_path = value;
     } else if (flag == "--ttc-face") {
       char* end = nullptr;
       const unsigned long parsed = std::strtoul(value.c_str(), &end, 10);
@@ -1484,6 +1492,20 @@ FontTestOptions ParseFontTestOptions(int argc, char** argv) {
             "TTF, OTF, and TTC font test paths");
   }
   return options;
+}
+
+void TestRestrictedPrintPermission(const std::string& path) {
+  const auto bytes = ReadTestFile(path);
+  const uint32_t document = pde_open_memory(
+      bytes.data(), static_cast<uint32_t>(bytes.size()),
+      "restricted-print", "restricted-print-source", "fixture-user");
+  Require(document != 0, "open restricted encrypted PDF with its test user password");
+  const std::string info = RequireResult(pde_document_info(document),
+                                         "describe restricted encrypted PDF");
+  Require(info.find("\"print\":false") != std::string::npos &&
+          info.find("\"encrypted\":true") != std::string::npos,
+          "encrypted PDF with printing disabled exposes print:false");
+  Require(pde_close(document) == 1, "close restricted printing fixture");
 }
 
 void TestNestedTextFont(const std::string& font_path) {
@@ -2304,6 +2326,250 @@ void TestAnnotationPageDuplicate() {
           "close annotation page fixture");
 }
 
+void InspectStyledPdfGlyphs(const std::vector<uint8_t>& saved) {
+  FPDF_DOCUMENT pdf = FPDF_LoadMemDocument(saved.data(), static_cast<int>(saved.size()), nullptr);
+  Require(pdf != nullptr, "open saved styled PDF through public PDFium API");
+  FPDF_PAGE page = FPDF_LoadPage(pdf, 0);
+  Require(page != nullptr, "load saved styled PDF page");
+  FPDF_TEXTPAGE text_page = FPDFText_LoadPage(page);
+  Require(text_page != nullptr, "load actual PDF glyph text page");
+  const int chars = FPDFText_CountChars(text_page);
+  std::vector<unsigned short> extracted(static_cast<size_t>(chars) + 1);
+  const int copied = FPDFText_GetText(text_page, 0, chars, extracted.data());
+  Require(copied > 1, "copy actual text with PDFium text extraction");
+  const std::u16string unicode(extracted.begin(), extracted.begin() + copied - 1);
+  Require(unicode.find(u"world") != std::u16string::npos &&
+          unicode.find(u"中文") != std::u16string::npos &&
+          unicode.find(u"DEFGHIJ") != std::u16string::npos,
+          "PDF font ToUnicode and ActualText preserve multilingual copy/search");
+  bool black_text = false, red_text = false, red_underline = false;
+  std::set<FPDF_FONT> fonts;
+  for (int outer = 0; outer < FPDFPage_CountObjects(page); ++outer) {
+    FPDF_PAGEOBJECT form = FPDFPage_GetObject(page, outer);
+    if (FPDFPageObj_GetType(form) != FPDF_PAGEOBJ_FORM) continue;
+    for (int inner = 0; inner < FPDFFormObj_CountObjects(form); ++inner) {
+      FPDF_PAGEOBJECT child = FPDFFormObj_GetObject(form, static_cast<unsigned long>(inner));
+      unsigned int red = 0, green = 0, blue = 0, alpha = 0;
+      if (FPDFPageObj_GetType(child) == FPDF_PAGEOBJ_TEXT) {
+        float size = 0;
+        Require(FPDFTextObj_GetFontSize(child, &size) &&
+                FPDFPageObj_GetFillColor(child, &red, &green, &blue, &alpha),
+                "inspect true PDF glyph size and RGB fill");
+        fonts.insert(FPDFTextObj_GetFont(child));
+        black_text |= red == 0 && green == 0 && blue == 0 && size == 18;
+        red_text |= red == 255 && green == 0 && blue == 0 && size == 25;
+      } else if (FPDFPageObj_GetType(child) == FPDF_PAGEOBJ_PATH) {
+        FPDFPageObj_GetStrokeColor(child, &red, &green, &blue, &alpha);
+        red_underline |= red == 255 && green == 0 && blue == 0;
+      }
+    }
+  }
+  Require(black_text && red_text && red_underline && fonts.size() >= 2,
+          "unselected glyphs retain base font and size; selected glyphs use second embedded font, red fill and red underline");
+  FPDFText_ClosePage(text_page);
+  FPDF_ClosePage(page);
+  FPDF_CloseDocument(pdf);
+}
+
+void TestParagraphRangeStyles(const std::string& base_font,
+                              const std::string& latin_font,
+                              const std::vector<uint8_t>& latin_bytes) {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << >> /Contents 4 0 R >>",
+      Stream("0.8 g 15 15 15 15 re f"),
+  });
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "style-paragraph", "style-source", nullptr);
+  Require(doc != 0, "open paragraph style source");
+  const std::string page = PageIdFromDescription(pde_describe_page(doc, 0));
+  const std::string text = "Hello \xE4\xB8\xAD\xE6\x96\x87 world A\xCC\x81" "BC DEFGHIJ another line with words";
+  PdeEditCommand insert{};
+  insert.type = 3; insert.page_id = page.c_str(); insert.target_id = "style-target";
+  insert.text_utf8 = text.c_str(); insert.font_id = base_font.c_str();
+  insert.flags = 3 | 16 | 1024; insert.values[0] = 20; insert.values[1] = 25;
+  insert.values[2] = 245; insert.values[3] = 190; insert.values[4] = 18;
+  insert.values[9] = 1.4;
+  Require(pde_apply_commands(doc, 0, "insert-styled-target", &insert, 1) != nullptr,
+          "insert paragraph for range formatting");
+  const std::string original = RequireResult(pde_describe_page(doc, 0), "original paragraph");
+  const std::string id = TextBlockIds(original).front();
+  const char* targets[] = {id.c_str()};
+  const auto original_pixels = RenderPixels(doc, 0, 400, 300);
+  PdeEditCommand style{};
+  style.type = 2; style.page_id = page.c_str(); style.ids = targets; style.id_count = 1;
+  style.font_id = latin_font.c_str(); style.flags = 16 | 1 | 2 | 4 | 8 | 32;
+  style.start_utf16 = 9; style.end_utf16 = 14;  // "world", after two CJK code units.
+  style.values[0] = 25; style.values[1] = 1; style.values[2] = 0;
+  style.values[3] = 0; style.values[4] = 0.5; style.values[5] = 1;
+  PdeEditCommand split = style;
+  split.start_utf16 = 16; split.end_utf16 = 17;  // Between A and its combining accent.
+  Require(pde_preview_commands(doc, 1, &split, 1) == nullptr &&
+          std::string(pde_error_code()) == "INVALID_REQUEST" &&
+          std::string(pde_describe_page(doc, 0)) == original,
+          "styled UTF-16 range refuses a split grapheme without touching the source");
+  Require(pde_preview_commands(doc, 1, &style, 1) != nullptr &&
+          std::string(pde_describe_page(doc, 0)) == original,
+          "preview styled paragraph without mutating source");
+  Require(pde_apply_commands(doc, 1, "range-style-1", &style, 1) != nullptr,
+          "paint partial paragraph with distinct embedded font and vector underline");
+  const auto painted_pixels = RenderPixels(doc, 0, 400, 300);
+  const std::string styled_description = RequireResult(pde_describe_page(doc, 0),
+      "describe mixed paragraph runs");
+  Require(painted_pixels != original_pixels &&
+          TextBlockIds(styled_description).front() == id &&
+          styled_description.find("\"text\":\"world\",\"style\":{\"fontId\":\"" +
+                                  latin_font + "\",\"fontSize\":25") != std::string::npos &&
+          styled_description.find("\"underline\":true") != std::string::npos,
+          "paragraph identity and selected run style are exposed through existing runs");
+  const std::string extracted = RequireResult(pde_extract_page(doc, 0), "styled extraction");
+  Require(extracted.find("world") != std::string::npos &&
+          extracted.find("\xE4\xB8\xAD\xE6\x96\x87") != std::string::npos &&
+          extracted.find("DEFGHIJ") != std::string::npos,
+          "mixed-font Unicode and untouched text remain searchable");
+  Require(pde_undo(doc) != nullptr && RenderPixels(doc, 0, 400, 300) == original_pixels &&
+          std::string(pde_describe_page(doc, 0)) == original &&
+          pde_redo(doc) != nullptr && RenderPixels(doc, 0, 400, 300) == painted_pixels &&
+          std::string(pde_describe_page(doc, 0)) == styled_description,
+          "undo and redo restore actual glyph paint and exact styled runs");
+  Require(pde_save_memory(doc) != nullptr, "save range-styled paragraph");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const std::string raw(saved.begin(), saved.end());
+  Require(raw.find("/StyleRuns") != std::string::npos &&
+          raw.find("/ToUnicode") != std::string::npos,
+          "real saved PDF contains style runs and Unicode font mappings");
+  InspectStyledPdfGlyphs(saved);
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "style-reopened", "style-saved", nullptr);
+  Require(reopened != 0 && RenderPixels(reopened, 0, 400, 300) == painted_pixels &&
+          std::string(pde_extract_page(reopened, 0)).find("\"text\":\"world\",\"style\":{\"fontId\":\"" +
+              latin_font + "\",\"fontSize\":25") != std::string::npos,
+          "saved mixed-font Form survives reopen and restores its styled runs");
+  const std::string reopened_page = PageIdFromDescription(pde_describe_page(reopened, 0));
+  const std::string reopened_id = TextBlockIds(pde_describe_page(reopened, 0)).front();
+  const char* reopened_targets[] = {reopened_id.c_str()};
+  PdeEditCommand second{};
+  second.type = 2; second.page_id = reopened_page.c_str();
+  second.ids = reopened_targets; second.id_count = 1;
+  second.flags = 16 | 4 | 32; second.start_utf16 = 0; second.end_utf16 = 5;
+  second.values[1] = 0; second.values[2] = 0; second.values[3] = 1;
+  second.values[5] = 0;
+  Require(pde_apply_commands(reopened, 0, "style-reopened-prefix", &second, 1) != nullptr,
+          "style saved paragraph again using embedded base and styled fonts");
+  const std::string second_runs = RequireResult(pde_extract_page(reopened, 0),
+      "describe reopened paragraph after another partial style");
+  Require(second_runs.find("\"text\":\"Hello\",\"style\":{") != std::string::npos &&
+          second_runs.find("\"text\":\"world\",\"style\":{\"fontId\":\"" +
+              latin_font + "\",\"fontSize\":25") != std::string::npos &&
+          RenderPixels(reopened, 0, 400, 300) != painted_pixels,
+          "reopened edit preserves world run and changes only selected prefix");
+  const auto updated_pixels = RenderPixels(reopened, 0, 400, 300);
+  PdeTextEdit replacement{0, reopened_id.c_str(), 0, 5, "Helloo", nullptr};
+  Require(pde_apply_text(reopened, 1, "replace-styled-prefix", &replacement, 1) != nullptr &&
+          std::string(pde_describe_page(reopened, 0)).find("Helloo") != std::string::npos &&
+          std::string(pde_extract_page(reopened, 0)).find("world") != std::string::npos,
+          "UTF-16 replacement shifts styles while retaining unselected styled text");
+  Require(pde_undo(reopened) != nullptr && RenderPixels(reopened, 0, 400, 300) == updated_pixels,
+          "undo text reflow restores styled paragraph visuals");
+  const uint32_t removed = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "style-delete", "style-delete-source", nullptr);
+  Require(removed != 0, "reopen mixed-style paragraph to delete styled span");
+  const std::string removed_id = TextBlockIds(pde_describe_page(removed, 0)).front();
+  PdeTextEdit erase{0, removed_id.c_str(), 9, 14, "", nullptr};
+  Require(pde_apply_text(removed, 0, "erase-styled-word", &erase, 1) != nullptr &&
+          std::string(pde_extract_page(removed, 0)).find("world") == std::string::npos &&
+          std::string(pde_extract_page(removed, 0)).find("中文") != std::string::npos,
+          "deleting an entire styled run releases its font without losing other glyphs");
+  const uint32_t whole = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "style-whole", "style-whole-source", nullptr);
+  Require(whole != 0, "open whole-font paragraph fixture");
+  const std::string whole_page = PageIdFromDescription(pde_describe_page(whole, 0));
+  PdeEditCommand short_insert = insert;
+  short_insert.page_id = whole_page.c_str();
+  short_insert.font_id = latin_font.c_str();
+  short_insert.text_utf8 = "Hello Hello";
+  Require(pde_apply_commands(whole, 0, "short-insert", &short_insert, 1) != nullptr,
+          "insert paragraph for full-range font change");
+  const std::string whole_id = TextBlockIds(pde_describe_page(whole, 0)).front();
+  const char* whole_targets[] = {whole_id.c_str()};
+  PdeEditCommand whole_style{};
+  whole_style.type = 2; whole_style.page_id = whole_page.c_str();
+  whole_style.ids = whole_targets; whole_style.id_count = 1;
+  whole_style.flags = 16 | 1; whole_style.start_utf16 = 0; whole_style.end_utf16 = 11;
+  whole_style.font_id = base_font.c_str();
+  Require(pde_apply_commands(whole, 1, "whole-font-change", &whole_style, 1) != nullptr &&
+          std::string(pde_extract_page(whole, 0)).find("\"fontId\":\"" + base_font + "\"") != std::string::npos,
+          "changing every glyph to a second font drops its unused base resource");
+  pdf_editor::ShapedText ligatures;
+  std::string shaping_error;
+  Require(pdf_editor::ShapeText(latin_bytes, "office",
+      pdf_editor::TextShapingOptions{}, &ligatures, &shaping_error),
+      "shape fixture for glyph cluster boundaries");
+  uint32_t cut = 0;
+  for (const auto& glyph : ligatures.glyphs) {
+    if (glyph.cluster.end > glyph.cluster.start + 1) {
+      cut = glyph.cluster.start + 1;
+      break;
+    }
+  }
+  // Only exercise a glyph-cluster split when the fixture font actually enables
+  // a multi-grapheme ligature; its shape is font-dependent.
+  if (cut != 0) {
+    const uint32_t ligature_doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+        static_cast<uint32_t>(pdf.size()), "style-ligature", "style-ligature-source", nullptr);
+    Require(ligature_doc != 0, "open ligature range fixture");
+    const std::string ligature_page = PageIdFromDescription(pde_describe_page(ligature_doc, 0));
+    short_insert.page_id = ligature_page.c_str(); short_insert.text_utf8 = "office";
+    Require(pde_apply_commands(ligature_doc, 0, "ligature-insert", &short_insert, 1) != nullptr,
+            "insert shaped glyph cluster for range guard");
+    const std::string ligature_before = pde_describe_page(ligature_doc, 0);
+    const std::string ligature_id = TextBlockIds(ligature_before).front();
+    const char* ligature_targets[] = {ligature_id.c_str()};
+    whole_style.page_id = ligature_page.c_str(); whole_style.ids = ligature_targets;
+    whole_style.start_utf16 = cut; whole_style.end_utf16 = cut + 1;
+    Require(pde_preview_commands(ligature_doc, 1, &whole_style, 1) == nullptr &&
+            std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+            std::string(pde_describe_page(ligature_doc, 0)) == ligature_before,
+            "reject a range that is grapheme-safe but cuts an already painted ligature");
+    Require(pde_close(ligature_doc) == 1, "close ligature fixture");
+  }
+  const uint32_t bidi_doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "style-bidi", "style-bidi-source", nullptr);
+  Require(bidi_doc != 0, "open mixed-direction paragraph fixture");
+  const std::string bidi_page = PageIdFromDescription(pde_describe_page(bidi_doc, 0));
+  short_insert.page_id = bidi_page.c_str();
+  short_insert.text_utf8 = "abc \xD7\x90\xD7\x91\xD7\x92 xyz";
+  Require(pde_apply_commands(bidi_doc, 0, "insert-mixed-direction", &short_insert, 1) != nullptr,
+          "shape mixed Hebrew and Latin in one paragraph");
+  const std::string bidi_id = TextBlockIds(pde_describe_page(bidi_doc, 0)).front();
+  const char* bidi_targets[] = {bidi_id.c_str()};
+  PdeEditCommand bidi_style{};
+  bidi_style.type = 2; bidi_style.page_id = bidi_page.c_str();
+  bidi_style.ids = bidi_targets; bidi_style.id_count = 1;
+  bidi_style.flags = 16 | 4; bidi_style.start_utf16 = 4; bidi_style.end_utf16 = 7;
+  bidi_style.values[1] = 1;
+  Require(pde_apply_commands(bidi_doc, 1, "style-rtl-run", &bidi_style, 1) != nullptr,
+          "style one logical RTL span while resolving the entire bidi line");
+  Require(pde_save_memory(bidi_doc) != nullptr, "save mixed-direction styled PDF");
+  const std::vector<uint8_t> bidi_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  FPDF_DOCUMENT bidi_pdf = FPDF_LoadMemDocument(bidi_bytes.data(), static_cast<int>(bidi_bytes.size()), nullptr);
+  Require(bidi_pdf != nullptr, "reopen mixed-direction PDF through PDFium");
+  FPDF_PAGE bidi_native_page = FPDF_LoadPage(bidi_pdf, 0);
+  FPDF_TEXTPAGE bidi_text = FPDFText_LoadPage(bidi_native_page);
+  std::vector<unsigned short> bidi_chars(static_cast<size_t>(FPDFText_CountChars(bidi_text)) + 1);
+  const int bidi_count = FPDFText_GetText(bidi_text, 0, FPDFText_CountChars(bidi_text), bidi_chars.data());
+  const std::u16string bidi_copied(bidi_chars.begin(), bidi_chars.begin() + bidi_count - 1);
+  Require(bidi_copied.find(u"אבג") != std::u16string::npos &&
+          bidi_copied.find(u"abc") != std::u16string::npos &&
+          bidi_copied.find(u"xyz") != std::u16string::npos,
+          "saved mixed-direction PDF text copies in logical order after partial formatting");
+  FPDFText_ClosePage(bidi_text); FPDF_ClosePage(bidi_native_page); FPDF_CloseDocument(bidi_pdf);
+  Require(pde_close(bidi_doc) == 1 && pde_close(whole) == 1 &&
+          pde_close(removed) == 1 && pde_close(reopened) == 1 &&
+          pde_close(doc) == 1, "close paragraph range fixtures");
+}
+
 void TestParagraphEditing(const std::string& font_id) {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -2751,6 +3017,7 @@ void TestFontRuntime(const FontTestOptions& options) {
               otf_info.find("\"format\":\"otf\"") != std::string::npos &&
               otf_info.find("\"editableEmbedding\":true") != std::string::npos,
           "register OpenType CFF face info");
+  TestParagraphRangeStyles("runtime-otf", "runtime-ttf", ttf);
   TestParagraphEditing("runtime-otf");
   TestOcrSearchLayer("runtime-otf");
   TestOcrSearchLayer("runtime-otf", true);
@@ -2832,9 +3099,12 @@ int main(int argc, char** argv) {
           "initial revisions");
   Require(
       info.find("\"permissions\":{\"modify\":true,\"copy\":true,"
-                "\"annotate\":true,\"fillForms\":true,"
+                "\"annotate\":true,\"fillForms\":true,\"print\":true,"
                 "\"encrypted\":false,\"signed\":false}") != std::string::npos,
-      "real permissions and unsigned signature field state");
+      "unencrypted PDF grants printing and retains existing permission fields");
+  if (!font_options.restricted_pdf_path.empty()) {
+    TestRestrictedPrintPermission(font_options.restricted_pdf_path);
+  }
   Require(info.find("\"capabilities\":[\"text.replace\",\"text.style\","
                     "\"text.insert\",\"objects.transform\",\"objects.delete\","
                     "\"pages.rotate\",\"pages.delete\",\"pages.reorder\","

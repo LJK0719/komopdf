@@ -97,6 +97,51 @@ test('real WASM reflows adjacent text lines into a single paragraph, undoes, red
   expect(posts).toEqual([]);
 });
 
+test('real WASM formats only a logical paragraph selection and preserves it through undo and reopen', async ({ page }) => {
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'partial-paragraph.pdf', mimeType: 'application/pdf', buffer: syntheticParagraphPdf() });
+  const hitboxes = page.locator('.object-hitbox[data-object-type="text"]');
+  await expect(hitboxes).toHaveCount(2, { timeout: 60_000 });
+  await hitboxes.nth(0).click({ modifiers: ['Control'] });
+  await hitboxes.nth(1).click({ modifiers: ['Control'] });
+  const paragraph = page.getByRole('region', { name: 'Paragraph reflow and insertion' });
+  await paragraph.getByRole('button', { name: 'Use selected text' }).click();
+  await paragraph.getByRole('textbox', { name: 'Paragraph text' }).fill('Alpha beta\nGamma delta');
+  await paragraph.getByRole('combobox', { name: 'Font' }).selectOption('noto-sans-cjk-sc-regular');
+  await paragraph.getByRole('spinbutton', { name: 'Box Width (pt)' }).fill('240');
+  await paragraph.getByRole('spinbutton', { name: 'Box Height (pt)' }).fill('160');
+  await paragraph.getByRole('button', { name: 'Preview paragraph' }).click();
+  await paragraph.getByRole('button', { name: 'Reflow selected text' }).click();
+  await expect(hitboxes).toHaveCount(1);
+  await hitboxes.first().click();
+  const editor = page.getByRole('region', { name: 'Manual text editing' });
+  const original = editor.getByRole('textbox', { name: 'Original text' });
+  await expect(original).toHaveValue('Alpha beta\nGamma delta');
+  await original.focus();
+  await original.press('ControlOrMeta+Home');
+  for (let index = 0; index < 6; index++) await original.press('ArrowRight');
+  for (let index = 0; index < 4; index++) await original.press('Shift+ArrowRight');
+  const format = editor.getByRole('group', { name: 'Format selected text' });
+  await format.getByRole('combobox', { name: 'Selection underline' }).selectOption('on');
+  await format.getByRole('textbox', { name: 'Selection color' }).fill('#ff0000');
+  await format.getByRole('button', { name: 'Apply selection format' }).click();
+  await expect(original).toHaveValue('Alpha beta\nGamma delta');
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(original).toHaveValue('Alpha beta\nGamma delta');
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const saved = await readFile((await (await download).path())!);
+  const reopen = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await reopen).setFiles({ name: 'partial-saved.pdf', mimeType: 'application/pdf', buffer: saved });
+  await hitboxes.first().click();
+  await expect(original).toHaveValue('Alpha beta\nGamma delta');
+  await expect(page.locator('.status-dot-error')).toHaveCount(0);
+});
+
 function syntheticParagraphPdf(pageAttributes = '/MediaBox [0 0 400 400]'): Buffer {
   const stream = 'BT /F1 14 Tf 36 340 Td (First line) Tj ET\nBT /F1 14 Tf 36 300 Td (Second line) Tj ET';
   const objects = [

@@ -38,6 +38,21 @@ struct ParagraphLine {
   Utf16Range text_range;
 };
 
+struct ParagraphStyleRun {
+  Utf16Range range;
+  uint32_t font_index = 0;
+  float font_size = 12.0f;
+  float letter_spacing = 0;
+  ParagraphColor color;
+  bool underline = false;
+};
+
+struct ParagraphFont {
+  std::string id;
+  FontFaceInfo info;
+  std::span<const uint8_t> sfnt;
+};
+
 struct ParagraphRequest {
   std::string utf8;
   float width = 0;
@@ -51,6 +66,9 @@ struct ParagraphRequest {
   ParagraphAlignment alignment = ParagraphAlignment::kLeft;
   TextDirection direction = TextDirection::kAuto;
   std::string language;
+  // Empty means one default style. Otherwise contiguous resolved UTF-16 runs;
+  // font_index selects fonts[0] (base) or another embedded font resource.
+  std::vector<ParagraphStyleRun> styles;
 };
 
 struct ParagraphResult {
@@ -81,6 +99,12 @@ struct ParagraphResult {
 // Layout uses ICU line/grapheme boundaries and HarfBuzz metrics. Each wrapped
 // line is reshaped independently. Missing glyphs are an error; this function
 // does not choose fallback fonts, place the Form on a page, or edit source text.
+bool CreateTextParagraph(FPDF_DOCUMENT document,
+                         std::span<const ParagraphFont> fonts,
+                         const ParagraphRequest& request,
+                         ParagraphResult* result,
+                         std::string* error_message);
+
 bool CreateTextParagraph(FPDF_DOCUMENT document,
                          const FontFaceInfo& font_info,
                          std::span<const uint8_t> sfnt,

@@ -89,7 +89,40 @@ function ungroupObject(command: { pageId: string; groupId: string }, context: Co
   return { type: 'objects.ungroup', pageId: command.pageId, groupId: command.groupId };
 }
 
-function resolveProposal(command: ProposedCommand, request: AiRequest, context: CommandContext, preferredFontId?: string): EditCommand {
+function decoratePages(command: Extract<ProposedCommand, { type: 'pages.decorate' }>,
+  request: AiRequest, context: CommandContext, preferredFontId?: string): EditCommand[] {
+  if (!preferredFontId || !request.context.availableFontIds?.includes(preferredFontId) || !context.fontIds?.has(preferredFontId)) {
+    reject('Select a registered, editable font for page decorations');
+  }
+  if (command.decoration !== 'number' && !command.text?.trim()) reject('Decoration text is required');
+  if (command.text !== undefined && (!command.text.trim() || !request.instruction.includes(command.text) ||
+      (command.decoration === 'number' && !command.text.includes('{page}')))) {
+    reject('Decoration text must come verbatim from the user instruction; number templates require {page}');
+  }
+  if (command.pageIds.length > 4096) reject('Page decoration plan exceeds the transaction limit');
+  const requestedPages = new Set((request.context.pages ?? []).map(page => page.id));
+  return command.pageIds.map((pageId): EditCommand => {
+    if (!requestedPages.has(pageId)) reject('Decoration page is outside request scope');
+    const number = context.document.pageOrder.indexOf(pageId) + 1;
+    const page = context.pages.get(pageId);
+    if (!number || !page) reject('Load every target page before preparing page decorations');
+    const margin = Math.min(36, page.widthPt * 0.08, page.heightPt * 0.08);
+    const height = Math.min(48, page.heightPt * 0.2);
+    const bounds = { x: margin, y: command.decoration === 'header' ? margin
+      : command.decoration === 'watermark' ? (page.heightPt - height) / 2
+        : page.heightPt - margin - height,
+      width: page.widthPt - 2 * margin, height };
+    const text = command.decoration === 'number' && command.text === undefined ? String(number)
+      : command.text!.replaceAll('{page}', String(number));
+    const color: [number, number, number] = command.decoration === 'watermark' ? [0.65, 0.65, 0.65] : [0, 0, 0];
+    return { type: 'text.insert', pageId, objectId: crypto.randomUUID(), bounds, text,
+      style: { fontId: preferredFontId, fontSize: 12, color,
+        alignment: command.decoration === 'number' ? 'right' : command.decoration === 'watermark' ? 'center' : 'left' },
+      paragraph: true };
+  });
+}
+
+function resolveProposal(command: Exclude<ProposedCommand, { type: 'pages.decorate' }>, request: AiRequest, context: CommandContext, preferredFontId?: string): EditCommand {
   switch (command.type) {
     case 'text.replace': return replacement(command.targetEvidenceId, command.text, request, context);
     case 'text.reflow': return mergeTextBlocks(command, context, preferredFontId);
@@ -147,10 +180,12 @@ export function createAiTransaction(requestInput: AiRequest, responseInput: AiRe
   } else if (result.kind === 'translation') {
     commands = sortReplacements(result.blocks.map(item => replacement(item.evidenceId, item.text, request, context)));
   } else if (result.kind === 'commandPlan') {
-    commands = result.commands.map(command => {
+    commands = result.commands.flatMap(command => {
       if (!request.context.availableCommands?.includes(command.type)) reject('Candidate command is not allowed in this request');
-      const local = resolveProposal(command, request, context, preferredFontId);
-      assertScope(local, request);
+      const local = command.type === 'pages.decorate'
+        ? decoratePages(command, request, context, preferredFontId)
+        : [resolveProposal(command, request, context, preferredFontId)];
+      for (const item of local) assertScope(item, request);
       return local;
     });
   } else {

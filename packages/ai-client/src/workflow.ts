@@ -25,7 +25,7 @@ export type CommandPlanTransactionBuilder = (
   response: AiResponseEnvelope,
   snapshot: EvidenceSnapshot,
   transactionId: string,
-) => EditTransaction;
+) => EditTransaction | Promise<EditTransaction>;
 
 export interface AiWorkflowOptions<ApplyResult> {
   endpoint: string | URL;
@@ -97,7 +97,7 @@ export class AiWorkflow<ApplyResult> {
         ...(input.onEvent ? { onEvent: input.onEvent } : {}),
         ...(input.onDelta ? { onDelta: input.onDelta } : {}),
       });
-      const preview = this.#createPreview(request, input.snapshot, outcome.response);
+      const preview = await this.#createPreview(request, input.snapshot, outcome.response);
       return Object.freeze({ ...outcome, ...(preview ? { preview } : {}) });
     } finally {
       handle.release();
@@ -120,11 +120,11 @@ export class AiWorkflow<ApplyResult> {
     );
   }
 
-  #createPreview(
+  async #createPreview(
     request: AiRequest,
     snapshot: EvidenceSnapshot,
     response: AiResponseEnvelope,
-  ): TransactionPreview<ApplyResult> | undefined {
+  ): Promise<TransactionPreview<ApplyResult> | undefined> {
     assertResponseMatchesSnapshot(response, snapshot);
     const kind = response.result.kind;
     if (kind !== 'textProposal' && kind !== 'translation' && kind !== 'commandPlan') return undefined;
@@ -134,7 +134,7 @@ export class AiWorkflow<ApplyResult> {
     if (kind === 'commandPlan') {
       const builder = this.#options.buildCommandPlanTransaction;
       if (!builder) throw new Error('Command plan requires a local validation builder injected by @pdf-editor/commands');
-      transaction = builder(request, response, snapshot, transactionId);
+      transaction = await builder(request, response, snapshot, transactionId);
     } else {
       transaction = buildTextProposalTransaction(response, snapshot, transactionId);
     }
@@ -144,6 +144,10 @@ export class AiWorkflow<ApplyResult> {
       transaction.source !== 'ai'
     ) {
       throw new Error('Injected AI transaction identity does not match response');
+    }
+    const currentDocument = await this.#options.getCurrentDocument();
+    if (currentDocument.id !== request.document.id || currentDocument.revision !== request.document.revision) {
+      throw new Error('Document changed while preparing AI preview; regenerate the edit plan');
     }
     return createTransactionPreview(
       response,

@@ -32,6 +32,8 @@ struct TextShapingOptions {
 
 struct ShapedGlyph {
   uint32_t glyph_id = 0;
+  // Index of the font in the caller's shaping style runs (zero for ShapeText).
+  uint32_t font_index = 0;
   float x_advance = 0;
   float y_advance = 0;
   float x_offset = 0;
@@ -82,6 +84,23 @@ struct ShapedText {
   // is reported here so the caller can choose and shape with fallback fonts.
   std::vector<MissingGlyph> missing_glyphs;
 };
+
+struct ShapingStyleRun {
+  Utf16Range range;
+  std::span<const uint8_t> sfnt;
+  float font_size = 12.0f;
+  float letter_spacing = 0;
+  uint32_t font_index = 0;
+};
+
+// Styles cover the entire UTF-16 input in ascending order. Boundaries must be
+// whole graphemes; bidi resolution still runs over the complete logical line.
+// The font index is returned on each glyph for separate embedded PDF resources.
+bool ShapeStyledText(std::string_view utf8,
+                     const TextShapingOptions& options,
+                     std::span<const ShapingStyleRun> styles,
+                     ShapedText* result,
+                     std::string* error_message);
 
 // Shapes a validated standalone SFNT face (TTC faces must already be extracted).
 // Glyph metrics are returned in the same point units as font_size and
