@@ -3,6 +3,7 @@ import {
   WEB_LIMITS,
   type AiFeature,
   type AiRequest,
+  type AiResponseEnvelope,
   type CommandType,
   type CommitResult,  type DocumentInfo,
   type EditTransaction,
@@ -257,6 +258,10 @@ export function AiPanel(props: Props) {
       setError('This feature requires native commands that are not yet available.');
       return;
     }
+    if (feature === 'commands.plan' && !instruction.trim()) {
+      setError('Describe the PDF action and target pages before generating a command plan.');
+      return;
+    }
 
     setBusy(true);
     resetResults();
@@ -382,7 +387,7 @@ export function AiPanel(props: Props) {
       }
 
       const availableCommands = feature === 'commands.plan'
-        ? ['pages.rotate', 'pages.crop', 'pages.delete', 'pages.reorder', 'pages.insert', 'pages.duplicate',
+        ? ['pages.rotate', 'pages.crop', 'pages.delete', 'pages.reorder', 'pages.insert', 'pages.duplicate', 'pages.decorate',
             'objects.delete', 'objects.copy', 'objects.group', 'objects.ungroup',
             'objects.align', 'objects.distribute', 'objects.transform', 'text.style']
         : feature === 'blocks.organize'
@@ -392,7 +397,9 @@ export function AiPanel(props: Props) {
             ? ['form.fill']
             : undefined;
 
-      const advertisedCommands = availableCommands?.filter(command => document.capabilities.includes(command as CommandType));
+      const advertisedCommands = availableCommands?.filter(command => command === 'pages.decorate'
+        ? document.capabilities.includes('text.insert') && fonts.length > 0
+        : document.capabilities.includes(command as CommandType));
 
       if (feature === 'blocks.organize' && !props.selectedIds.length) {
         throw new Error('Select text blocks or other objects to organize before asking AI');
@@ -457,14 +464,32 @@ export function AiPanel(props: Props) {
         return registry.execute(transaction, ctx);
       };
 
-      const buildCommandPlanTransaction = (
+      const buildCommandPlanTransaction = async (
         req: AiRequest,
-        resp: typeof outcome extends { response: infer R } ? R : any,
+        resp: AiResponseEnvelope,
         _snap: EvidenceSnapshot,
         txId: string,
       ) => {
         const { document: info, page: pageItem } = current.current;
         if (!info || !pageItem) throw new Error('Document is closed');
+        const pages = new Map([[pageItem.id, pageItem]]);
+        if (resp.result.kind === 'commandPlan') {
+          const targets = new Set<string>();
+          for (const command of resp.result.commands) {
+            if (command.type === 'pages.decorate') command.pageIds.forEach(id => targets.add(id));
+            if (command.type === 'pages.insert') targets.add(command.referencePageId);
+          }
+          for (const id of targets) {
+            if (pages.has(id)) continue;
+            if (!info.pageOrder.includes(id)) throw new Error('AI proposal referenced a page outside this document');
+            const loaded = await props.engine.describePage(info.id, id);
+            const latest = getCurrentDocument();
+            if (loaded.id !== id || latest.id !== info.id || latest.revision !== info.revision) {
+              throw new Error('Document changed while preparing AI page decorations');
+            }
+            pages.set(id, loaded);
+          }
+        }
         const fieldsMap = new Map(pageFormFields.map(f => [f.id, {
           pageId: f.widgets[0]?.pageId ?? pageItem.id,
           type: f.type,
@@ -473,12 +498,14 @@ export function AiPanel(props: Props) {
         }]));
         const ctx = {
           document: info,
-          pages: new Map([[pageItem.id, pageItem]]),
+          pages,
           fields: fieldsMap,
           pageLimit: WEB_LIMITS.pagesPerDocument,
           ...(fonts.length ? { fontIds: new Set(fonts.map(f => f.id)) } : {}),
         };
-        return createAiTransaction(req, resp, ctx, txId, feature === 'blocks.organize' ? fontId || undefined : undefined);
+        const selectedFont = feature === 'blocks.organize' ? fontId || undefined
+          : feature === 'commands.plan' ? fontId || fonts[0]?.id : undefined;
+        return createAiTransaction(req, resp, ctx, txId, selectedFont);
       };
 
       const workflow = new AiWorkflow<CommitResult>({
@@ -920,14 +947,15 @@ export function AiPanel(props: Props) {
               onChange={event => setScanAllPages(event.target.checked)} /> Scan every page for an exhaustive answer
           </label>}
 
-          {['text.translate', 'text.proofread', 'text.rewrite', 'text.fit', 'blocks.organize'].includes(feature) && (
+          {['text.translate', 'text.proofread', 'text.rewrite', 'text.fit', 'blocks.organize', 'commands.plan'].includes(feature) && (
             <label>
-              {feature === 'blocks.organize' ? 'Font for merged paragraph (optional)' : 'Replacement font'}
+              {feature === 'blocks.organize' ? 'Font for merged paragraph (optional)'
+                : feature === 'commands.plan' ? 'Font for new page text' : 'Replacement font'}
               <select
-                value={fontId}
+                value={feature === 'commands.plan' ? fontId || fonts[0]?.id || '' : fontId}
                 onChange={e => {
                   setFontId(e.target.value);
-                  if (feature === 'blocks.organize') resetResults();
+                  if (feature === 'blocks.organize' || feature === 'commands.plan') resetResults();
                   if (candidateItems.length > 0 && props.document && snapshot) {
                     const newFont = e.target.value;
                     void (async () => {
@@ -952,7 +980,7 @@ export function AiPanel(props: Props) {
                 }}
                 disabled={props.disabled || busy || applying}
               >
-                <option value="">Preserve original font</option>
+                <option value="">{feature === 'commands.plan' ? 'Select a font for inserted text' : 'Preserve original font'}</option>
                 {fonts.map(font => (
                   <option key={font.id} value={font.id}>
                     {font.family} · {font.style}
@@ -974,6 +1002,7 @@ export function AiPanel(props: Props) {
               />
             </label>
           )}
+          {feature === 'commands.plan' && <p>For page numbers, headers, footers, or watermarks, specify the target pages and exact text here. Use {'{page}'} for a page number template.</p>}
 
           {feature === 'document.translate' && props.document && props.page && authorization && (
             <AiPanelBatch

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { EngineAdapter } from '@pdf-editor/contracts';
+import type { EngineAdapter, HostAdapter } from '@pdf-editor/contracts';
 import { printCurrentPdf } from '../src/ui/PrintPanel.js';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -41,5 +41,25 @@ describe('printCurrentPdf', () => {
   it('refuses a native-file result instead of printing an empty page', async () => {
     const engine = { save: vi.fn().mockResolvedValue({ kind: 'native-file', docId: 'doc-1', savedRevision: 7, handle: 'file' }) } as unknown as EngineAdapter;
     await expect(printCurrentPdf(engine, 'doc-1')).rejects.toThrow('requires PDF bytes');
+  });
+
+  it('submits the complete native PDF to the desktop host without confirming active save', async () => {
+    const result = { kind: 'native-file', docId: 'doc-1', savedRevision: 3, handle: 'print-handle' };
+    const engine = { save: vi.fn().mockResolvedValue(result), confirmSave: vi.fn() } as unknown as EngineAdapter;
+    const host = { capabilities: { platform: 'windows' }, printDocument: vi.fn().mockResolvedValue(undefined) } as unknown as HostAdapter;
+    await expect(printCurrentPdf(engine, 'doc-1', host, ['p1', 'p2'])).resolves.toBe('queued');
+    expect(engine.save).toHaveBeenCalledExactlyOnceWith({ docId: 'doc-1', protection: 'preserve' });
+    expect(host.printDocument).toHaveBeenCalledExactlyOnceWith(result, ['p1', 'p2']);
+    expect(engine.confirmSave).not.toHaveBeenCalled();
+  });
+
+  it('uses a local decrypted print copy for an unlocked protected PDF on macOS', async () => {
+    const result = { kind: 'native-file', docId: 'doc-1', savedRevision: 3, handle: 'decrypted-print' };
+    const engine = { save: vi.fn().mockResolvedValue(result), confirmSave: vi.fn() } as unknown as EngineAdapter;
+    const host = { capabilities: { platform: 'macos' }, printDocument: vi.fn().mockResolvedValue(undefined) } as unknown as HostAdapter;
+    await expect(printCurrentPdf(engine, 'doc-1', host, ['p1'], true)).resolves.toBe('queued');
+    expect(engine.save).toHaveBeenCalledExactlyOnceWith({ docId: 'doc-1', protection: 'remove' });
+    expect(host.printDocument).toHaveBeenCalledExactlyOnceWith(result, ['p1']);
+    expect(engine.confirmSave).not.toHaveBeenCalled();
   });
 });

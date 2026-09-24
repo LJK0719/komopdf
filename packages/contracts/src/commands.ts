@@ -88,6 +88,8 @@ export const proposedCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('pages.reorder'), pageIds: idsSchema }).strict(),
   z.object({ type: z.literal('pages.insert'), referencePageId: idSchema, position: z.enum(['before', 'after']) }).strict(),
   z.object({ type: z.literal('pages.duplicate'), pageIds: idsSchema, afterPageId: idSchema.nullable() }).strict(),
+  z.object({ type: z.literal('pages.decorate'), pageIds: idsSchema.max(4096),
+    decoration: z.enum(['number', 'header', 'footer', 'watermark']), text: z.string().max(1000).optional() }).strict(),
   z.object({ type: z.literal('form.fill'), fieldId: idSchema, value: z.union([z.string(), z.boolean(), z.array(z.string())]) }).strict(),
 ]);
 export type ProposedCommand = z.infer<typeof proposedCommandSchema>;

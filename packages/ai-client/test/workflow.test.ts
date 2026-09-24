@@ -186,6 +186,46 @@ describe('请求与冻结证据绑定', () => {
     expect(result.response.result).toMatchObject({ kind: 'answer', text: '柱状图' });
   });
 
+  it('awaits an async command plan builder before preview and rejects changes during page loading', async () => {
+    const request: AiRequest = { protocolVersion: PROTOCOL_VERSION, requestId: 'async-plan',
+      feature: 'commands.plan', document: { id: 'doc-1', revision: 2 },
+      context: { scope: 'pages', evidence: [], pages: [{ id: 'p1', pageNumber: 1 }],
+        availableCommands: ['pages.decorate'] }, instruction: 'Number the page', options: {} };
+    const snapshot = createEvidenceSnapshot(request, []);
+    const events: AiEvent[] = [
+      { type: 'result', response: { protocolVersion: PROTOCOL_VERSION, requestId: 'async-plan',
+        feature: 'commands.plan', document: { id: 'doc-1', baseRevision: 2 },
+        result: { kind: 'commandPlan', explanation: 'Number page',
+          commands: [{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'number' }] } } },
+      { type: 'done', requestId: 'async-plan' },
+    ];
+    const authorization = new DocumentAiAuthorization('doc-1');
+    authorization.enable(['source-1']);
+    const apply = vi.fn(async () => ({ revision: 3 }));
+    const builder = vi.fn(async () => {
+      await Promise.resolve();
+      return { id: 'tx-async', docId: 'doc-1', baseRevision: 2, source: 'ai' as const,
+        commands: [{ type: 'pages.rotate' as const, pageIds: ['p1'], degrees: 90 as const }] };
+    });
+    const workflow = new AiWorkflow({ endpoint: 'https://gateway.invalid/api/v1/ai/requests', authorization,
+      getCurrentDocument: () => ({ id: 'doc-1', revision: 2 }), apply,
+      nextTransactionId: () => 'tx-async', fetch: async () => sseResponse(events),
+      buildCommandPlanTransaction: builder });
+    const result = await workflow.run({ request, snapshot, sourceIds: ['source-1'] });
+    expect(builder).toHaveBeenCalledTimes(1);
+    expect(result.preview?.transaction.id).toBe('tx-async');
+    expect(apply).not.toHaveBeenCalled();
+
+    let lookup = 0;
+    const stale = new AiWorkflow({ endpoint: 'https://gateway.invalid/api/v1/ai/requests', authorization,
+      getCurrentDocument: () => ({ id: 'doc-1', revision: ++lookup === 1 ? 2 : 3 }), apply,
+      nextTransactionId: () => 'tx-async', fetch: async () => sseResponse(events),
+      buildCommandPlanTransaction: builder });
+    await expect(stale.run({ request, snapshot, sourceIds: ['source-1'] }))
+      .rejects.toThrow('Document changed while preparing AI preview');
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it('createSubsetPreview 支持为部分候选创建预览并仅应用该子集', async () => {
     const request: AiRequest = {
       protocolVersion: PROTOCOL_VERSION,

@@ -49,7 +49,39 @@ namespace pdf_editor {
 namespace {
 
 constexpr float kLayoutEpsilon = 0.0001f;
-constexpr char kFontResourceName[] = "F0";
+bool Fail(std::string message, std::string* error_message);
+
+std::string FontResourceName(size_t index) {
+  return "F" + std::to_string(index);
+}
+
+std::vector<ParagraphStyleRun> ResolvedStyles(const ParagraphRequest& request,
+                                              uint32_t length) {
+  if (!request.styles.empty()) return request.styles;
+  return {{{0, length}, 0, request.font_size, request.letter_spacing,
+           request.color, request.underline}};
+}
+
+bool BuildShapingStyles(const std::vector<ParagraphFont>& fonts,
+                        const std::vector<ParagraphStyleRun>& styles,
+                        uint32_t start,
+                        uint32_t end,
+                        std::vector<ShapingStyleRun>* shaped,
+                        std::string* error_message) {
+  shaped->clear();
+  for (const auto& style : styles) {
+    const uint32_t first = std::max(style.range.start, start);
+    const uint32_t last = std::min(style.range.end, end);
+    if (first >= last) continue;
+    if (style.font_index >= fonts.size()) {
+      return Fail("A paragraph style selects an unavailable font.", error_message);
+    }
+    shaped->push_back({{first - start, last - start},
+                       fonts[style.font_index].sfnt, style.font_size,
+                       style.letter_spacing, style.font_index});
+  }
+  return true;
+}
 
 class ScopedFont {
  public:
@@ -62,6 +94,14 @@ class ScopedFont {
 
   ScopedFont(const ScopedFont&) = delete;
   ScopedFont& operator=(const ScopedFont&) = delete;
+  ScopedFont(ScopedFont&& other) noexcept : font_(std::exchange(other.font_, nullptr)) {}
+  ScopedFont& operator=(ScopedFont&& other) noexcept {
+    if (this != &other) {
+      if (font_) FPDFFont_Close(font_);
+      font_ = std::exchange(other.font_, nullptr);
+    }
+    return *this;
+  }
 
   FPDF_FONT get() const { return font_; }
 
@@ -74,6 +114,8 @@ struct LayoutLine {
   uint32_t end_utf16 = 0;
   ShapedText shaped;
   std::vector<uint16_t> character_codes;
+  float ascent = 0;
+  float descent = 0;
   float min_x = 0;
   float max_x = 0;
   float width = 0;
@@ -202,10 +244,9 @@ std::string MissingGlyphMessage(const MissingGlyph& missing,
          std::to_string(range_offset + missing.text_range.end) + ").";
 }
 
-void ApplySpacingAcrossVisualRuns(float letter_spacing, ShapedText* shaped) {
-  if (letter_spacing == 0) {
-    return;
-  }
+void ApplySpacingAcrossVisualRuns(const std::vector<ParagraphStyleRun>& styles,
+                                  uint32_t offset,
+                                  ShapedText* shaped) {
   std::vector<size_t> nonempty_runs;
   for (size_t index = 0; index < shaped->visual_runs.size(); ++index) {
     if (shaped->visual_runs[index].glyph_count != 0) {
@@ -217,13 +258,20 @@ void ApplySpacingAcrossVisualRuns(float letter_spacing, ShapedText* shaped) {
     const size_t glyph_index =
         static_cast<size_t>(run.glyph_start) + run.glyph_count - 1;
     if (glyph_index < shaped->glyphs.size()) {
-      shaped->glyphs[glyph_index].x_advance += letter_spacing;
-      run.x_advance += letter_spacing;
+      const uint32_t position = offset + shaped->glyphs[glyph_index].cluster.start;
+      for (const auto& style : styles) {
+        if (style.range.start <= position && position < style.range.end) {
+          shaped->glyphs[glyph_index].x_advance += style.letter_spacing;
+          run.x_advance += style.letter_spacing;
+          break;
+        }
+      }
     }
   }
 }
 
-bool ShapeRange(std::span<const uint8_t> sfnt,
+bool ShapeRange(const std::vector<ParagraphFont>& fonts,
+                const std::vector<ParagraphStyleRun>& styles,
                 const std::u16string& logical_text,
                 uint32_t start,
                 uint32_t end,
@@ -242,7 +290,10 @@ bool ShapeRange(std::span<const uint8_t> sfnt,
   options.direction = resolved_direction;
   options.language = request.language;
   ShapedText shaped;
-  if (!ShapeText(sfnt, utf8, options, &shaped, error_message)) {
+  std::vector<ShapingStyleRun> shaping_styles;
+  if (!BuildShapingStyles(fonts, styles, start, end, &shaping_styles,
+                          error_message) ||
+      !ShapeStyledText(utf8, options, shaping_styles, &shaped, error_message)) {
     return false;
   }
   if (!shaped.missing_glyphs.empty()) {
@@ -262,7 +313,7 @@ bool ShapeRange(std::span<const uint8_t> sfnt,
                 error_message);
   }
 
-  ApplySpacingAcrossVisualRuns(request.letter_spacing, &shaped);
+  ApplySpacingAcrossVisualRuns(styles, start, &shaped);
   float pen_x = 0;
   float min_x = 0;
   float max_x = 0;
@@ -357,7 +408,8 @@ uint32_t HardBreakStart(const std::u16string& text,
   return result;
 }
 
-bool DetermineParagraphDirection(std::span<const uint8_t> sfnt,
+bool DetermineParagraphDirection(const std::vector<ParagraphFont>& fonts,
+                                 const std::vector<ParagraphStyleRun>& styles,
                                  const std::u16string& logical_text,
                                  uint32_t start,
                                  uint32_t end,
@@ -383,7 +435,10 @@ bool DetermineParagraphDirection(std::span<const uint8_t> sfnt,
   options.direction = TextDirection::kAuto;
   options.language = request.language;
   ShapedText shaped;
-  if (!ShapeText(sfnt, utf8, options, &shaped, error_message)) {
+  std::vector<ShapingStyleRun> shaping_styles;
+  if (!BuildShapingStyles(fonts, styles, start, end, &shaping_styles,
+                          error_message) ||
+      !ShapeStyledText(utf8, options, shaping_styles, &shaped, error_message)) {
     return false;
   }
   if (!shaped.missing_glyphs.empty()) {
@@ -394,7 +449,8 @@ bool DetermineParagraphDirection(std::span<const uint8_t> sfnt,
   return true;
 }
 
-bool WrapParagraph(std::span<const uint8_t> sfnt,
+bool WrapParagraph(const std::vector<ParagraphFont>& fonts,
+                   const std::vector<ParagraphStyleRun>& styles,
                    const std::u16string& logical_text,
                    uint32_t paragraph_start,
                    uint32_t paragraph_end,
@@ -413,7 +469,7 @@ bool WrapParagraph(std::span<const uint8_t> sfnt,
   }
 
   TextDirection paragraph_direction;
-  if (!DetermineParagraphDirection(sfnt, logical_text, paragraph_start,
+  if (!DetermineParagraphDirection(fonts, styles, logical_text, paragraph_start,
                                    paragraph_end, request,
                                    &paragraph_direction, error_message)) {
     return false;
@@ -432,7 +488,7 @@ bool WrapParagraph(std::span<const uint8_t> sfnt,
         break;
       }
       LayoutLine candidate;
-      if (!ShapeRange(sfnt, logical_text, line_start, boundary, request,
+      if (!ShapeRange(fonts, styles, logical_text, line_start, boundary, request,
                       paragraph_direction, &candidate, error_message)) {
         return false;
       }
@@ -490,25 +546,50 @@ float AlignedX(ParagraphAlignment alignment,
 }
 
 bool PositionLines(const ParagraphRequest& request,
-                   float ascent,
-                   float descent,
+                   const std::vector<ParagraphStyleRun>& styles,
+                   const std::vector<FPDF_FONT>& fonts,
                    std::vector<LayoutLine>* lines,
                    ParagraphResult* result,
                    std::string* error_message) {
-  const float line_step = request.font_size * request.line_height;
-  const float font_height = ascent - descent;
-  if (!std::isfinite(ascent) || !std::isfinite(descent) ||
-      !std::isfinite(font_height) || font_height <= 0) {
-    return Fail("The shaped paragraph font metrics are invalid.", error_message);
-  }
-  const float leading = std::max(0.0f, line_step - font_height) / 2;
-
   result->lines.clear();
   result->lines.reserve(lines->size());
-  for (size_t index = 0; index < lines->size(); ++index) {
-    LayoutLine& line = (*lines)[index];
+  float top = 0;
+  for (LayoutLine& line : *lines) {
+    float ascent = 0, descent = 0;
+    float line_step = request.font_size * request.line_height;
+    bool has_metrics = false;
+    for (const auto& style : styles) {
+      if (line.shaped.glyphs.empty()
+              ? !(style.range.start <= line.start_utf16 && line.start_utf16 <= style.range.end)
+              : (style.range.end <= line.start_utf16 || style.range.start >= line.end_utf16)) continue;
+      float run_ascent = 0, run_descent = 0;
+      if (style.font_index >= fonts.size() || !fonts[style.font_index] ||
+          !FPDFFont_GetAscent(fonts[style.font_index], style.font_size, &run_ascent) ||
+          !FPDFFont_GetDescent(fonts[style.font_index], style.font_size, &run_descent)) {
+        return Fail("PDFium could not read a paragraph font's metrics.", error_message);
+      }
+      ascent = std::max(ascent, run_ascent);
+      descent = std::min(descent, run_descent);
+      line_step = std::max(line_step, style.font_size * request.line_height);
+      has_metrics = true;
+    }
+    if (!has_metrics) {
+      if (!FPDFFont_GetAscent(fonts[0], request.font_size, &ascent) ||
+          !FPDFFont_GetDescent(fonts[0], request.font_size, &descent)) {
+        return Fail("PDFium could not read the paragraph font metrics.", error_message);
+      }
+    }
+    const float font_height = ascent - descent;
+    if (!std::isfinite(ascent) || !std::isfinite(descent) ||
+        !std::isfinite(line_step) || !std::isfinite(font_height) || font_height <= 0) {
+      return Fail("The shaped paragraph font metrics are invalid.", error_message);
+    }
+    const float leading = std::max(0.0f, line_step - font_height) / 2;
+    line.ascent = ascent;
+    line.descent = descent;
     line.x = AlignedX(request.alignment, request.width, line.width);
-    line.top = static_cast<float>(index) * line_step;
+    line.top = top;
+    top += line_step;
     line.bounds_y = line.top + leading;
     line.bounds_height = font_height;
     line.baseline = request.height - line.bounds_y - ascent;
@@ -538,14 +619,15 @@ bool PositionLines(const ParagraphRequest& request,
 }
 
 bool BuildFontMappings(const std::u16string& logical_text,
+                       size_t font_count,
                        std::vector<LayoutLine>* lines,
-                       std::vector<ShapedFontMapping>* mappings,
-                       std::set<uint16_t>* unicode_codes,
+                       std::vector<std::vector<ShapedFontMapping>>* mappings,
+                       std::vector<std::set<uint16_t>>* unicode_codes,
                        std::string* error_message) {
-  std::map<MappingKey, uint16_t> codes;
-  uint32_t next_code = 1;
-  mappings->clear();
-  unicode_codes->clear();
+  std::vector<std::map<MappingKey, uint16_t>> codes(font_count);
+  std::vector<uint32_t> next_code(font_count, 1);
+  mappings->assign(font_count, {});
+  unicode_codes->assign(font_count, {});
   for (LayoutLine& line : *lines) {
     line.character_codes.clear();
     line.character_codes.reserve(line.shaped.glyphs.size());
@@ -567,24 +649,26 @@ bool BuildFontMappings(const std::u16string& logical_text,
       key.cluster_text = logical_text.substr(
           cluster_start, static_cast<size_t>(cluster_end - cluster_start));
       key.emits_unicode = first_in_cluster;
-      auto found = codes.find(key);
-      if (found == codes.end()) {
-        if (next_code > std::numeric_limits<uint16_t>::max()) {
+      if (glyph.font_index >= font_count) {
+        return Fail("A shaped paragraph glyph has no font resource.", error_message);
+      }
+      auto& font_codes = codes[glyph.font_index];
+      auto found = font_codes.find(key);
+      if (found == font_codes.end()) {
+        if (next_code[glyph.font_index] > std::numeric_limits<uint16_t>::max()) {
           return Fail("The paragraph requires more than 65,535 distinct PDF "
-                      "character mappings.",
-                      error_message);
+                      "character mappings for one font.", error_message);
         }
-        const uint16_t code = static_cast<uint16_t>(next_code++);
-        found = codes.emplace(key, code).first;
-        mappings->push_back({code, glyph.glyph_id, key.cluster_text});
-        if (first_in_cluster) {
-          unicode_codes->insert(code);
-        }
+        const uint16_t code = static_cast<uint16_t>(next_code[glyph.font_index]++);
+        found = font_codes.emplace(key, code).first;
+        (*mappings)[glyph.font_index].push_back({code, glyph.glyph_id, key.cluster_text});
+        if (first_in_cluster) (*unicode_codes)[glyph.font_index].insert(code);
       }
       line.character_codes.push_back(found->second);
     }
   }
-  if (mappings->empty()) {
+  if (std::all_of(mappings->begin(), mappings->end(),
+                  [](const auto& value) { return value.empty(); })) {
     return Fail("A paragraph must contain at least one renderable glyph; empty "
                 "lines alone cannot create a font resource.",
                 error_message);
@@ -755,18 +839,23 @@ bool ReadUnderlineMetrics(std::span<const uint8_t> sfnt,
   return true;
 }
 
+const ParagraphStyleRun* StyleAt(const std::vector<ParagraphStyleRun>& styles,
+                                 uint32_t position) {
+  for (const auto& style : styles) {
+    if (style.range.start <= position && position < style.range.end) return &style;
+  }
+  return nullptr;
+}
+
 bool BuildContentStream(const ParagraphRequest& request,
+                        const std::vector<ParagraphStyleRun>& styles,
                         const std::vector<LayoutLine>& lines,
-                        const UnderlineMetrics& underline,
+                        const std::vector<UnderlineMetrics>& underlines,
                         fxcrt::string* content,
                         std::string* error_message) {
   fxcrt::ostringstream output;
-  output << "q\n";
-  WriteFloat(output, request.color.red) << ' ';
-  WriteFloat(output, request.color.green) << ' ';
-  WriteFloat(output, request.color.blue) << " rg\nBT\n/"
-                                         << kFontResourceName << ' ';
-  WriteFloat(output, request.font_size) << " Tf\n";
+  output << "q\nBT\n";
+  const ParagraphStyleRun* previous_style = nullptr;
 
   for (const LayoutLine& line : lines) {
     if (line.character_codes.size() != line.shaped.glyphs.size()) {
@@ -828,6 +917,16 @@ bool BuildContentStream(const ParagraphRequest& request,
       output << " >> BDC\n";
       for (size_t index = first; index < limit; ++index) {
         const PlacedGlyph& glyph = placed[index];
+        const auto* style = StyleAt(styles, line.start_utf16 + glyph.cluster_start);
+        if (!style) return Fail("A painted cluster is missing its text style.", error_message);
+        if (previous_style != style) {
+          output << '/' << FontResourceName(style->font_index) << ' ';
+          WriteFloat(output, style->font_size) << " Tf\n";
+          WriteFloat(output, style->color.red) << ' ';
+          WriteFloat(output, style->color.green) << ' ';
+          WriteFloat(output, style->color.blue) << " rg\n";
+          previous_style = style;
+        }
         output << "1 0 0 1 ";
         WriteFloat(output, glyph.x) << ' ';
         WriteFloat(output, glyph.y) << " Tm ";
@@ -838,32 +937,47 @@ bool BuildContentStream(const ParagraphRequest& request,
       first = limit;
     }
   }
-  output << "ET\n";
-  if (request.underline) {
-    // The line bounds already cover the visual glyph origins and advances,
-    // including bidi runs, offsets and letter spacing after wrapping.
-    WriteFloat(output, request.color.red) << ' ';
-    WriteFloat(output, request.color.green) << ' ';
-    WriteFloat(output, request.color.blue) << " RG\n";
-    WriteFloat(output, underline.thickness) << " w\n/Artifact BMC\n";
-    for (const LayoutLine& line : lines) {
-      if (line.shaped.glyphs.empty() || line.width <= 0) {
-        continue;
-      }
-      const float y = line.baseline + underline.offset;
-      const float right = line.x + line.width;
-      if (!std::isfinite(y) || !std::isfinite(right)) {
-        return Fail("A paragraph underline exceeds the usable coordinate range.",
-                    error_message);
-      }
-      WriteFloat(output, line.x) << ' ';
+  output << "ET\n/Artifact BMC\n";
+  for (const LayoutLine& line : lines) {
+    float pen_x = 0;
+    const ParagraphStyleRun* active = nullptr;
+    float left = 0, right = 0;
+    auto flush = [&]() {
+      if (!active || right <= left) return;
+      const UnderlineMetrics& metrics = underlines[active->font_index];
+      WriteFloat(output, active->color.red) << ' ';
+      WriteFloat(output, active->color.green) << ' ';
+      WriteFloat(output, active->color.blue) << " RG\n";
+      WriteFloat(output, metrics.thickness * active->font_size) << " w\n";
+      const float y = line.baseline + metrics.offset * active->font_size;
+      WriteFloat(output, left) << ' ';
       WriteFloat(output, y) << " m ";
       WriteFloat(output, right) << ' ';
       WriteFloat(output, y) << " l S\n";
+    };
+    for (const ShapedGlyph& glyph : line.shaped.glyphs) {
+      const auto* style = StyleAt(styles, line.start_utf16 + glyph.cluster.start);
+      if (!style) return Fail("An underlined glyph is missing its text style.", error_message);
+      const float start = line.x - line.min_x + pen_x + glyph.x_offset;
+      const float end = line.x - line.min_x + pen_x + glyph.x_advance;
+      const float glyph_left = std::min(start, end), glyph_right = std::max(start, end);
+      if (!std::isfinite(glyph_left) || !std::isfinite(glyph_right)) {
+        return Fail("A paragraph underline exceeds the usable coordinate range.", error_message);
+      }
+      if (!style->underline || style != active || glyph_left > right + kLayoutEpsilon) {
+        flush();
+        active = style->underline ? style : nullptr;
+        left = glyph_left;
+        right = glyph_right;
+      } else {
+        left = std::min(left, glyph_left);
+        right = std::max(right, glyph_right);
+      }
+      pen_x += glyph.x_advance;
     }
-    output << "EMC\n";
+    flush();
   }
-  output << "Q\n";
+  output << "EMC\nQ\n";
   *content = output.str();
   return true;
 }
@@ -905,7 +1019,9 @@ const char* DirectionName(TextDirection direction) {
 
 void SetParagraphMetadata(CPDF_Document* document,
                           CPDF_Dictionary* stream_dict,
-                          uint32_t font_object_number,
+                          const std::vector<CPDF_Font*>& fonts,
+                          const std::vector<ParagraphFont>& font_faces,
+                          const std::vector<ParagraphStyleRun>& styles,
                           const ParagraphRequest& request,
                           const std::u16string& logical_text) {
   RetainPtr<CPDF_Dictionary> metadata =
@@ -933,26 +1049,51 @@ void SetParagraphMetadata(CPDF_Document* document,
   color->AppendNew<CPDF_Number>(request.color.green);
   color->AppendNew<CPDF_Number>(request.color.blue);
   metadata->SetNewFor<CPDF_Reference>("Font", document,
-                                      font_object_number);
-  metadata->SetNewFor<CPDF_Name>("FontResource", kFontResourceName);
+                                      fonts[0]->GetFontDictObjNum());
+  metadata->SetNewFor<CPDF_Name>("FontResource", ByteString("F0"));
+  const WideString base_id = WideString::FromUTF8(ByteStringView(font_faces[0].id));
+  metadata->SetNewFor<CPDF_String>("RegisteredFontId", base_id.AsStringView());
+  if (!request.styles.empty()) {
+    metadata->SetNewFor<CPDF_Number>("Version", 2);
+    auto runs = metadata->SetNewFor<CPDF_Array>("StyleRuns");
+    for (const auto& style : styles) {
+      auto run = pdfium::MakeRetain<CPDF_Dictionary>();
+      run->SetNewFor<CPDF_Number>("Start", static_cast<int>(style.range.start));
+      run->SetNewFor<CPDF_Number>("End", static_cast<int>(style.range.end));
+      run->SetNewFor<CPDF_Reference>("Font", document,
+          fonts[style.font_index]->GetFontDictObjNum());
+      const WideString id = WideString::FromUTF8(ByteStringView(font_faces[style.font_index].id));
+      run->SetNewFor<CPDF_String>("RegisteredFontId", id.AsStringView());
+      run->SetNewFor<CPDF_Number>("FontSize", style.font_size);
+      run->SetNewFor<CPDF_Number>("LetterSpacing", style.letter_spacing);
+      run->SetNewFor<CPDF_Boolean>("Underline", style.underline);
+      auto rgb = run->SetNewFor<CPDF_Array>("Color");
+      rgb->AppendNew<CPDF_Number>(style.color.red);
+      rgb->AppendNew<CPDF_Number>(style.color.green);
+      rgb->AppendNew<CPDF_Number>(style.color.blue);
+      runs->Append(std::move(run));
+    }
+  }
 }
 
 FPDF_PAGEOBJECT CreateFormObject(CPDF_Document* document,
-                                 CPDF_Font* font,
+                                 const std::vector<CPDF_Font*>& fonts,
+                                 const std::vector<ParagraphFont>& font_faces,
+                                 const std::vector<ParagraphStyleRun>& styles,
                                  const ParagraphRequest& request,
                                  const std::u16string& logical_text,
                                  const fxcrt::string& content,
                                  std::string* error_message) {
-  if (!document || !font || font->GetDocument() != document) {
-    Fail("The paragraph font does not belong to the target document.",
-         error_message);
+  if (!document || fonts.empty()) {
+    Fail("The paragraph requires embedded font resources.", error_message);
     return nullptr;
   }
-  const uint32_t font_object_number = font->GetFontDictObjNum();
-  if (font_object_number == 0) {
-    Fail("The shaped paragraph font has no indirect PDF resource.",
-         error_message);
-    return nullptr;
+  for (CPDF_Font* font : fonts) {
+    if (!font || font->GetDocument() != document ||
+        font->GetFontDictObjNum() == 0) {
+      Fail("A paragraph font has no resource in the target document.", error_message);
+      return nullptr;
+    }
   }
 
   RetainPtr<CPDF_Stream> stream =
@@ -966,12 +1107,14 @@ FPDF_PAGEOBJECT CreateFormObject(CPDF_Document* document,
 
   RetainPtr<CPDF_Dictionary> resources =
       stream_dict->SetNewFor<CPDF_Dictionary>("Resources");
-  RetainPtr<CPDF_Dictionary> fonts =
+  RetainPtr<CPDF_Dictionary> font_resources =
       resources->SetNewFor<CPDF_Dictionary>("Font");
-  fonts->SetNewFor<CPDF_Reference>(kFontResourceName, document,
-                                   font_object_number);
-  SetParagraphMetadata(document, stream_dict.Get(), font_object_number, request,
-                       logical_text);
+  for (size_t index = 0; index < font_faces.size(); ++index) {
+    font_resources->SetNewFor<CPDF_Reference>(ByteString(FontResourceName(index).c_str()),
+                                               document, fonts[index]->GetFontDictObjNum());
+  }
+  SetParagraphMetadata(document, stream_dict.Get(), fonts,
+                       font_faces, styles, request, logical_text);
 
   auto form = std::make_unique<CPDF_Form>(document, nullptr, stream, nullptr);
   form->ParseContent();
@@ -990,8 +1133,7 @@ FPDF_PAGEOBJECT CreateFormObject(CPDF_Document* document,
 }  // namespace
 
 bool CreateTextParagraph(FPDF_DOCUMENT document,
-                         const FontFaceInfo& font_info,
-                         std::span<const uint8_t> sfnt,
+                         std::span<const ParagraphFont> font_faces,
                          const ParagraphRequest& request,
                          ParagraphResult* result,
                          std::string* error_message) {
@@ -1005,10 +1147,11 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
   if (!native_document) {
     return Fail("A valid target PDF document is required.", error_message);
   }
-  if (sfnt.empty()) {
+  if (font_faces.empty() || font_faces[0].sfnt.empty()) {
     return Fail("A standalone prepared SFNT font face is required.",
                 error_message);
   }
+  std::vector<ParagraphFont> fonts(font_faces.begin(), font_faces.end());
   if (!ValidateRequest(request, error_message)) {
     return false;
   }
@@ -1019,9 +1162,35 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
   whole_options.direction = request.direction;
   whole_options.language = request.language;
   ShapedText whole_text;
-  if (!ShapeText(sfnt, request.utf8, whole_options, &whole_text,
+  if (!ShapeText(fonts[0].sfnt, request.utf8, whole_options, &whole_text,
                  error_message)) {
     return false;
+  }
+  const auto styles = ResolvedStyles(request,
+      static_cast<uint32_t>(whole_text.logical_text.size()));
+  uint32_t next = 0;
+  for (const auto& style : styles) {
+    if (style.range.start != next || style.range.end <= next ||
+        style.range.end > whole_text.logical_text.size() ||
+        style.font_index >= fonts.size() || fonts[style.font_index].sfnt.empty() ||
+        !IsFinitePositive(style.font_size) || !std::isfinite(style.letter_spacing)) {
+      return Fail("Paragraph styles must cover ordered UTF-16 ranges with valid fonts.", error_message);
+    }
+    for (float component : {style.color.red, style.color.green, style.color.blue}) {
+      if (!std::isfinite(component) || component < 0 || component > 1) {
+        return Fail("Paragraph style RGB values must be between 0 and 1.", error_message);
+      }
+    }
+    next = style.range.end;
+  }
+  if (next != whole_text.logical_text.size()) {
+    return Fail("Paragraph styles do not cover the logical text.", error_message);
+  }
+  if (!request.styles.empty()) {
+    std::vector<ShapingStyleRun> shaping_styles;
+    if (!BuildShapingStyles(fonts, styles, 0, next, &shaping_styles, error_message) ||
+        !ShapeStyledText(request.utf8, whole_options, shaping_styles, &whole_text,
+                         error_message)) return false;
   }
   if (!whole_text.missing_glyphs.empty()) {
     return Fail(MissingGlyphMessage(whole_text.missing_glyphs.front(), 0),
@@ -1044,7 +1213,7 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
     }
     const uint32_t paragraph_end =
         HardBreakStart(whole_text.logical_text, paragraph_start, boundary);
-    if (!WrapParagraph(sfnt, whole_text.logical_text, paragraph_start,
+    if (!WrapParagraph(fonts, styles, whole_text.logical_text, paragraph_start,
                        paragraph_end, whole_text.grapheme_boundaries,
                        line_breaks, request, &lines, &overflow,
                        error_message)) {
@@ -1052,63 +1221,57 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
     }
     paragraph_start = boundary;
   }
-  if (!WrapParagraph(sfnt, whole_text.logical_text, paragraph_start,
+  if (!WrapParagraph(fonts, styles, whole_text.logical_text, paragraph_start,
                      static_cast<uint32_t>(whole_text.logical_text.size()),
                      whole_text.grapheme_boundaries, line_breaks, request,
                      &lines, &overflow, error_message)) {
     return false;
   }
 
-  std::vector<ShapedFontMapping> mappings;
-  std::set<uint16_t> unicode_codes;
-  if (!BuildFontMappings(whole_text.logical_text, &lines, &mappings,
-                         &unicode_codes, error_message)) {
-    return false;
-  }
-  ScopedFont font(LoadShapedFontFace(document, font_info, sfnt, mappings,
-                                     error_message));
-  CPDF_Font* native_font =
-      font.get() ? CPDFFontFromFPDFFont(font.get()) : nullptr;
-  if (!font.get() || !native_font) {
-    if (error_message && error_message->empty()) {
-      *error_message = "PDFium could not load the paragraph's shaped font.";
+  std::vector<std::vector<ShapedFontMapping>> mappings;
+  std::vector<std::set<uint16_t>> unicode_codes;
+  if (!BuildFontMappings(whole_text.logical_text, fonts.size(), &lines,
+                         &mappings, &unicode_codes, error_message)) return false;
+  std::vector<ScopedFont> loaded;
+  std::vector<FPDF_FONT> handles;
+  std::vector<CPDF_Font*> native_fonts;
+  loaded.reserve(fonts.size());
+  for (size_t index = 0; index < fonts.size(); ++index) {
+    if (mappings[index].empty()) {
+      return Fail("A paragraph font has no paintable glyphs; select a font used by its text.", error_message);
     }
-    return false;
-  }
-  if (!InstallParagraphToUnicode(native_document, native_font, mappings,
-                                 unicode_codes, error_message)) {
-    return false;
-  }
-
-  float ascent = 0;
-  float descent = 0;
-  if (!FPDFFont_GetAscent(font.get(), request.font_size, &ascent) ||
-      !FPDFFont_GetDescent(font.get(), request.font_size, &descent)) {
-    return Fail("PDFium could not read the paragraph font metrics.",
-                error_message);
+    loaded.emplace_back(LoadShapedFontFace(document, fonts[index].info,
+                                            fonts[index].sfnt, mappings[index],
+                                            error_message));
+    FPDF_FONT handle = loaded.back().get();
+    CPDF_Font* native_font = handle ? CPDFFontFromFPDFFont(handle) : nullptr;
+    if (!native_font) return Fail("PDFium could not load a paragraph shaped font.", error_message);
+    if (!InstallParagraphToUnicode(native_document, native_font, mappings[index],
+                                   unicode_codes[index], error_message)) return false;
+    handles.push_back(handle);
+    native_fonts.push_back(native_font);
   }
 
   ParagraphResult output;
   output.overflow = overflow;
   output.logical_text = whole_text.logical_text;
-  if (!PositionLines(request, ascent, descent, &lines, &output,
-                     error_message)) {
+  if (!PositionLines(request, styles, handles, &lines, &output, error_message)) {
     return false;
   }
 
-  UnderlineMetrics underline;
-  if (request.underline &&
-      !ReadUnderlineMetrics(sfnt, request.font_size, descent, &underline,
-                            error_message)) {
-    return false;
+  std::vector<UnderlineMetrics> underlines(fonts.size());
+  for (const auto& style : styles) {
+    if (!style.underline) continue;
+    float descent = 0;
+    if (!FPDFFont_GetDescent(handles[style.font_index], 1, &descent) ||
+        !ReadUnderlineMetrics(fonts[style.font_index].sfnt, 1, descent,
+                              &underlines[style.font_index], error_message)) return false;
   }
   fxcrt::string content;
-  if (!BuildContentStream(request, lines, underline, &content,
-                          error_message)) {
-    return false;
-  }
-  output.object = CreateFormObject(native_document, native_font, request,
-                                   whole_text.logical_text, content,
+  if (!BuildContentStream(request, styles, lines, underlines, &content,
+                          error_message)) return false;
+  output.object = CreateFormObject(native_document, native_fonts, fonts, styles,
+                                   request, whole_text.logical_text, content,
                                    error_message);
   if (!output.object) {
     return false;
@@ -1116,6 +1279,17 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
 
   *result = std::move(output);
   return true;
+}
+
+bool CreateTextParagraph(FPDF_DOCUMENT document,
+                         const FontFaceInfo& font_info,
+                         std::span<const uint8_t> sfnt,
+                         const ParagraphRequest& request,
+                         ParagraphResult* result,
+                         std::string* error_message) {
+  const ParagraphFont font{"", font_info, sfnt};
+  return CreateTextParagraph(document, std::span<const ParagraphFont>(&font, 1),
+                             request, result, error_message);
 }
 
 }  // namespace pdf_editor

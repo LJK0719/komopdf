@@ -80,6 +80,16 @@ function validateCommand(request: AiRequest, command: ProposedCommand, allowedCo
     case 'pages.insert':
       assert(pageIds.has(command.referencePageId), 'Page insertion reference is not in request context');
       return;
+    case 'pages.decorate': {
+      const requestedPages = new Set((request.context.pages ?? []).map(page => page.id));
+      for (const pageId of command.pageIds) assert(requestedPages.has(pageId), 'Decoration page is not in request context');
+      if (command.decoration !== 'number') assert(Boolean(command.text?.trim()), 'Decoration text is required');
+      if (command.text !== undefined) {
+        assert(command.text.trim() && request.instruction.includes(command.text), 'Decoration text must come verbatim from user instruction');
+        if (command.decoration === 'number') assert(command.text.includes('{page}'), 'Page number template must contain {page}');
+      }
+      return;
+    }
     case 'form.fill': {
       assert(fieldIds.has(command.fieldId), 'Form command target is not in request context');
       if (request.feature === 'form.suggest') {

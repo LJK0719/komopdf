@@ -164,6 +164,14 @@ const commandSchemas: Record<string, JsonSchema> = {
       afterPageId: { anyOf: [id, { type: 'NULL' }] } },
     required: ['type', 'pageIds', 'afterPageId'],
   },
+  'pages.decorate': {
+    type: 'OBJECT', properties: {
+      type: { type: 'STRING', enum: ['pages.decorate'] },
+      pageIds: { type: 'ARRAY', items: id, minItems: 1, maxItems: 4096 },
+      decoration: { type: 'STRING', enum: ['number', 'header', 'footer', 'watermark'] },
+      text: { type: 'STRING', maxLength: 1000 },
+    }, required: ['type', 'pageIds', 'decoration'],
+  },
   'form.fill': {
     type: 'OBJECT', properties: {
       type: { type: 'STRING', enum: ['form.fill'] }, fieldId: id,
@@ -192,7 +200,7 @@ const featureInstructions: Record<AiFeature, string> = {
   'text.proofread': 'Proofread the supplied evidence. Preserve meaning, numbers, and names unless the instruction explicitly says otherwise. Return only changed replacement candidates.',
   'text.rewrite': 'Rewrite the supplied evidence according to the user instruction and return replacement candidates bound to evidence IDs.',
   'text.fit': 'Rewrite the supplied evidence to fit the target character count while preserving essential meaning. Return replacement candidates.',
-  'commands.plan': 'Propose a short PDF edit plan using only the command types explicitly listed as available. For pages.insert, select an existing referencePageId and before/after; the editor uses that page size. For pages.duplicate, select existing source pageIds and an existing afterPageId (or null for the start). For objects.copy, specify an offset only when the user explicitly requests a numeric displacement; otherwise omit it and the editor uses a small default. For objects.group, select at least two existing adjacent top-level text, path, or image objects; for objects.ungroup, select an existing group object. The editor generates all new page and object/group IDs; never return them.',
+  'commands.plan': 'Propose a short PDF edit plan using only the command types explicitly listed as available. For pages.insert, select an existing referencePageId and before/after; the editor uses that page size. For pages.duplicate, select existing source pageIds and an existing afterPageId (or null for the start). For pages.decorate, select existing pageIds and number/header/footer/watermark; for non-number decoration, copy text verbatim as a substring of the user instruction (not document content). Number needs no text, but may use an exact user-supplied template containing {page}. Never choose a font, size, coordinate, or new object ID; the editor builds all insertions from the actual pages. For objects.copy, specify an offset only when the user explicitly requests a numeric displacement; otherwise omit it and the editor uses a small default. For objects.group, select at least two existing adjacent top-level text, path, or image objects; for objects.ungroup, select an existing group object. The editor generates all new page and object/group IDs; never return them.',
   'document.ask': 'Answer only from the supplied evidence. Every answer must include one or more exact evidence citations; if evidence is insufficient, return clarification instead of an unsupported answer.',
   'document.summarize': 'Summarize only the supplied evidence and attach citations for the main claims.',
   'document.translate': 'Translate every supplied evidence block, retaining each evidence ID.',

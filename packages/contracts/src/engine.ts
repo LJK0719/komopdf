@@ -6,7 +6,8 @@ export type TextRange = [number, number];
 export type DocumentSource =
   | { kind: 'bytes'; sourceId: string; name: string; bytes: ArrayBuffer }
   | { kind: 'native-file'; sourceId: string; name: string; handle: string };
-export type DocumentPermissions = { modify: boolean; copy: boolean; annotate: boolean; fillForms: boolean; encrypted: boolean; signed: boolean };
+export type DocumentPermissions = { modify: boolean; copy: boolean; annotate: boolean; fillForms: boolean;
+  print?: boolean; encrypted: boolean; signed: boolean };
 export type DocumentInfo = {
   id: string; revision: number; savedRevision: number; pageOrder: string[];
   sourceIds: string[]; sourceBytes?: number; permissions: DocumentPermissions; capabilities: CommandType[];
@@ -120,6 +121,7 @@ export interface HostAdapter {
   readonly capabilities: HostCapabilities;
   pickDocument(): Promise<DocumentSource | null>;
   saveDocument(result: SaveResult, suggestedName: string): Promise<SaveOutcome | void>;
+  printDocument?(result: SaveResult, pageIds: string[]): Promise<void>;
   pickResource?(kind: 'image' | 'pdf'): Promise<ResourceSource | null>;
   pickFont?(): Promise<FontSelection | null>;
   listSystemFonts?(): Promise<SystemFontEntry[]>;

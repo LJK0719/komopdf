@@ -110,6 +110,37 @@ describe('feature templates and output validation', () => {
     }
   });
 
+  it('accepts page decorations only for supplied page IDs and verbatim user text', () => {
+    const base = request('commands.plan');
+    const scoped: AiRequest = { ...base, instruction: '在第1到2页的页脚写 Project Q3，再添加浅色水印 Confidential',
+      context: { ...base.context, pages: [{ id: 'p1', pageNumber: 1 }, { id: 'p2', pageNumber: 2 }],
+        availableCommands: ['pages.decorate', 'text.insert'] } };
+    const prepared = prepareProviderInput(scoped, 8192);
+    expect([...prepared.allowedCommands]).toEqual(['pages.decorate']);
+    const schema = JSON.stringify(prepared.input.responseSchema);
+    expect(schema).not.toContain('fontId');
+    expect(schema).not.toContain('objectId');
+    const plan = (commands: unknown[]) => JSON.stringify({ kind: 'commandPlan', explanation: 'Decoration', commands });
+    const validate = (commands: unknown[]) => parseAndValidateResult(plan(commands), scoped, prepared.expectedKind,
+      prepared.allowedCommands, 1024 * 1024);
+    expect(validate([
+      { type: 'pages.decorate', pageIds: ['p1', 'p2'], decoration: 'number' },
+      { type: 'pages.decorate', pageIds: ['p1', 'p2'], decoration: 'footer', text: 'Project Q3' },
+      { type: 'pages.decorate', pageIds: ['p2'], decoration: 'watermark', text: 'Confidential' },
+    ]).kind).toBe('commandPlan');
+    expect(() => validate([{ type: 'pages.decorate', pageIds: ['outside'], decoration: 'number' }]))
+      .toThrow(/not in request context/);
+    expect(() => validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'header' }]))
+      .toThrow(/text is required/);
+    expect(() => validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'header', text: 'Invented' }]))
+      .toThrow(/verbatim/);
+    expect(() => validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'number', text: 'Project Q3' }]))
+      .toThrow(/template must contain/);
+    expect(() => validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'footer', text: 'Project Q3',
+      fontId: 'model-font', objectId: 'model-object', bounds: { x: 0, y: 0, width: 1, height: 1 } }]))
+      .toThrow(/output contract/);
+  });
+
   it('requires document translation to cover every evidence ID exactly once', () => {
     const translationRequest: AiRequest = {
       ...request('document.translate'),

@@ -866,7 +866,10 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
           <FontPanel engine={engine} host={host} disabled={operationBusy} onBusyChange={setEditPending} />
           {document && <ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} onExport={exportDocument} />}
-          {host.capabilities.platform === 'web' && document && <PrintPanel disabled={isBusy} docId={document.info.id} engine={engine} />}
+          {document && (host.capabilities.platform === 'web' || host.printDocument) &&
+            <PrintPanel disabled={isBusy} docId={document.info.id} pageIds={document.info.pageOrder}
+              encrypted={document.info.permissions.encrypted} canPrint={document.info.permissions.print === true}
+              engine={engine} host={host} onBusyChange={setEditPending} />}
 
           {document && (
             <ParagraphPanel

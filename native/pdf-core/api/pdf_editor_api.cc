@@ -91,6 +91,7 @@ constexpr uint32_t kMaxFontBytes = 64 * 1024 * 1024;
 constexpr size_t kMaxTextBytes = 16 * 1024 * 1024;
 constexpr uint32_t kKnownStyleFlags = 1U | 2U | 4U | 8U;
 constexpr uint32_t kTextStyleRangeFlag = 16U;
+constexpr uint32_t kTextStyleUnderlineFlag = 32U;
 constexpr uint32_t kTextInsertLineHeightFlag = 16U;
 constexpr uint32_t kTextInsertCenterFlag = 32U;
 constexpr uint32_t kTextInsertRightFlag = 64U;
@@ -174,12 +175,18 @@ struct TextInsertLayoutResult {
 };
 
 struct TextStyleData {
+  std::optional<std::string> font_id;
   std::optional<double> font_size;
   std::optional<std::array<double, 3>> color;
   std::optional<double> character_spacing;
   std::optional<int> weight;
   std::optional<bool> italic;
   std::optional<bool> underline;
+};
+
+struct StyledRunData {
+  std::string text;
+  TextStyleData style;
 };
 
 struct TextBlockData {
@@ -189,6 +196,7 @@ struct TextBlockData {
   std::string object_id;
   std::string text;
   TextStyleData style;
+  std::vector<StyledRunData> runs;
   Rect bounds;
   Matrix transform;
   std::string editability = "direct";
@@ -1099,7 +1107,9 @@ RetainPtr<const CPDF_Dictionary> ParagraphMetadata(FPDF_PAGEOBJECT object) {
   const auto* native = CPDFPageObjectFromFPDFPageObject(object);
   const auto* form = native ? native->AsForm() : nullptr;
   const auto dictionary = form ? form->form()->GetDict()->GetDictFor("KomoParagraph") : nullptr;
-  return dictionary && dictionary->GetIntegerFor("Version") == 1 &&
+  const int version = dictionary ? dictionary->GetIntegerFor("Version") : 0;
+  return dictionary && (version == 1 ||
+         (version == 2 && dictionary->GetArrayFor("StyleRuns"))) &&
          dictionary->KeyExist("Text") && dictionary->GetFloatFor("Width") > 0 &&
          dictionary->GetFloatFor("Height") > 0 ? dictionary : nullptr;
 }
@@ -1611,12 +1621,50 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
     block.text.assign(utf8.c_str(), utf8.GetLength());
     block.bounds = data.bounds; block.transform = data.transform;
     block.is_paragraph = true;
+    const ByteString base_id = paragraph->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
+    if (!base_id.IsEmpty()) block.style.font_id =
+        std::string(base_id.c_str(), base_id.GetLength());
     block.style.font_size = paragraph->GetFloatFor("FontSize");
     block.style.character_spacing = paragraph->GetFloatFor("LetterSpacing");
     if (paragraph->GetBooleanFor("Underline", false)) block.style.underline = true;
     const auto color = paragraph->GetArrayFor("Color");
     if (color && color->size() == 3)
       block.style.color = std::array<double, 3>{color->GetFloatAt(0), color->GetFloatAt(1), color->GetFloatAt(2)};
+    if (const auto style_runs = paragraph->GetArrayFor("StyleRuns")) {
+      LayoutText decoded;
+      uint32_t next = 0;
+      bool valid = DecodeLayoutText(block.text, &decoded);
+      for (size_t index = 0; valid && index < style_runs->size(); ++index) {
+        const auto entry = style_runs->GetDictAt(index);
+        if (!entry) { valid = false; break; }
+        const int first = entry->GetIntegerFor("Start");
+        const int last = entry->GetIntegerFor("End");
+        if (first < 0 || last <= first || static_cast<uint32_t>(first) != next ||
+            static_cast<size_t>(last) >= decoded.byte_offsets.size() ||
+            decoded.byte_offsets[first] == std::numeric_limits<size_t>::max() ||
+            decoded.byte_offsets[last] == std::numeric_limits<size_t>::max()) {
+          valid = false; break;
+        }
+        StyledRunData run;
+        run.text = block.text.substr(decoded.byte_offsets[first],
+                                     decoded.byte_offsets[last] - decoded.byte_offsets[first]);
+        run.style.font_size = entry->GetFloatFor("FontSize");
+        run.style.character_spacing = entry->GetFloatFor("LetterSpacing");
+        run.style.underline = entry->GetBooleanFor("Underline", false);
+        const ByteString font_id = entry->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
+        if (!font_id.IsEmpty()) run.style.font_id =
+            std::string(font_id.c_str(), font_id.GetLength());
+        const auto rgb = entry->GetArrayFor("Color");
+        if (rgb && rgb->size() == 3) run.style.color = std::array<double, 3>{
+            rgb->GetFloatAt(0), rgb->GetFloatAt(1), rgb->GetFloatAt(2)};
+        block.runs.push_back(std::move(run));
+        next = static_cast<uint32_t>(last);
+      }
+      if (!valid || next != decoded.utf16.size()) {
+        block.runs.clear();
+        block.editability = "geometry-only";
+      }
+    }
     if (depth > 0) block.editability = "geometry-only";
     data.text_block = block;
     context->text_blocks->push_back(std::move(block));
@@ -1770,6 +1818,11 @@ void AppendTextStyle(std::string* output, const TextStyleData& style) {
     }
     has_property = true;
   };
+  if (style.font_id) {
+    property();
+    output->append("\"fontId\":");
+    AppendJsonString(output, *style.font_id);
+  }
   if (style.font_size) {
     property();
     output->append("\"fontSize\":");
@@ -1817,13 +1870,25 @@ void AppendTextBlock(std::string* output, const TextBlockData& block) {
   AppendJsonString(output, block.source_id);
   output->append(",\"sourceObjectIds\":[");
   AppendJsonString(output, block.object_id);
-  output->append("],\"runs\":[{\"text\":");
-  AppendJsonString(output, block.text);
-  output->append(",\"style\":");
-  AppendTextStyle(output, block.style);
-  output->append(",\"sourceObjectIds\":[");
-  AppendJsonString(output, block.object_id);
-  output->append("]}],\"bounds\":");
+  output->append("],\"runs\":[");
+  const auto append_run = [&](std::string_view text, const TextStyleData& style) {
+    output->append("{\"text\":");
+    AppendJsonString(output, text);
+    output->append(",\"style\":");
+    AppendTextStyle(output, style);
+    output->append(",\"sourceObjectIds\":[");
+    AppendJsonString(output, block.object_id);
+    output->append("]}");
+  };
+  if (block.runs.empty()) {
+    append_run(block.text, block.style);
+  } else {
+    for (size_t index = 0; index < block.runs.size(); ++index) {
+      if (index) output->push_back(',');
+      append_run(block.runs[index].text, block.runs[index].style);
+    }
+  }
+  output->append("],\"bounds\":");
   AppendRect(output, block.bounds);
   output->append(",\"transform\":");
   AppendMatrix(output, block.transform);
@@ -1911,6 +1976,8 @@ std::string SerializeDocumentInfo(const Document& document) {
   output.append(allowed(1UL << 5) ? "true" : "false");
   output.append(",\"fillForms\":");
   output.append(allowed(1UL << 8) ? "true" : "false");
+  output.append(",\"print\":");
+  output.append(allowed(1UL << 2) ? "true" : "false");
   output.append(",\"encrypted\":");
   output.append(FPDF_GetSecurityHandlerRevision(document.pdf) >= 0 ? "true"
                                                                    : "false");
@@ -2838,6 +2905,11 @@ bool LoadCommandPage(FPDF_DOCUMENT pdf,
   return true;
 }
 
+bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
+    FPDF_PAGE page, CandidateMetadata* metadata, size_t page_index,
+    const ObjectTarget& target, const EditCommand& command,
+    const std::map<std::string, std::shared_ptr<const FontResource>>& resources);
+
 bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE page,
     CandidateMetadata* metadata, size_t page_index, const ObjectTarget& target,
     const EditCommand& command,
@@ -3214,6 +3286,15 @@ bool ApplyTextStyle(
       return false;
     }
     const bool nested = target.path.size() > 1;
+    if (ParagraphMetadata(target.object)) {
+      if (!ApplyParagraphStyle(document, pdf, page.get(), metadata, page_index,
+                               target, command, resources)) return false;
+      continue;
+    }
+    if (command.flags & kTextStyleUnderlineFlag) {
+      SetError("UNSUPPORTED_CAPABILITY", "Underlining a regular TextObject is not implemented.");
+      return false;
+    }
     if (nested && ((command.flags & kTextStyleRangeFlag) ||
                    !NestedFormPathIsStructurallyEditable(page.get(), target.object, target.path))) {
       SetError("UNSUPPORTED_CAPABILITY",
@@ -5441,8 +5522,9 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
       return ValidateLayoutText(target->text, "Replacement text");
     case EditType::kTextStyle:
       if (!require_page() || !require_ids() ||
-          (target->flags & ~(kKnownStyleFlags | kTextStyleRangeFlag)) != 0 ||
-          (target->flags & kKnownStyleFlags) == 0) {
+          (target->flags & ~(kKnownStyleFlags | kTextStyleRangeFlag |
+                              kTextStyleUnderlineFlag)) != 0 ||
+          (target->flags & (kKnownStyleFlags | kTextStyleUnderlineFlag)) == 0) {
         if (g_error_code.empty()) {
           SetError("UNSUPPORTED_CAPABILITY", "Unknown or empty text style.");
         }
@@ -5456,6 +5538,11 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
       }
       if (((target->flags & 1U) != 0) != !target->font_id.empty()) {
         SetError("INVALID_REQUEST", "The text font flag and font ID disagree.");
+        return false;
+      }
+      if ((target->flags & kTextStyleUnderlineFlag) &&
+          target->values[5] != 0 && target->values[5] != 1) {
+        SetError("INVALID_REQUEST", "Paragraph underline must be 0 or 1.");
         return false;
       }
       if ((target->flags & 2U) &&

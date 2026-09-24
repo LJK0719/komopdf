@@ -48,8 +48,9 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
   const [formatSize, setFormatSize] = useState('');
   const [formatColor, setFormatColor] = useState('');
   const [formatSpacing, setFormatSpacing] = useState('');
-  const formatDirty = Boolean(formatFontId || formatSize || formatColor || formatSpacing);
-  const clearFormat = () => { setFormatFontId(''); setFormatSize(''); setFormatColor(''); setFormatSpacing(''); };
+  const [formatUnderline, setFormatUnderline] = useState<'' | 'on' | 'off'>('');
+  const formatDirty = Boolean(formatFontId || formatSize || formatColor || formatSpacing || formatUnderline);
+  const clearFormat = () => { setFormatFontId(''); setFormatSize(''); setFormatColor(''); setFormatSpacing(''); setFormatUnderline(''); };
   const [range, setRange] = useState<TextRange>([0, originalText.length]);
   const wholeBlock = range[0] === 0 && range[1] === originalText.length;
   const targetText = originalText.slice(range[0], range[1]);
@@ -199,6 +200,7 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
       if (formatFontId) style.fontId = formatFontId;
       if (formatSize) style.fontSize = Number(formatSize);
       if (formatSpacing) style.characterSpacing = Number(formatSpacing);
+      if (block.isParagraph && formatUnderline) style.underline = formatUnderline === 'on';
       if (formatColor) {
         if (!/^#[0-9a-f]{6}$/i.test(formatColor)) throw new EngineError('INVALID_REQUEST', 'Color must use #RRGGBB');
         style.color = [1, 3, 5].map(offset => parseInt(formatColor.slice(offset, offset + 2), 16) / 255) as [number, number, number];
@@ -298,11 +300,13 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
       <option value="">Preserve original font</option>
       {fonts.map((font) => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
     </select></label>
-    {!block.isParagraph && document?.capabilities.includes('text.style') && <fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId) || (Boolean(selectedObject?.locator.containerPath.length) && !wholeBlock)}>
+    {document?.capabilities.includes('text.style') && <fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId) || (Boolean(selectedObject?.locator.containerPath.length) && !wholeBlock)}>
       <legend>Format selected text</legend>
       <p>{selectedObject?.locator.containerPath.length
         ? 'Nested Form text supports whole-block formatting only; range formatting remains unavailable.'
-        : 'Applies only to the selected characters. Blank fields preserve existing formatting. Font or size changes move the remaining text on this line; they do not wrap the paragraph.'}</p>
+        : block.isParagraph
+          ? 'Format the selected characters in this logical paragraph. The native preview rejects changes that overflow its box.'
+          : 'Applies only to the selected characters. Blank fields preserve existing formatting. Font or size changes move the remaining text on this line; they do not wrap the paragraph.'}</p>
       <label>Selection font<select value={formatFontId} onChange={event => setFormatFontId(event.target.value)}>
         <option value="">Preserve font</option>
         {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
@@ -310,9 +314,12 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
       <label>Selection font size<input type="number" min="0.1" max="1000" step="0.1" value={formatSize} onChange={event => setFormatSize(event.target.value)} placeholder="Preserve size" /></label>
       <label>Selection color<input value={formatColor} onChange={event => setFormatColor(event.target.value)} placeholder="#RRGGBB" /></label>
       <label>Selection character spacing<input type="number" step="0.1" value={formatSpacing} onChange={event => setFormatSpacing(event.target.value)} placeholder="Preserve spacing" /></label>
+      {block.isParagraph && <label>Selection underline<select value={formatUnderline}
+        onChange={event => setFormatUnderline(event.target.value as '' | 'on' | 'off')}>
+        <option value="">Preserve underline</option><option value="on">Underline</option><option value="off">Remove underline</option>
+      </select></label>}
       <button type="button" disabled={!formatDirty} onClick={() => void formatSelection()}>Apply selection format</button>
     </fieldset>}
-    {block.isParagraph && <p style={{ fontSize: '10px', color: '#646761' }}>Range formatting is unavailable for paragraph blocks. Use the Paragraph panel to adjust font, size, and layout.</p>}
     {fontError ? <p role="alert">{fontError}; original font remains available.</p> : null}
     {!canReplace ? <p role="alert">{block.editability === 'geometry-only'
       ? 'This TextBlock cannot be edited directly.'
