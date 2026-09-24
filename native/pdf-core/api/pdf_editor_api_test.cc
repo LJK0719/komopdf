@@ -924,6 +924,151 @@ void TestNestedTextReplacement() {
   Require(pde_close(marked_doc) == 1, "close marked Form fixture");
 }
 
+void TestNestedSharedFormTextTransformAndEdit() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /XObject << /Fm 6 0 R >> >> /Contents 5 0 R >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+      "/Resources << /XObject << /Fm 6 0 R >> >> /Contents 5 0 R >>",
+      Stream("q /Fm Do Q"),
+      Stream("0 0 20 10 re f BT /F1 16 Tf 10 30 Td (Shared text) Tj ET",
+             "/Type /XObject /Subtype /Form /BBox [0 0 200 100] "
+             "/Resources << /Font << /F1 7 0 R >> >>"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  });
+  const auto* bytes = reinterpret_cast<const uint8_t*>(pdf.data());
+  const uint32_t doc = pde_open_memory(bytes, static_cast<uint32_t>(pdf.size()),
+                                       "shared-form-text", "shared-form-source", nullptr);
+  Require(doc != 0, "open shared Form text fixture");
+  const std::string p0_before = RequireResult(pde_describe_page(doc, 0), "describe p0 before");
+  const std::string p1_before = RequireResult(pde_describe_page(doc, 1), "describe p1 before");
+  const std::string p0_id = PageIdFromDescription(p0_before);
+  const std::string p1_id = PageIdFromDescription(p1_before);
+
+  Require(p0_before.find("Shared text") != std::string::npos &&
+          p1_before.find("Shared text") != std::string::npos,
+          "both pages initially share the Form text object");
+
+  const size_t text_pos = p0_before.find("\"type\":\"text\"");
+  Require(text_pos != std::string::npos, "find nested text on p0");
+  const size_t text_obj_start = p0_before.rfind("{\"id\":\"", text_pos);
+  const std::string text_obj_id = JsonStringAfter(p0_before, "{\"id\":\"", text_obj_start);
+
+  const size_t path_pos = p0_before.find("\"type\":\"path\"");
+  Require(path_pos != std::string::npos, "find nested path on p0");
+  const size_t path_obj_start = p0_before.rfind("{\"id\":\"", path_pos);
+  const std::string path_obj_id = JsonStringAfter(p0_before, "{\"id\":\"", path_obj_start);
+
+  const auto p0_orig_pixels = RenderPixels(doc, 0, 300, 300);
+  const auto p1_orig_pixels = RenderPixels(doc, 1, 300, 300);
+
+  // 1. Preview nested text transform
+  const char* text_targets[] = {text_obj_id.c_str()};
+  PdeEditCommand move_text{};
+  move_text.type = 4;
+  move_text.page_id = p0_id.c_str();
+  move_text.ids = text_targets;
+  move_text.id_count = 1;
+  move_text.values[0] = 1; move_text.values[3] = 1;
+  move_text.values[4] = 25; move_text.values[5] = 15;
+
+  Require(pde_preview_commands(doc, 0, &move_text, 1) != nullptr &&
+          std::string(pde_describe_page(doc, 0)) == p0_before &&
+          std::string(pde_describe_page(doc, 1)) == p1_before &&
+          RenderPixels(doc, 0, 300, 300) == p0_orig_pixels &&
+          RenderPixels(doc, 1, 300, 300) == p1_orig_pixels,
+          "preview of nested text transform leaves both shared pages untouched");
+
+  // 2. Failure atomicity: batch with valid move + out-of-bounds move
+  const char* path_targets[] = {path_obj_id.c_str()};
+  PdeEditCommand move_bad = move_text;
+  move_bad.ids = path_targets;
+  move_bad.values[4] = 500;
+  PdeEditCommand batch[2] = {move_text, move_bad};
+
+  Require(pde_apply_commands(doc, 0, "failing-batch", batch, 2) == nullptr &&
+          std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+          pde_document_revision(doc) == 0 &&
+          std::string(pde_describe_page(doc, 0)) == p0_before &&
+          RenderPixels(doc, 0, 300, 300) == p0_orig_pixels,
+          "nested transform failure rejects the transaction without partial writes");
+
+  // 3. Apply valid nested text transform on Page 0 (isolating Page 0's Form instance)
+  Require(pde_apply_commands(doc, 0, "move-nested-text", &move_text, 1) != nullptr &&
+          pde_document_revision(doc) == 1,
+          "apply nested text transform to isolate shared Form on page 0");
+  const std::string p0_after_move = RequireResult(pde_describe_page(doc, 0), "p0 after move");
+  const std::string p1_after_move = RequireResult(pde_describe_page(doc, 1), "p1 after move");
+
+  Require(RenderPixels(doc, 0, 300, 300) != p0_orig_pixels,
+          "page 0 render changes after nested text movement");
+  Require(RenderPixels(doc, 1, 300, 300) == p1_orig_pixels &&
+          p1_after_move == p1_before,
+          "page 1 remains completely identical and isolated");
+
+  // 4. Undo / Redo
+  Require(pde_undo(doc) != nullptr &&
+          RenderPixels(doc, 0, 300, 300) == p0_orig_pixels &&
+          std::string(pde_describe_page(doc, 0)) == p0_before,
+          "undo restores original page 0 appearance and geometry");
+  Require(pde_redo(doc) != nullptr &&
+          RenderPixels(doc, 0, 300, 300) != p0_orig_pixels,
+          "redo reapplies nested text transform");
+
+  // 5. Save & Reopen
+  Require(pde_save_memory(doc) != nullptr, "save nested text transform PDF");
+  const std::vector<uint8_t> saved_pdf(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(
+      saved_pdf.data(), static_cast<uint32_t>(saved_pdf.size()),
+      "reopened-nested-text", "saved-nested-text", nullptr);
+  Require(reopened != 0, "reopen PDF after nested text transform");
+
+  const std::string p0_reopened = RequireResult(pde_describe_page(reopened, 0), "p0 reopened");
+  const std::string p1_reopened = RequireResult(pde_describe_page(reopened, 1), "p1 reopened");
+  Require(p0_reopened.find("Shared text") != std::string::npos &&
+          p1_reopened.find("Shared text") != std::string::npos &&
+          RenderPixels(reopened, 1, 300, 300) == p1_orig_pixels,
+          "reopened PDF retains text on both pages and original appearance on page 1");
+
+  // 6. Edit text inside the moved nested text object on reopened PDF
+  const auto reopened_p0_block_ids = TextBlockIds(p0_reopened);
+  Require(!reopened_p0_block_ids.empty(), "find text block on reopened page 0");
+  PdeTextEdit replace_edit{0, reopened_p0_block_ids[0].c_str(), 0, 11, "Moved text", nullptr};
+
+  Require(pde_apply_text(reopened, 0, "edit-moved-nested-text", &replace_edit, 1) != nullptr,
+          "replace text in transformed nested text object");
+  const std::string p0_edited = RequireResult(pde_describe_page(reopened, 0), "p0 edited");
+  const std::string p1_edited = RequireResult(pde_describe_page(reopened, 1), "p1 edited");
+
+  Require(p0_edited.find("Moved text") != std::string::npos &&
+          p0_edited.find("Shared text") == std::string::npos &&
+          p1_edited.find("Shared text") != std::string::npos &&
+          RenderPixels(reopened, 1, 300, 300) == p1_orig_pixels,
+          "text replacement on page 0 does not mutate shared page 1");
+
+  // 7. Save and reopen again to verify second save of isolated Form
+  Require(pde_save_memory(reopened) != nullptr, "save second edit of nested Form");
+  const std::vector<uint8_t> twice_saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t twice_reopened = pde_open_memory(
+      twice_saved.data(), static_cast<uint32_t>(twice_saved.size()),
+      "twice-reopened", "twice-saved", nullptr);
+  Require(twice_reopened != 0, "reopen twice-saved PDF");
+
+  const std::string p0_twice = RequireResult(pde_describe_page(twice_reopened, 0), "p0 twice");
+  const std::string p1_twice = RequireResult(pde_describe_page(twice_reopened, 1), "p1 twice");
+  Require(p0_twice.find("Moved text") != std::string::npos &&
+          p1_twice.find("Shared text") != std::string::npos &&
+          RenderPixels(twice_reopened, 1, 300, 300) == p1_orig_pixels,
+          "twice-reopened PDF cleanly maintains edited page 0 and untouched page 1");
+
+  Require(pde_close(twice_reopened) == 1 &&
+          pde_close(reopened) == 1 &&
+          pde_close(doc) == 1,
+          "close shared Form text transform fixtures");
+}
+
 void TestObjectGroup() {
   const std::string pdf = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>",
@@ -3573,6 +3718,7 @@ int main(int argc, char** argv) {
   TestObjectDistribution();
   TestNestedObjectTransform();
   TestNestedTextReplacement();
+  TestNestedSharedFormTextTransformAndEdit();
   if (font_options.enabled()) TestNestedTextFont(font_options.ttf_path);
   TestObjectGroup();
   TestPageCrop();
