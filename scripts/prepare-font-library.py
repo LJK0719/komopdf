@@ -9,7 +9,8 @@ Variable fonts are instantiated into static faces for the PDF runtime.
 Missing italic faces get real oblique outlines, not a CSS-only preview.
 """
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 import hashlib
 import ctypes
 import freetype
@@ -153,14 +154,31 @@ def prepare_family(item, commit):
     return records
 
 
+def prepare_oblique(item):
+    style = 'Bold Oblique' if item['weight'] >= 600 else 'Oblique'
+    identifier = item['id'] + '-oblique'
+    destination = CACHE / 'library' / 'oblique' / (identifier + '.' + item['format'])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        font = TTFont(ROOT / item['path'])
+        oblique(font)
+        names(font, item['family'], style)
+        font.recalcTimestamp = False
+        font.save(destination)
+        font.close()
+    print('Prepared oblique:', identifier, flush=True)
+    return record(destination, identifier, item['family'], style, item['weight'], True,
+                  ROOT / item['licensePath'], item['licenseOwner'])
+
+
 def main():
     source = json.loads((ROOT / 'resources/font-library.json').read_text(encoding='utf-8'))
     prepared_path = CACHE / 'prepared-fonts.json'
     initial = json.loads(prepared_path.read_text(encoding='utf-8'))
     original_ids = {item['id'] for item in json.loads((ROOT / 'resources/font-assets.json').read_text())['fonts']['families']}
     records = [item for item in initial if item['licenseOwner'] in original_ids and '/library/' not in item['path']]
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for group in pool.map(lambda item: prepare_family(item, source['commit']), source['families']):
+    with ProcessPoolExecutor(max_workers=4) as pool:
+        for group in pool.map(prepare_family, source['families'], repeat(source['commit'])):
             records.extend(group)
     for item in source.get('extraFamilies', []):
         asset = item['assets'][0]
@@ -203,22 +221,10 @@ def main():
         print('Prepared bold:', identifier, flush=True)
     # Oblique outline faces keep CJK text in its own family instead of losing glyphs
     # by silently replacing it with a Latin-only italic font.
-    for item in list(records):
-        if item['italic'] or any(other['family'] == item['family'] and other['weight'] == item['weight'] and other['italic'] for other in records):
-            continue
-        style = 'Bold Oblique' if item['weight'] >= 600 else 'Oblique'
-        identifier = item['id'] + '-oblique'
-        destination = CACHE / 'library' / 'oblique' / (identifier + '.' + item['format'])
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if not destination.exists():
-            font = TTFont(ROOT / item['path'])
-            oblique(font)
-            names(font, item['family'], style)
-            font.recalcTimestamp = False
-            font.save(destination)
-            font.close()
-        records.append(record(destination, identifier, item['family'], style, item['weight'], True, ROOT / item['licensePath'], item['licenseOwner']))
-        print('Prepared oblique:', identifier, flush=True)
+    missing_obliques = [item for item in records if not item['italic'] and not any(
+        other['family'] == item['family'] and other['weight'] == item['weight'] and other['italic'] for other in records)]
+    with ProcessPoolExecutor(max_workers=4) as pool:
+        records.extend(pool.map(prepare_oblique, missing_obliques))
     prepared_path.write_text(json.dumps(records, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     print('Ready:', len({item['family'] for item in records}), 'families,', len(records), 'faces;', sum(item['bytes'] for item in records), 'bytes', flush=True)
 
