@@ -36,7 +36,7 @@ const server = http.createServer((req, res) => {
     filePath = path.join(filePath, 'index.html');
   } else if (!fs.existsSync(filePath) && fs.existsSync(`${filePath}.html`)) {
     filePath = `${filePath}.html`;
-  } else if (!fs.existsSync(filePath) && urlPath.startsWith('/editor/')) {
+  } else if (!fs.existsSync(filePath) && urlPath.startsWith('/editor/') && !urlPath.endsWith('.txt')) {
     filePath = path.join(distDir, 'editor', 'index.html');
   }
 

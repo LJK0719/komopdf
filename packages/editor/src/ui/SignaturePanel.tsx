@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
@@ -65,6 +66,7 @@ export async function commitSignature(
 }
 
 export function SignaturePanel({ document, page, engine, disabled, onBusyChange, onCommitted }: Props) {
+  useI18n();
   const scope = `${document.id}\0${document.revision}\0${page.id}`;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
@@ -132,15 +134,15 @@ export function SignaturePanel({ document, page, engine, disabled, onBusyChange,
     }
   }
 
-  return <section className="text-edit-panel document-tools-panel" aria-label="Handwritten signature">
-    <span className="eyebrow">Handwritten signature</span>
-    <p>Draw with a mouse, pen, or finger. Each stroke becomes an editable PDF ink annotation.</p>
-    <p>This is a visual signature, not a certificate-based digital signature.</p>
-    {document.permissions.signed ? <p role="alert">Changing this signed PDF may invalidate its existing digital signature.</p> : null}
-    {!document.capabilities.includes('annotation.add') ? <p role="status">The current PDF core does not support ink annotations.</p> : null}
-    {!document.permissions.annotate ? <p role="alert">This document does not permit annotations.</p> : null}
+  return <section className="text-edit-panel document-tools-panel" aria-label={t("Handwritten signature")}>
+    <span className="eyebrow">{t("Handwritten signature")}</span>
+    <p>{t("Draw your signature below.")}</p>
+
+    {document.permissions.signed ? <p role="alert">{t("Changing this signed PDF may invalidate its existing digital signature.")}</p> : null}
+    {!document.capabilities.includes('annotation.add') ? <p role="status">{t("Signatures are not available for this document.")}</p> : null}
+    {!document.permissions.annotate ? <p role="alert">{t("This document does not permit annotations.")}</p> : null}
     <svg viewBox={`0 0 ${DRAW_WIDTH} ${DRAW_HEIGHT}`} preserveAspectRatio="none"
-      role="img" aria-label="Signature drawing area" style={{ display: 'block', width: '100%', height: DRAW_HEIGHT,
+      role="img" aria-label={t("Signature drawing area")} style={{ display: 'block', width: '100%', height: DRAW_HEIGHT,
         border: '1px solid #858d99', background: '#fff', touchAction: 'none' }}
       onPointerDown={event => {
         if (locked || gesture.current || !event.isPrimary || event.button !== 0) return;
@@ -169,20 +171,20 @@ export function SignaturePanel({ document, page, engine, disabled, onBusyChange,
         fill="none" stroke="#000" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />)}
     </svg>
     <div className="text-edit-actions">
-      <button type="button" disabled={busy || !strokes.length} onClick={() => clearDraft(true)}>Undo draft stroke</button>
-      <button type="button" disabled={busy || !strokes.length} onClick={() => clearDraft(false)}>Clear draft</button>
+      <button type="button" disabled={busy || !strokes.length} onClick={() => clearDraft(true)}>{t("Undo draft stroke")}</button>
+      <button type="button" disabled={busy || !strokes.length} onClick={() => clearDraft(false)}>{t("Clear draft")}</button>
     </div>
-    <p>Place within the current PDF page (coordinates in points from the top-left).</p>
+    <p>{t("Place within the current PDF page (coordinates in points from the top-left).")}</p>
     <div className="document-tools-grid">
       {(['x', 'y', 'width', 'height'] as const).map(key => <label key={key}>
-        {key === 'x' ? 'X' : key === 'y' ? 'Y' : key === 'width' ? 'Width' : 'Height'} (pt)
+        {key === 'x' ? 'X' : key === 'y' ? 'Y' : key === 'width' ? t("Width") : t("Height")} (pt)
         <input type="number" step="any" value={placement[key]} disabled={disabled || busy}
           onChange={event => setPlacement(current => ({ ...current, [key]: event.target.value }))} />
       </label>)}
-      <label>Stroke width (pt)<input type="number" min="0.1" step="0.1" value={width} disabled={disabled || busy}
+      <label>{t("Stroke width (pt)")}<input type="number" min="0.1" step="0.1" value={width} disabled={disabled || busy}
         onChange={event => setWidth(event.target.value)} /></label>
     </div>
-    <button type="button" disabled={locked || !strokes.length} onClick={() => void placeSignature()}>Place signature</button>
-    {error ? <p role="alert">{error}</p> : null}
+    <button type="button" disabled={locked || !strokes.length} onClick={() => void placeSignature()}>{t("Place signature")}</button>
+    {error ? <p role="alert">{t(error)}</p> : null}
   </section>;
 }

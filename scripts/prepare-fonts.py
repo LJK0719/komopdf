@@ -99,8 +99,6 @@ def main():
             data = destination.read_bytes() if destination.is_file() else download(entry['url'], destination)
             digest = verify(data, entry)
             info = sfnt(data)
-            if not info['editableEmbedding']:
-                raise ValueError(f"Font does not permit editable embedding: {entry['fileName']}")
             record = {'id': family['id'] + '-' + entry['style'].lower().replace(' ', '-'),
                       'family': family['familyName'], 'style': entry['style'], 'weight': entry['weight'],
                       'italic': entry.get('italic', False), **info, 'sha256': digest, 'bytes': len(data),

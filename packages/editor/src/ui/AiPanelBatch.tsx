@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import React, { useEffect, useRef, useState } from 'react';
 import type { DocumentInfo, EngineAdapter, PageModel, TextBlock } from '@pdf-editor/contracts';
 import {
@@ -57,6 +58,7 @@ export function AiPanelBatch({
   onLocate,
   disabled,
 }: AiPanelBatchProps) {
+  useI18n();
   const [scope, setScope] = useState<'page' | 'document'>('page');
   const [task, setTask] = useState<LongTaskRecord<BatchPayload, BatchResult> | null>(null);
   const [busy, setBusy] = useState(false);
@@ -398,9 +400,7 @@ export function AiPanelBatch({
             checked={scope === 'page'}
             onChange={() => setScope('page')}
             disabled={disabled || isRunning}
-          />
-          Current Page
-        </label>
+          />{t("Current Page")}</label>
         <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px' }}>
           <input
             type="radio"
@@ -408,9 +408,7 @@ export function AiPanelBatch({
             checked={scope === 'document'}
             onChange={() => setScope('document')}
             disabled={disabled || isRunning}
-          />
-          Entire Document ({document.pageOrder.length} pages)
-        </label>
+          />{t("Entire Document (")}{document.pageOrder.length} {t("pages)")}</label>
       </div>
 
       {(!task || staleTask) && (
@@ -420,17 +418,16 @@ export function AiPanelBatch({
           onClick={() => void startTask()}
           disabled={disabled || isRunning}
         >
-          {busy ? 'Preparing batch task…' : staleTask ? 'Refresh changed blocks' : `Start Translation (${scope === 'page' ? 'Current Page' : 'Full Document'})`}
+          {busy ? t("Preparing batch task…") : staleTask ? t("Refresh changed blocks") : `Start Translation (${scope === 'page' ? t("Current Page") : t("Full Document")})`}
         </button>
       )}
 
       {task && (
         <div style={{ display: 'grid', gap: '6px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px' }}>
-            <span>
-              Progress: {completedCount}/{totalCount} batches ({percent}%)
+            <span>{t("Progress:")} {completedCount}/{totalCount} {t("batches (")}{percent}%)
             </span>
-            <span style={{ fontWeight: 600 }}>Status: {task.status}</span>
+            <span style={{ fontWeight: 600 }}>{t("Status:")} {task.status}</span>
           </div>
 
           <div
@@ -454,41 +451,33 @@ export function AiPanelBatch({
 
           <div style={{ display: 'flex', gap: '6px' }}>
             {isRunning && (
-              <button type="button" onClick={() => void pauseTask()} style={{ flex: 1 }}>
-                Pause
-              </button>
+              <button type="button" onClick={() => void pauseTask()} style={{ flex: 1 }}>{t("Pause")}</button>
             )}
             {!isRunning && task.status !== 'completed' && task.status !== 'cancelled' && (
-              <button type="button" onClick={() => void resumeTask()} disabled={disabled || staleTask || missingBatchSource} style={{ flex: 1 }}>
-                Resume
-              </button>
+              <button type="button" onClick={() => void resumeTask()} disabled={disabled || staleTask || missingBatchSource} style={{ flex: 1 }}>{t("Resume")}</button>
             )}
             <button
               type="button"
               onClick={() => void cancelTask()}
               disabled={disabled || isRunning}
               style={{ flex: 1 }}
-            >
-              Reset Task
-            </button>
+            >{t("Reset Task")}</button>
           </div>
         </div>
       )}
 
-      {error && <p role="alert" style={{ color: '#ff623d' }}>{error}</p>}
-      {staleTask && <p role="status">Document revision changed. Refresh before requesting more translations; completed blocks can still be written if their source and original text are unchanged.</p>}
-      {missingBatchSource && <p role="alert">Per-block source mapping is missing; reset to start a new task.</p>}
-      {statusText && <p style={{ fontSize: '10px', color: '#666' }}>{statusText}</p>}
+      {error && <p role="alert" style={{ color: '#ff623d' }}>{t(error)}</p>}
+      {staleTask && <p role="status">{t("Document revision changed. Refresh before requesting more translations; completed blocks can still be written if their source and original text are unchanged.")}</p>}
+      {missingBatchSource && <p role="alert">{t("Per-block source mapping is missing; reset to start a new task.")}</p>}
+      {statusText && <p style={{ fontSize: '10px', color: '#666' }}>{t(statusText)}</p>}
 
       {task && task.batches.some(b => b.status === 'completed') && (
         <div style={{ display: 'grid', gap: '8px', maxHeight: '280px', overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <strong>Translated Blocks</strong>
+            <strong>{t("Translated Blocks")}</strong>
             <button type="button" onClick={() => void writeBlocks(task.batches.filter(batch => batch.status === 'completed' && batch.result && !appliedBatchIds.has(batch.id)))}
               disabled={disabled || isRunning || applyingBlockId !== null || task.docId !== document.id ||
-                !task.batches.some(batch => batch.status === 'completed' && batch.result && !appliedBatchIds.has(batch.id))}>
-              Write remaining (one undo)
-            </button>
+                !task.batches.some(batch => batch.status === 'completed' && batch.result && !appliedBatchIds.has(batch.id))}>{t("Write remaining (one undo)")}</button>
           </div>
           {task.batches
             .filter(b => b.status === 'completed' && b.result)
@@ -506,22 +495,20 @@ export function AiPanelBatch({
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', color: '#888', fontSize: '9px' }}>
-                  <span>P.{batch.payload.pageNumber} · Block {batch.payload.blockId}</span>
+                  <span>P.{batch.payload.pageNumber} {t("· Block")} {batch.payload.blockId}</span>
                   <div style={{ display: 'flex', gap: '4px' }}>
                     <button
                       type="button"
                       onClick={() => onLocate?.(batch.payload.pageId, batch.payload.blockId)}
                       style={{ fontSize: '9px', padding: '1px 4px' }}
-                    >
-                      Locate
-                    </button>
+                    >{t("Locate")}</button>
                     <button
                       type="button"
                       onClick={() => void writeBlocks([batch])}
                       disabled={disabled || task.docId !== document.id || applyingBlockId !== null || isRunning || appliedBatchIds.has(batch.id)}
                       style={{ fontSize: '9px', padding: '1px 6px', fontWeight: 600 }}
                     >
-                      {applyingBlockId === batch.id ? 'Writing…' : appliedBatchIds.has(batch.id) ? 'Applied' : 'Write to PDF'}
+                      {applyingBlockId === batch.id ? t("Writing…") : appliedBatchIds.has(batch.id) ? t("Applied") : t("Write to PDF")}
                     </button>
                   </div>
                 </div>

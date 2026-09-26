@@ -62,6 +62,7 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
   const pageIds = new Set(context.document.pageOrder);
   const deletedObjects = new Set<string>();
   const touchedText = new Map<string, TextRange[]>();
+  const updatedText = new Map<string, string>();
   const newIds = new Set<string>([
     ...pageIds, ...[...context.pages.values()].flatMap(page => page.objects.flatMap(object => [object.id, ...(object.textBlock ? [object.textBlock.id] : [])])),
     ...context.fields?.keys() ?? [],
@@ -105,11 +106,16 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
         if (previous.some(([start, end]) => command.range[0] < end && command.range[1] > start || command.range[0] === start)) invalid('Replacement ranges overlap in the same transaction');
         if (previous.some(([start]) => command.range[0] > start)) invalid('Text replacements in the same block must be executed in descending order of original range');
         previous.push(command.range); touchedText.set(command.blockId, previous);
+        const current = updatedText.get(command.blockId) ?? blockText(context, command.pageId, command.blockId);
+        updatedText.set(command.blockId, current.slice(0, command.range[0]) + command.text + current.slice(command.range[1]));
         break;
       }
       case 'text.style':
         for (const id of command.blockIds) {
-          if (command.range) validateRange(context, command.pageId, id, command.range);
+          if (command.range && updatedText.has(id)) {
+            try { assertTextRange(updatedText.get(id)!, command.range); }
+            catch (error) { invalid(error instanceof Error ? error.message : 'Invalid text range'); }
+          } else if (command.range) validateRange(context, command.pageId, id, command.range);
           else blockText(context, command.pageId, id);
         }
         if (command.range && command.blockIds.length !== 1) invalid('Range style can only apply to a single block');

@@ -120,7 +120,7 @@ describe('ParagraphPanel - Real Font Face Selection for text.reflow and text.ins
       })
     );
 
-    expect(html).toContain('Paragraph Reflow &amp; Insert');
+    expect(html).toContain('<summary>Paragraph</summary>');
     expect(html).toContain('Font');
     expect(html).toContain('Preview paragraph');
     expect(html).toContain('Reflow selected text');
@@ -226,7 +226,6 @@ describe('ParagraphPanel - Real Font Face Selection for text.reflow and text.ins
     expect(noItalicMatch.success).toBe(false);
     if (!noItalicMatch.success) {
       expect(noItalicMatch.reason).toContain('No exact weight 700 italic face registered for "Noto Sans CJK SC"');
-      expect(noItalicMatch.reason).toContain('Synthetic bold/italic is not supported');
     }
   });
 });

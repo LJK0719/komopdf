@@ -1,10 +1,12 @@
+import { useI18n } from './i18n.js';
 import { useEffect, useRef, useState } from 'react';
 import type { EngineAdapter } from '@pdf-editor/contracts';
 import { drawRender } from './draw-render.js';
 
-type Props = { engine: EngineAdapter; docId: string; pageId: string; revision: number };
+type Props = { engine: EngineAdapter; docId: string; pageId: string; revision: number; scale?: number };
 
-export function PageThumbnail({ engine, docId, pageId, revision }: Props) {
+export function PageThumbnail({ engine, docId, pageId, revision, scale = 0.16 }: Props) {
+  useI18n();
   const canvas = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
 
@@ -16,7 +18,7 @@ export function PageThumbnail({ engine, docId, pageId, revision }: Props) {
     }
     const observer = new IntersectionObserver(
       entries => setVisible(Boolean(entries[0]?.isIntersecting)),
-      { root: element.closest('.page-list'), rootMargin: '120px' },
+      { root: element.closest('.page-list, .canvas-stage'), rootMargin: '120px' },
     );
     observer.observe(element);
     return () => observer.disconnect();
@@ -28,13 +30,13 @@ export function PageThumbnail({ engine, docId, pageId, revision }: Props) {
       return;
     }
     let disposed = false;
-    void engine.render({ docId, pageId, scale: 0.16 }).then(render => {
+    void engine.render({ docId, pageId, scale }).then(render => {
       if (!disposed && render.revision === revision) drawRender(canvas.current, render);
     }).catch(() => {
       // A thumbnail is optional; the full-size page reports its own errors.
     });
     return () => { disposed = true; };
-  }, [engine, docId, pageId, revision, visible]);
+  }, [engine, docId, pageId, revision, visible, scale]);
 
   return <canvas ref={canvas} className="page-thumbnail" aria-hidden="true" />;
 }

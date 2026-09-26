@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import React from 'react';
 import type { TextReplacement } from '@pdf-editor/contracts';
 import type { EvidenceSnapshot } from '@pdf-editor/ai-client';
@@ -38,6 +39,7 @@ export function AiPanelCandidates({
   fontId,
   hasReplaceCapability,
 }: AiPanelCandidatesProps) {
+  useI18n();
   const count = replacements.length;
   const selectedCandidates = replacements.filter(r => selectedEvidenceIds.has(r.targetEvidenceId));
   const selectedCount = selectedCandidates.length;
@@ -63,26 +65,20 @@ export function AiPanelCandidates({
   return (
     <div className="ai-candidates-list" style={{ display: 'grid', gap: '10px', marginTop: '8px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px' }}>
-        <strong>
-          Proposed Candidates ({selectedCount}/{count} selected)
-        </strong>
+        <strong>{t("Proposed Candidates (")}{selectedCount}/{count} {t("selected)")}</strong>
         <div style={{ display: 'flex', gap: '6px' }}>
           <button
             type="button"
             onClick={onSelectAll}
             disabled={disabled || applying || count === 0}
             style={{ fontSize: '10px', padding: '3px 7px' }}
-          >
-            Select All
-          </button>
+          >{t("Select All")}</button>
           <button
             type="button"
             onClick={onDeselectAll}
             disabled={disabled || applying || selectedCount === 0}
             style={{ fontSize: '10px', padding: '3px 7px' }}
-          >
-            Clear
-          </button>
+          >{t("Clear")}</button>
         </div>
       </div>
 
@@ -96,9 +92,7 @@ export function AiPanelCandidates({
             fontSize: '11px',
             color: '#701905',
           }}
-        >
-          Document has changed since candidates were generated. Older candidates are read-only; please regenerate based on current revision.
-        </div>
+        >{t("Document has changed since candidates were generated. Older candidates are read-only; please regenerate based on current revision.")}</div>
       )}
 
       <div style={{ display: 'grid', gap: '8px', maxHeight: '340px', overflowY: 'auto' }}>
@@ -139,22 +133,18 @@ export function AiPanelCandidates({
                     onChange={() => onToggle(item.targetEvidenceId)}
                     disabled={disabled || applying || stale}
                   />
-                  <span>Page {pageNumber} · Block {item.targetEvidenceId}</span>
+                  <span>{t("Page")} {pageNumber} {t("· Block")} {item.targetEvidenceId}</span>
                 </label>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   {layout === 'fits' && (
-                    <span style={{ fontSize: '9px', color: '#445b0a', fontWeight: 600 }}>
-                      ✓ Fits
-                    </span>
+                    <span style={{ fontSize: '9px', color: '#445b0a', fontWeight: 600 }}>{t("✓ Fits")}</span>
                   )}
                   {layout === 'overflow' && (
-                    <span style={{ fontSize: '9px', color: '#b3260a', fontWeight: 600 }}>
-                      ⚠ Overflows
-                    </span>
+                    <span style={{ fontSize: '9px', color: '#b3260a', fontWeight: 600 }}>{t("⚠ Overflows")}</span>
                   )}
                   {layout === 'checking' && (
-                    <span style={{ fontSize: '9px', color: '#666' }}>Measuring…</span>
+                    <span style={{ fontSize: '9px', color: '#666' }}>{t("Measuring…")}</span>
                   )}
 
                   <button
@@ -162,24 +152,20 @@ export function AiPanelCandidates({
                     onClick={() => void onApplySingle(item.targetEvidenceId)}
                     disabled={disabled || stale || applying || !hasReplaceCapability || !isSingleFits}
                     style={{ fontSize: '10px', padding: '3px 8px' }}
-                    title={!isSingleFits ? 'Candidate must fit in text box before applying' : undefined}
-                  >
-                    Apply Item
-                  </button>
+                    title={!isSingleFits ? t("Candidate must fit in text box before applying") : undefined}
+                  >{t("Apply Item")}</button>
                 </div>
               </div>
 
               {item.reason && (
-                <div style={{ fontSize: '10px', color: '#666', fontStyle: 'italic' }}>
-                  Reason: {item.reason}
+                <div style={{ fontSize: '10px', color: '#666', fontStyle: 'italic' }}>{t("Reason:")} {item.reason}
                 </div>
               )}
 
               <AiPanelDiff original={originalText} suggested={item.text} />
 
               {fontId ? (
-                <div style={{ fontSize: '9px', color: '#777' }}>
-                  Replacement font: {fontId}
+                <div style={{ fontSize: '9px', color: '#777' }}>{t("Replacement font:")} {fontId}
                 </div>
               ) : null}
             </div>

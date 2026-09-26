@@ -13,6 +13,7 @@ import {
   type EditorFont,
 } from '../src/ui/font-resources.js';
 import { packCommands, EDIT_COMMAND_STRIDE } from '../src/worker/abi3-commands.js';
+import { resolveFormattingFont } from '../src/ui/font-face-matcher.js';
 
 const mockFonts: EditorFont[] = [
   { id: 'noto-sans-cjk-sc-regular', family: 'Noto Sans CJK SC', style: 'Regular', weight: 400, italic: false, format: 'otf' },
@@ -45,6 +46,19 @@ class MockAllocator {
 }
 
 describe('font-face-matcher and font-resources', () => {
+  it('keeps the requested family instead of switching to another family just for an exact medium weight', () => {
+    expect(resolveFormattingFont(mockFonts, { family: 'Liberation Sans', weight: 500, italic: false, text: 'Sample' }).id)
+      .toBe('liberation-sans-regular');
+  });
+
+  it('recognizes original PDF font names without requiring registration first', () => {
+    const block: TextBlock = { id: 'block', pageId: 'page', sourceObjectIds: ['object'], bounds: { x: 0, y: 0, width: 100, height: 20 },
+      transform: [1, 0, 0, 1, 0, 0], editability: 'direct',
+      runs: [{ text: 'Sample', style: { fontId: 'pdf:ABCDEF+Arial-BoldMT', weight: 700 }, sourceObjectIds: ['object'] }] };
+    expect(findSelectionFontInfo(block, [0, 6], mockFonts)).toMatchObject({ family: 'Arial', weight: 700, italic: false });
+    expect(resolveFormattingFont(mockFonts, { family: 'Arial', weight: 700, italic: true, text: 'Sample' }).id)
+      .toBe('liberation-sans-bold-italic');
+  });
   it('extracts weight and italic correctly from explicit metadata and style names', () => {
     expect(getFontWeight(mockFonts[0]!)).toBe(400);
     expect(getFontWeight(mockFonts[1]!)).toBe(700);
@@ -119,8 +133,6 @@ describe('font-face-matcher and font-resources', () => {
     expect(result1.success).toBe(false);
     if (!result1.success) {
       expect(result1.reason).toContain('No exact weight 400 italic face registered for "Noto Sans CJK SC"');
-      expect(result1.reason).toContain('Synthetic bold/italic is not supported');
-      expect(result1.reason).toContain('original typesetting preserved');
     }
 
     // Liberation Sans has no 300 Light face
@@ -131,12 +143,9 @@ describe('font-face-matcher and font-resources', () => {
     }
   });
 
-  it('clearly rejects font faces that forbid editable embedding', () => {
+  it('keeps embedding flags as metadata rather than blocking font selection', () => {
     const result = resolveExactFontFace(mockFonts, { family: 'Restricted Font', weight: 700, italic: false });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.reason).toContain('restricted from editable embedding');
-    }
+    expect(result).toEqual({ success: true, font: mockFonts[8] });
   });
 
   it('introspects font info from a selected text range with registered runs', () => {

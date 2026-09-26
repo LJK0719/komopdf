@@ -3,6 +3,7 @@
 #include "text_shaping.h"
 #include "tagged_content.h"
 #include "core/fpdfapi/font/cpdf_font.h"
+#include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -2907,6 +2908,64 @@ ParagraphGlyphSnapshot InspectParagraphGlyphs(const std::vector<uint8_t>& saved)
   return snapshot;
 }
 
+void TestTrackingAndParagraphFormatting(const std::string& font_id) {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("BT /F1 20 Tf 2 Tc 1 0 0 1 30 260 Tm [(A) -100 (B) 40 (C) -100 (D)] TJ ET"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"});
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "tracking-test", "tracking-source", nullptr);
+  Require(doc != 0, "open TJ tracking fixture");
+  const std::string page = PageIdFromDescription(pde_describe_page(doc, 0));
+  const std::string id = TextBlockIds(pde_describe_page(doc, 0)).front();
+  Require(std::abs(JsonNumberAfter(pde_describe_page(doc, 0), "\"characterSpacing\":") - 4) < 0.001,
+          "tracking includes Tc and usual TJ adjustment");
+  PdeEditCommand edit{};
+  edit.type = 1; edit.page_id = page.c_str(); edit.target_id = id.c_str();
+  edit.start_utf16 = 1; edit.end_utf16 = 2; edit.text_utf8 = "X";
+  Require(pde_apply_commands(doc, 0, "tracking-replace", &edit, 1) != nullptr, "replace tracked text");
+  const char* ids[] = {id.c_str()};
+  PdeEditCommand style{};
+  style.type = 2; style.page_id = page.c_str(); style.ids = ids; style.id_count = 1;
+  style.flags = 1; style.font_id = font_id.c_str();
+  Require(pde_apply_commands(doc, 1, "tracking-font", &style, 1) != nullptr, "change tracked text font");
+  Require(pde_save_memory(doc) != nullptr, "save tracked text");
+  std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  FPDF_DOCUMENT external = FPDF_LoadMemDocument64(saved.data(), saved.size(), nullptr);
+  FPDF_PAGE external_page = FPDF_LoadPage(external, 0);
+  auto* text = CPDFPageObjectFromFPDFPageObject(FPDFPage_GetObject(external_page, 0))->AsText();
+  Require(text && text->GetCharKernings() == std::vector<float>({-100, 40, -100, 0}),
+          "font changes and replacement retain actual TJ positions after save");
+  FPDF_ClosePage(external_page); FPDF_CloseDocument(external);
+  style.flags = 8; style.font_id = nullptr; style.values[4] = 1;
+  Require(pde_apply_commands(doc, 2, "tracking-control", &style, 1) != nullptr &&
+          std::abs(JsonNumberAfter(pde_describe_page(doc, 0), "\"characterSpacing\":") - 1) < 0.001,
+          "explicit tracking updates effective spacing without doubling TJ");
+  PdeEditCommand insert{};
+  insert.type = 3; insert.page_id = page.c_str(); insert.target_id = "paragraph-controls";
+  insert.font_id = font_id.c_str(); insert.text_utf8 = "Alpha\nBravo";
+  insert.flags = 3 | 16 | 1024; insert.values[0] = 30; insert.values[1] = 75;
+  insert.values[2] = 260; insert.values[3] = 170; insert.values[4] = 20; insert.values[9] = 1;
+  Require(pde_apply_commands(doc, 3, "paragraph-control-insert", &insert, 1) != nullptr, "insert paragraph controls fixture");
+  const std::string paragraph = TextBlockIds(pde_describe_page(doc, 0)).back();
+  const char* paragraph_ids[] = {paragraph.c_str()};
+  const auto before = RenderPixels(doc, 0, 400, 300);
+  style.ids = paragraph_ids; style.flags = 64 | 128; style.values[6] = 1.5; style.values[7] = 1;
+  Require(pde_apply_commands(doc, 4, "paragraph-control-style", &style, 1) != nullptr,
+          "update paragraph line spacing and alignment with text.style");
+  const auto after = RenderPixels(doc, 0, 400, 300);
+  Require(before != after && pde_undo(doc) != nullptr && RenderPixels(doc, 0, 400, 300) == before &&
+          pde_redo(doc) != nullptr && RenderPixels(doc, 0, 400, 300) == after,
+          "paragraph controls change real layout and undo together");
+  Require(pde_save_memory(doc) != nullptr, "save paragraph controls");
+  saved.assign(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()), "tracking-reopen", "tracking-saved", nullptr);
+  Require(reopened != 0 && std::string(pde_describe_page(reopened, 0)).find("\"lineHeight\":1.5,\"alignment\":\"center\"") != std::string::npos &&
+          RenderPixels(reopened, 0, 400, 300) == after, "paragraph formatting survives saved PDF reopen");
+  pde_close(reopened); pde_close(doc);
+}
+
 void TestParagraphRangeStyles(const std::string& base_font,
                               const std::string& latin_font,
                               const std::vector<uint8_t>& latin_bytes) {
@@ -3771,6 +3830,7 @@ void TestFontRuntime(const FontTestOptions& options) {
               otf_info.find("\"format\":\"otf\"") != std::string::npos &&
               otf_info.find("\"editableEmbedding\":true") != std::string::npos,
           "register OpenType CFF face info");
+  TestTrackingAndParagraphFormatting("runtime-ttf");
   TestParagraphRangeStyles("runtime-otf", "runtime-ttf", ttf);
   TestParagraphJustify("runtime-ttf", "runtime-otf");
   TestParagraphEditing("runtime-otf");

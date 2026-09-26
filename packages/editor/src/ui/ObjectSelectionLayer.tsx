@@ -1,5 +1,7 @@
+import { translate as t, useI18n } from './i18n.js';
 import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { PageModel, RenderResult } from '@pdf-editor/contracts';
+import { containsRect, isContainerInterior, pickObject, selectionScope } from './object-selection.js';
 
 type ScaleHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
@@ -32,8 +34,8 @@ type SelectionBounds = {
 };
 
 type Gesture =
-  | { type: 'box'; pointerId: number; startX: number; startY: number; additive: boolean }
-  | { type: 'move'; pointerId: number; startX: number; startY: number; ids: string[] }
+  | { type: 'box'; pointerId: number; startX: number; startY: number; additive: boolean; clickId?: string }
+  | { type: 'move'; pointerId: number; startX: number; startY: number; ids: string[]; clickId: string; additive: boolean }
   | { type: 'scale'; pointerId: number; startX: number; startY: number; handle: ScaleHandle; ids: string[]; bounds: SelectionBounds }
   | { type: 'rotate'; pointerId: number; startX: number; startY: number; startAngle: number; ids: string[]; bounds: SelectionBounds };
 
@@ -158,6 +160,7 @@ export function ObjectSelectionLayer({
   onMove,
   onTransform,
 }: Props) {
+  useI18n();
   const scaleX = render.width / page.widthPt;
   const scaleY = render.height / page.heightPt;
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -166,17 +169,14 @@ export function ObjectSelectionLayer({
   const [preview, setPreview] = useState<Preview | null>(null);
 
   const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group', shading: 'Gradient' };
-  const groups = page.objects.filter(object => object.type === 'group')
-    .map(object => [...object.locator.containerPath, object.locator.objectIndex]);
   const selectedObjects = page.objects.filter(object => selectedIds.includes(object.id));
-  const selectedParent = selectedObjects[0]?.locator.containerPath;
-  const editingGroup = selectedParent && groups.find(path => path.length === selectedParent.length &&
-    path.every((part, index) => part === selectedParent[index]));
-  const inSelectionScope = (object: PageModel['objects'][number]) => editingGroup
-    ? object.locator.containerPath.length === editingGroup.length &&
-      editingGroup.every((part, index) => object.locator.containerPath[index] === part)
-    : !groups.some(path => path.length <= object.locator.containerPath.length &&
-      path.every((part, index) => object.locator.containerPath[index] === part));
+  const objects = selectionScope(page, selectedIds);
+  const stacking = new Map(objects.slice().sort((a, b) => b.bounds.width * b.bounds.height - a.bounds.width * a.bounds.height)
+    .map((object, index) => [object.id, index]));
+  const hitAt = (clientX: number, clientY: number) => {
+    const rect = layerRef.current!.getBoundingClientRect();
+    return pickObject(objects, (clientX - rect.left) / scaleX, (clientY - rect.top) / scaleY, 3 / Math.max(scaleX, scaleY));
+  };
   let bounds: SelectionBounds | null = null;
   if (selectedObjects.length > 0) {
     const minX = Math.min(...selectedObjects.map(o => o.bounds.x));
@@ -313,16 +313,27 @@ export function ObjectSelectionLayer({
       className="selection-layer"
       style={{ width: render.width, height: render.height, pointerEvents: 'auto', touchAction: 'none' }}
       onClick={event => event.stopPropagation()}
+      onDoubleClick={event => {
+        if (disabled || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        const object = hitAt(event.clientX, event.clientY);
+        if (object?.type === 'group') {
+          const path = [...object.locator.containerPath, object.locator.objectIndex];
+          onBoxSelect(page.objects.filter(child => child.locator.containerPath.length === path.length &&
+            path.every((part, i) => child.locator.containerPath[i] === part)).map(child => child.id));
+        } else if (object?.textBlock) onEditText(object.id);
+      }}
       onPointerDown={event => {
-        if (disabled || event.button !== 0 || event.target !== event.currentTarget) return;
+        if (disabled || event.button !== 0) return;
         const rect = event.currentTarget.getBoundingClientRect();
-        gesture.current = {
-          type: 'box',
-          pointerId: event.pointerId,
-          startX: event.clientX - rect.left,
-          startY: event.clientY - rect.top,
-          additive: event.ctrlKey || event.metaKey || event.shiftKey,
-        };
+        const startX = event.clientX - rect.left, startY = event.clientY - rect.top;
+        const object = hitAt(event.clientX, event.clientY);
+        const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+        const box = !object || !canTransform || event.altKey || additive ||
+          isContainerInterior(object, objects, startX / scaleX, startY / scaleY, 6 / Math.max(scaleX, scaleY));
+        gesture.current = box
+          ? { type: 'box', pointerId: event.pointerId, startX, startY, additive, ...(object ? { clickId: object.id } : {}) }
+          : { type: 'move', pointerId: event.pointerId, startX, startY, additive, clickId: object.id,
+              ids: selectedIds.includes(object.id) ? selectedIds : [object.id] };
         moved.current = false;
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
@@ -383,23 +394,20 @@ export function ObjectSelectionLayer({
 
         if (active.type === 'box') {
           if (!moved.current) {
-            if (!active.additive) onBoxSelect([]);
+            if (active.clickId) onSelect(active.clickId, active.additive);
+            else if (!active.additive) onBoxSelect([]);
           } else {
             const left = Math.min(active.startX, active.startX + dx) / scaleX;
             const top = Math.min(active.startY, active.startY + dy) / scaleY;
             const right = left + Math.abs(dx) / scaleX;
             const bottom = top + Math.abs(dy) / scaleY;
-            const ids = page.objects
-              .filter(object => {
-                const b = object.bounds;
-                return (
-                  (editingGroup ? inSelectionScope(object) : object.locator.containerPath.length === 0) &&
-                  b.x < right &&
-                  b.x + b.width > left &&
-                  b.y < bottom &&
-                  b.y + b.height > top
-                );
-              })
+            const box = { x: left, y: top, width: right - left, height: bottom - top };
+            const enclosed = objects.filter(object => containsRect(box, object.bounds, 1 / scaleX));
+            // A selected Form already owns its children; never transform both twice.
+            const ids = enclosed.filter(object => !enclosed.some(parent => parent.id !== object.id &&
+              ['form', 'group'].includes(parent.type) &&
+              object.locator.containerPath.length > parent.locator.containerPath.length &&
+              [...parent.locator.containerPath, parent.locator.objectIndex].every((part, i) => object.locator.containerPath[i] === part)))
               .map(object => object.id);
             onBoxSelect(active.additive ? [...new Set([...selectedIds, ...ids])] : ids);
           }
@@ -407,7 +415,7 @@ export function ObjectSelectionLayer({
           if (moved.current) {
             onBoxSelect(active.ids);
             void onMove(active.ids, dx / scaleX, dy / scaleY);
-          }
+          } else onSelect(active.clickId, active.additive);
         } else if (active.type === 'scale') {
           if (moved.current && onTransform) {
             const res = computeScaleMatrix(active.handle, active.bounds, currentX, currentY, event.shiftKey);
@@ -426,19 +434,19 @@ export function ObjectSelectionLayer({
         moved.current = false;
       }}
     >
-      {page.objects
-        .filter(inSelectionScope)
-        .map(object => {
+      {objects.map(object => {
           const selected = selectedIds.includes(object.id);
           const moving = preview?.type === 'move' && preview.ids.includes(object.id);
           return (
             <button
               type="button"
               key={object.id}
+              disabled={disabled}
               data-object-id={object.id}
               data-object-type={object.type}
               className={selected ? 'object-hitbox object-hitbox-selected' : 'object-hitbox'}
               style={{
+                zIndex: stacking.get(object.id),
                 left: object.bounds.x * scaleX,
                 top: object.bounds.y * scaleY,
                 width: Math.max(object.bounds.width * scaleX, 6),
@@ -447,56 +455,9 @@ export function ObjectSelectionLayer({
                   ? { transform: `translate(${preview.dx}px, ${preview.dy}px)` }
                   : {}),
               }}
-              onPointerDown={event => {
-                moved.current = false;
-                if (
-                  disabled ||
-                  !canTransform ||
-                  event.button !== 0 ||
-                  event.ctrlKey ||
-                  event.metaKey ||
-                  event.shiftKey
-                )
-                  return;
-                const layer = event.currentTarget.parentElement!;
-                const rect = layer.getBoundingClientRect();
-                gesture.current = {
-                  type: 'move',
-                  pointerId: event.pointerId,
-                  startX: event.clientX - rect.left,
-                  startY: event.clientY - rect.top,
-                  ids: selected ? selectedIds : [object.id],
-                };
-                moved.current = false;
-                event.currentTarget.setPointerCapture(event.pointerId);
-              }}
               onClick={event => {
                 event.stopPropagation();
-                if (disabled) return;
-                if (moved.current) {
-                  moved.current = false;
-                  return;
-                }
-                onSelect(object.id, event.ctrlKey || event.metaKey || event.shiftKey);
-              }}
-              onDoubleClick={event => {
-                event.stopPropagation();
-                if (!disabled && object.type === 'group' && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-                  const path = [...object.locator.containerPath, object.locator.objectIndex];
-                  onBoxSelect(page.objects.filter(child => child.locator.containerPath.length === path.length &&
-                    path.every((part, index) => child.locator.containerPath[index] === part)).map(child => child.id));
-                  return;
-                }
-                if (
-                  !disabled &&
-                  object.type === 'text' &&
-                  object.textBlock &&
-                  !event.ctrlKey &&
-                  !event.metaKey &&
-                  !event.shiftKey
-                ) {
-                  onEditText(object.id);
-                }
+                if (!disabled && event.detail === 0) onSelect(object.id, event.ctrlKey || event.metaKey || event.shiftKey);
               }}
               aria-pressed={selected}
               aria-label={`Select ${names[object.type]} object`}
@@ -508,6 +469,7 @@ export function ObjectSelectionLayer({
         <div
           className="selection-box"
           style={{
+            zIndex: objects.length + 1,
             left: bounds.boxLeft,
             top: bounds.boxTop,
             width: bounds.boxWidth,
@@ -523,7 +485,7 @@ export function ObjectSelectionLayer({
                 type="button"
                 className="selection-handle selection-handle-rotate"
                 data-handle="rotate"
-                aria-label="Rotate selected objects"
+                aria-label={t("Rotate selected objects")}
                 disabled={disabled}
                 tabIndex={disabled ? -1 : 0}
                 onPointerDown={event => handleHandlePointerDown(event, 'rotate')}
@@ -535,7 +497,7 @@ export function ObjectSelectionLayer({
                   type="button"
                   className="selection-handle"
                   data-handle={`scale-${h.handle}`}
-                  aria-label={h.label}
+                  aria-label={t(h.label)}
                   style={{ left: `${h.xPct}%`, top: `${h.yPct}%` }}
                   disabled={disabled}
                   tabIndex={disabled ? -1 : 0}
@@ -553,6 +515,7 @@ export function ObjectSelectionLayer({
           aria-hidden="true"
           style={{
             position: 'absolute',
+            zIndex: objects.length + 2,
             pointerEvents: 'none',
             left: Math.min(preview.x, preview.x + preview.dx),
             top: Math.min(preview.y, preview.y + preview.dy),

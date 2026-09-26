@@ -1,3 +1,5 @@
+import { useI18n } from './i18n.js';
+import { ContextMenu } from '@base-ui/react/context-menu';
 import type { PageModel, PdfAnnotationInfo, RenderResult } from '@pdf-editor/contracts';
 
 type Props = {
@@ -10,6 +12,7 @@ type Props = {
 };
 
 export function PdfLinkLayer({ annotations, page, render, pageOrder, disabled = false, onNavigate }: Props) {
+  const { t } = useI18n();
   // Only render link annotations that have a safely resolved target page in pageOrder
   const validLinks = annotations.filter(
     (annot): annot is PdfAnnotationInfo & { targetPageId: string } =>
@@ -45,16 +48,14 @@ export function PdfLinkLayer({ annotations, page, render, pageOrder, disabled = 
         const height = Math.max(link.bounds.height * scaleY, 6);
 
         return (
-          <button
-            key={link.id}
-            type="button"
+          <ContextMenu.Root key={link.id}>
+          <ContextMenu.Trigger render={<button type="button" disabled={disabled} />}
             role="link"
             className="pdf-link-annotation"
             aria-label={`Go to page ${targetPageNumber}`}
             data-target-page-id={link.targetPageId}
             data-target-page-number={targetPageNumber}
             title={`Go to page ${targetPageNumber}`}
-            disabled={disabled}
             style={{
               left,
               top,
@@ -67,6 +68,10 @@ export function PdfLinkLayer({ annotations, page, render, pageOrder, disabled = 
               onNavigate(link.targetPageId, link.targetTopPt);
             }}
           />
+          <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu">
+            <ContextMenu.Item className="ui-menu-item" disabled={disabled} onClick={() => onNavigate(link.targetPageId, link.targetTopPt)}>{t('Go to page {page}', { page: targetPageNumber })}</ContextMenu.Item>
+          </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal>
+          </ContextMenu.Root>
         );
       })}
     </div>

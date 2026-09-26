@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -13,6 +14,7 @@ import {
   type EditTransaction,
 } from '@pdf-editor/contracts';
 import { CommandRegistry } from '@pdf-editor/commands';
+import { resolveFormattingFont } from './font-face-matcher.js';
 import {
   useFontResources,
   resolveExactFontFace,
@@ -44,6 +46,7 @@ type Props = {
 
 export function TextEditPanel({ document, page, selectedIds, searchSelection, inlineTextId, inlineHost, render, onInlineClose,
   engine, disabled = false, onBusyChange, onDraftChange, onCommitted }: Props) {
+  useI18n();
   const selectedObject = useMemo(() => {
     if (!page || selectedIds.length !== 1) return null;
     return page.objects.find((object) => object.id === selectedIds[0]) ?? null;
@@ -179,12 +182,14 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
   };
 
   const commit = async (): Promise<void> => {
-    if (!document || !page || !block || !preview || preview.overflow || applying || composing.current) return;
+    if (!document || !page || !block || !canReplace || disabled || previewing || applying || composing.current) return;
     setApplying(true);
     onBusyChange?.(true);
     setError('');
     try {
-      if (!globalThis.crypto?.randomUUID) throw new Error('crypto.randomUUID is required to commit edits');
+      const layout = preview ?? await engine.previewText(request());
+      setPreview(layout);
+      if (layout.overflow) { setError(t('Text does not fit the box. Increase its size or reduce the font size.')); return; }
       const registry = new CommandRegistry(engine);
       const result = await registry.execute({
         id: crypto.randomUUID(),
@@ -248,8 +253,8 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
 
   if (!block) {
     return <section className="text-edit-panel" aria-label="Manual text editing">
-      <span className="eyebrow">Manual Text Edit</span>
-      <p>Select one text object to edit its original text.</p>
+      <span className="eyebrow">{t("Edit text")}</span>
+      <p>{t("Select one text object to edit its original text.")}</p>
     </section>;
   }
 
@@ -265,8 +270,7 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
             top: (preview.bounds.y - selectedObject.bounds.y) * render.height / page.heightPt,
             width: preview.bounds.width * render.width / page.widthPt,
             height: preview.bounds.height * render.height / page.heightPt }} />}
-        <label className="inline-text-label">Page text draft
-          <textarea ref={inlineInput} aria-label="Page text draft" value={replacement}
+        <label className="inline-text-label">{t("Page text draft")}<textarea ref={inlineInput} aria-label={t("Page text draft")} value={replacement}
             style={{ minHeight: Math.max(42, selectedObject.bounds.height * render.height / page.heightPt) }}
             disabled={disabled || applying}
             onChange={event => changeReplacement(event.currentTarget.value)}
@@ -282,20 +286,19 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
         </label>
         <div className="inline-text-toolbar">
           <button type="button" disabled={disabled || previewing || applying} onClick={() => void runPreview()}>
-            {previewing ? 'Previewing…' : 'Preview page text'}</button>
-          <button type="button" disabled={disabled || !preview || preview.overflow || previewing || applying || !draftDirty || formatDirty}
-            onClick={() => void commit()}>Commit page text</button>
-          <button type="button" disabled={disabled || applying} onClick={() => { discardDraft(); onInlineClose?.(); }}>Cancel page text</button>
+            {previewing ? t("Previewing…") : t("Preview page text")}</button>
+          <button type="button" disabled={disabled || !canReplace || previewing || applying || !draftDirty || formatDirty}
+            className="button-primary" onClick={() => void commit()}>{t("Apply changes")}</button>
+          <button type="button" disabled={disabled || applying} onClick={() => { discardDraft(); onInlineClose?.(); }}>{t("Cancel")}</button>
         </div>
         {preview && <span role="status" className={preview.overflow ? 'inline-text-status inline-text-overflow' : 'inline-text-status'}>
-          {preview.overflow ? 'Overflow detected — shorten the draft before committing' : 'Engine preview: fits current text bounds'}
+          {preview.overflow ? t("Overflow detected — shorten the draft before committing") : t("Engine preview: fits current text bounds")}
         </span>}
-        {error && <span role="alert" className="inline-text-status inline-text-overflow">{error}</span>}
+        {error && <span role="alert" className="inline-text-status inline-text-overflow">{t(error)}</span>}
       </div>, inlineHost)}
-    <span className="eyebrow">{block.isOcr ? 'Correct OCR Search Text' : block.isParagraph ? 'Paragraph Text Edit' : 'Manual Text Edit'}</span>
-    {block.isOcr && <p>This is an invisible OCR search layer. Corrections update searchable and copied text inside the recognized box; they do not change the scanned image.</p>}
-    {block.isParagraph && <p>This text block is a formatted paragraph. Text replacement (including newlines) reflows natively while preserving the block ID. If the document was reopened and the original font is not in the font registry, select an explicit Replacement font below.</p>}
-    <label>Original text<textarea ref={originalInput} value={originalText} readOnly disabled={disabled || previewing || applying}
+    <span className="eyebrow">{block.isOcr ? t("Correct recognized text") : block.isParagraph ? t("Edit paragraph") : t("Edit text")}</span>
+    {block.isOcr && <p>{t("This is an invisible OCR search layer. Corrections update searchable and copied text inside the recognized box; they do not change the scanned image.")}</p>}
+    <label>{t("Original text")}<textarea ref={originalInput} value={originalText} readOnly disabled={disabled || previewing || applying}
       onKeyDown={moveReadOnlySelection}
       onSelect={event => {
         if (!canReplace || !document?.capabilities.includes('text.style') || disabled || previewing || applying) return;
@@ -303,28 +306,27 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
         if (next[0] === next[1] || (next[0] === range[0] && next[1] === range[1])) return;
         try { assertTextRange(originalText, next); }
         catch (caught) { event.currentTarget.setSelectionRange(...range); setError(formatError(caught)); return; }
-        if (draftDirty && !window.confirm('Discard the current replacement draft and edit this selection?')) {
+        if (draftDirty && !window.confirm(t("Discard the current replacement draft and edit this selection?"))) {
           event.currentTarget.setSelectionRange(...range); return;
         }
         setRange(next); setReplacement(originalText.slice(...next)); setFontId(''); clearFormat(); invalidatePreview();
       }} /></label>
-    <p>{wholeBlock ? 'Editing the whole text block. Highlight characters above to replace a range.'
-      : `Editing characters ${range[0] + 1}–${range[1]}. Font changes require the whole block.`}</p>
+
     {!wholeBlock && <button type="button" disabled={disabled || previewing || applying} onClick={() => {
       setReplacement(originalText.slice(0, range[0]) + replacement + originalText.slice(range[1]));
       setRange([0, originalText.length]); invalidatePreview();
-    }}>Use whole text block</button>}
-    <label>Replacement<textarea
+    }}>{t("Use whole text block")}</button>}
+    <label>{t("Replacement")}<textarea
       value={replacement}
       onChange={(event) => changeReplacement(event.target.value)}
       disabled={disabled || previewing || applying || !canReplace || formatDirty}
     /></label>
-    <label>Replacement font<select
+    <label>{t("Replacement font")}<select
       value={fontId}
       onChange={(event) => { setFontId(event.target.value); invalidatePreview(); }}
       disabled={disabled || previewing || applying || !canReplace || !wholeBlock || formatDirty}
     >
-      <option value="">Preserve original font</option>
+      <option value="">{t("Preserve original font")}</option>
       {fonts.map((font) => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
     </select></label>
     {fontId && wholeBlock && (() => {
@@ -334,7 +336,7 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
       const hasItalic = familySupportsItalic(fonts, selectedFont.family);
       return (
         <div className="document-tools-grid">
-          <label>Replacement weight<select
+          <label>{t("Replacement weight")}<select
             value={getFontWeight(selectedFont)}
             onChange={event => {
               const targetWeight = Number(event.target.value);
@@ -358,7 +360,7 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
               </option>
             ))}
           </select></label>
-          <label>Replacement posture<select
+          <label>{t("Replacement posture")}<select
             value={getFontItalic(selectedFont) ? 'italic' : 'normal'}
             onChange={event => {
               const targetItalic = event.target.value === 'italic';
@@ -376,77 +378,74 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
             }}
             disabled={disabled || previewing || applying || !canReplace || formatDirty}
           >
-            <option value="normal">Regular (Upright)</option>
-            <option value="italic">Italic{!hasItalic ? ' (Unavailable)' : ''}</option>
+            <option value="normal">{t("Regular (Upright)")}</option>
+            <option value="italic">{t("Italic")}{!hasItalic ? ' (Unavailable)' : ''}</option>
           </select></label>
         </div>
       );
     })()}
-    {document?.capabilities.includes('text.style') && <fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId)}>
-      <legend>Format selected text</legend>
-      <p>{selectedObject?.locator.containerPath.length
-        ? 'Format selected characters inside this Form instance. Other shared instances stay unchanged; changes must fit the parent clipping bounds.'
-        : block.isParagraph
-          ? 'Format the selected characters in this logical paragraph. The native preview rejects changes that overflow its box.'
-          : 'Applies only to the selected characters. Blank fields preserve existing formatting. Font or size changes move the remaining text on this line; they do not wrap the paragraph.'}</p>
-      <label>Selection font<select value={formatFontId} onChange={event => { setFormatFontId(event.target.value); setError(''); }}>
-        <option value="">Preserve font</option>
+    <div className="text-edit-actions">
+      <button type="button" onClick={() => void runPreview()} disabled={disabled || !canReplace || previewing || applying}>
+        {previewing ? t("Previewing…") : t("Preview layout")}
+      </button>
+      <button type="button" className="button-primary" onClick={() => void commit()} disabled={disabled || !canReplace || previewing || applying || formatDirty || !draftDirty}>
+        {applying ? t("Committing…") : t("Apply changes")}
+      </button>
+      <button type="button" disabled={disabled || previewing || applying || !draftDirty} onClick={discardDraft}>{t("Discard draft")}</button>
+    </div>
+    {document?.capabilities.includes('text.style') && <details><summary>{t('Format selected text')}</summary><fieldset disabled={disabled || previewing || applying || !canReplace || replacement !== targetText || Boolean(fontId)}>
+      <legend>{t("Format selected text")}</legend>
+
+      <label>{t("Selection font")}<select value={formatFontId} onChange={event => { setFormatFontId(event.target.value); setError(''); }}>
+        <option value="">{t("Preserve font")}</option>
         {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
       </select></label>
       <div className="document-tools-grid">
-        <label>Selection weight<select
+        <label>{t("Selection weight")}<select
           value={formatWeight}
           onChange={event => {
             setFormatWeight(event.target.value ? Number(event.target.value) : '');
             setError('');
           }}
         >
-          <option value="">Preserve weight</option>
+          <option value="">{t("Preserve weight")}</option>
           {STANDARD_WEIGHT_OPTIONS.map(opt => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
+            <option key={opt.value} value={opt.value}>{t(opt.label)}</option>
           ))}
         </select></label>
-        <label>Selection posture<select
+        <label>{t("Selection posture")}<select
           value={formatItalic}
           onChange={event => {
             setFormatItalic(event.target.value as '' | 'on' | 'off');
             setError('');
           }}
         >
-          <option value="">Preserve posture</option>
-          <option value="off">Regular (Upright)</option>
-          <option value="on">Italic</option>
+          <option value="">{t("Preserve posture")}</option>
+          <option value="off">{t("Regular (Upright)")}</option>
+          <option value="on">{t("Italic")}</option>
         </select></label>
       </div>
-      <label>Selection font size<input type="number" min="0.1" max="1000" step="0.1" value={formatSize} onChange={event => setFormatSize(event.target.value)} placeholder="Preserve size" /></label>
-      <label>Selection color<input value={formatColor} onChange={event => setFormatColor(event.target.value)} placeholder="#RRGGBB" /></label>
-      <label>Selection character spacing<input type="number" step="0.1" value={formatSpacing} onChange={event => setFormatSpacing(event.target.value)} placeholder="Preserve spacing" /></label>
-      <label>Selection underline<select value={formatUnderline}
+      <label>{t("Selection font size")}<input type="number" min="0.1" max="1000" step="0.1" value={formatSize} onChange={event => setFormatSize(event.target.value)} placeholder={t("Preserve size")} /></label>
+      <label>{t("Selection color")}<input value={formatColor} onChange={event => setFormatColor(event.target.value)} placeholder="#RRGGBB" /></label>
+      <label>{t("Selection character spacing")}<input type="number" step="0.1" value={formatSpacing} onChange={event => setFormatSpacing(event.target.value)} placeholder={t("Preserve spacing")} /></label>
+      <label>{t("Selection underline")}<select value={formatUnderline}
         onChange={event => setFormatUnderline(event.target.value as '' | 'on' | 'off')}>
-        <option value="">Preserve underline</option><option value="on">Underline</option><option value="off">Remove underline</option>
+        <option value="">{t("Preserve underline")}</option><option value="on">{t("Underline")}</option><option value="off">{t("Remove underline")}</option>
       </select></label>
-      <button type="button" disabled={!formatDirty} onClick={() => void formatSelection()}>Apply selection format</button>
-    </fieldset>}
-    {fontError ? <p role="alert">{fontError}; original font remains available.</p> : null}
+      <button type="button" disabled={!formatDirty} onClick={() => void formatSelection()}>{t("Apply selection format")}</button>
+    </fieldset></details>}
+    {fontError ? <p role="alert">{t(fontError)}{t("; original font remains available.")}</p> : null}
     {!canReplace ? <p role="alert">{block.editability === 'geometry-only'
-      ? 'This TextBlock cannot be edited directly.'
-      : 'The current PDF core does not provide real text replacement.'}</p> : null}
-    <div className="text-edit-actions">
-      <button type="button" onClick={() => void runPreview()} disabled={disabled || !canReplace || previewing || applying}>
-        {previewing ? 'Previewing…' : 'Preview layout'}
-      </button>
-      <button type="button" onClick={() => void commit()} disabled={disabled || !preview || preview.overflow || previewing || applying || formatDirty}>
-        {applying ? 'Committing…' : 'Commit replacement'}
-      </button>
-      <button type="button" disabled={disabled || previewing || applying || !draftDirty} onClick={discardDraft}>Discard draft</button>
-    </div>
+      ? t("This text cannot be edited directly.")
+      : t("The current PDF core does not provide real text replacement.")}</p> : null}
+
     {preview ? <div className={preview.overflow ? 'layout-result layout-result-overflow' : 'layout-result'}>
-      <strong>{preview.overflow ? 'Overflow detected' : 'Fits current text bounds'}</strong>
-      <span>Bounds: {formatNumber(preview.bounds.x)}, {formatNumber(preview.bounds.y)} · {formatNumber(preview.bounds.width)} × {formatNumber(preview.bounds.height)}</span>
-      <span>{preview.lines.length} line{preview.lines.length === 1 ? '' : 's'}</span>
-      {preview.replacementFontId ? <span>Core font: {preview.replacementFontId}</span> : null}
+      <strong>{preview.overflow ? t("Overflow detected") : t("Fits current text bounds")}</strong>
+
+      <span>{preview.lines.length} {t("line")}{preview.lines.length === 1 ? '' : 's'}</span>
+
     </div> : null}
-    {error ? <p role="alert">{error}</p> : null}
+    {error ? <p role="alert">{t(error)}</p> : null}
   </section>;
 }
 
@@ -529,6 +528,8 @@ export type SelectionFormatOptions = {
   formatItalic?: '' | 'on' | 'off';
   formatSize?: string;
   formatSpacing?: string;
+  formatLineHeight?: string;
+  formatAlignment?: TextStyle['alignment'];
   formatColor?: string;
   formatUnderline?: '' | 'on' | 'off';
 };
@@ -566,62 +567,31 @@ export function resolveSelectionFormatStyle({
   formatItalic = '',
   formatSize = '',
   formatSpacing = '',
+  formatLineHeight = '',
+  formatAlignment,
   formatColor = '',
   formatUnderline = '',
 }: SelectionFormatOptions): { style: TextStyle; resolvedFontId?: string } {
   let resolvedFontId = formatFontId;
   if (formatWeight !== '' || formatItalic !== '') {
-    let targetFamily = '';
-    let baseWeight = 400;
-    let baseItalic = false;
-
-    if (formatFontId) {
-      const chosen = fonts.find(f => f.id === formatFontId);
-      if (chosen) {
-        targetFamily = chosen.family;
-        baseWeight = getFontWeight(chosen);
-        baseItalic = getFontItalic(chosen);
-      }
-    } else {
-      const selectionInfo = findSelectionFontInfo(block, range, fonts);
-      if (!selectionInfo) {
-        throw new EngineError(
-          'INVALID_REQUEST',
-          'Cannot apply weight or italic without selecting a registered font: the selected text uses an unregistered or mixed font. Please select a registered Selection font first.'
-        );
-      }
-      targetFamily = selectionInfo.family;
-      baseWeight = selectionInfo.weight;
-      baseItalic = selectionInfo.italic;
-    }
-
-    const targetWeight = formatWeight !== '' ? formatWeight : baseWeight;
-    const targetItalic = formatItalic !== '' ? formatItalic === 'on' : baseItalic;
-
-    const match = resolveExactFontFace(fonts, {
-      family: targetFamily,
-      weight: targetWeight,
-      italic: targetItalic,
+    const chosen = fonts.find(font => font.id === formatFontId);
+    const current = findSelectionFontInfo(block, range, fonts);
+    const text = block.runs.map(run => run.text).join('').slice(...range);
+    const match = resolveFormattingFont(fonts, {
+      family: chosen?.family ?? current?.family ?? (/\p{Script=Han}/u.test(text) ? 'Noto Sans CJK SC' : 'Liberation Sans'),
+      weight: formatWeight !== '' ? formatWeight : chosen ? getFontWeight(chosen) : current?.weight ?? 400,
+      italic: formatItalic !== '' ? formatItalic === 'on' : chosen ? getFontItalic(chosen) : current?.italic ?? false,
+      text,
     });
-
-    if (!match.success) {
-      throw new EngineError('UNSUPPORTED_CAPABILITY', match.reason);
-    }
-
-    resolvedFontId = match.font.id;
-  }
-
-  if (resolvedFontId) {
-    const targetFont = fonts.find(f => f.id === resolvedFontId);
-    if (targetFont && !isFontEmbeddable(targetFont)) {
-      throw new EngineError('INVALID_REQUEST', `Font face "${targetFont.family} · ${targetFont.style}" is restricted from editable embedding by font flags.`);
-    }
+    resolvedFontId = match.id;
   }
 
   const style: TextStyle = {};
   if (resolvedFontId) style.fontId = resolvedFontId;
   if (formatSize) style.fontSize = Number(formatSize);
   if (formatSpacing) style.characterSpacing = Number(formatSpacing);
+  if (formatLineHeight) style.lineHeight = Number(formatLineHeight);
+  if (formatAlignment) style.alignment = formatAlignment;
   if (formatUnderline) style.underline = formatUnderline === 'on';
   if (formatColor) {
     if (!/^#[0-9a-f]{6}$/i.test(formatColor)) throw new EngineError('INVALID_REQUEST', 'Color must use #RRGGBB');

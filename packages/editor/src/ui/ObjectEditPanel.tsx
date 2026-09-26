@@ -1,14 +1,16 @@
-import { useState } from 'react';
+import { translate as t, useI18n } from './i18n.js';
+import { useEffect, useRef, useState } from 'react';
 import { CommandRegistry, validateTransaction } from '@pdf-editor/commands';
 import { WEB_LIMITS, type CommandType, type CommitResult, type DocumentInfo, type EditCommand,
   type EngineAdapter, type HostAdapter, type PageModel, type TextLayoutResult } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
 
-type Props = { document: DocumentInfo; page: PageModel; selectedIds: string[]; engine: EngineAdapter;
+type Props = { mode?: 'edit' | 'pages' | 'arrange'; pageSelection?: string[] | null; section?: 'number' | 'watermark' | 'header' | null; document: DocumentInfo; page: PageModel; selectedIds: string[]; engine: EngineAdapter;
   host: HostAdapter; disabled: boolean; onBusyChange(busy: boolean): void;
   onSelectionChange(ids: string[]): void; onCommitted(result: CommitResult): Promise<void> };
 
-export function ObjectEditPanel({ document, page, selectedIds, engine, host, disabled, onBusyChange, onSelectionChange, onCommitted }: Props) {
+export function ObjectEditPanel({ mode = 'edit', section, pageSelection, document, page, selectedIds, engine, host, disabled, onBusyChange, onSelectionChange, onCommitted }: Props) {
+  useI18n();
   const [x, setX] = useState(36), [y, setY] = useState(36);
   const [width, setWidth] = useState(240), [height, setHeight] = useState(120);
   const [dx, setDx] = useState(10), [dy, setDy] = useState(0);
@@ -20,8 +22,19 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
   const [alignment, setAlignment] = useState<'left' | 'center' | 'right'>('left');
   const [pageRange, setPageRange] = useState('current');
   const [extractRange, setExtractRange] = useState('current');
+  const selectedPageNumbers = pageSelection?.map(id => document.pageOrder.indexOf(id) + 1).filter(number => number > 0).join(',');
+  useEffect(() => {
+    if (selectedPageNumbers === undefined) return;
+    setPageRange(selectedPageNumbers); setExtractRange(selectedPageNumbers);
+  }, [selectedPageNumbers]);
   const [decoration, setDecoration] = useState<'number' | 'header' | 'footer' | 'watermark'>('number');
   const [decorationText, setDecorationText] = useState('komopdf');
+  const decorationSection = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (mode !== 'pages' || !section || !decorationSection.current) return;
+    setDecoration(section); decorationSection.current.open = true;
+    decorationSection.current.scrollIntoView({ block: 'nearest' });
+  }, [section, mode]);
   const [textPreview, setTextPreview] = useState<{ key: string; layout: TextLayoutResult } | null>(null);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const { fonts } = useFontResources(engine);
@@ -181,140 +194,141 @@ export function ObjectEditPanel({ document, page, selectedIds, engine, host, dis
     await execute([command], new Set([resource.id]));
   }
   const numberField = (label: string, value: number, setter: (value: number) => void) =>
-    <label>{label}<input type="number" step="any" value={value} disabled={locked} onChange={event => setter(event.target.valueAsNumber)} /></label>;
+    <label>{t(label)}<input type="number" step="any" value={value} disabled={locked} onChange={event => setter(event.target.valueAsNumber)} /></label>;
 
   if (!supports('pages.insert') && !supports('objects.transform')) return null;
   return <section className="text-edit-panel" aria-label="Page and object editing">
-    <details open><summary>Page & objects</summary>
+    <details open hidden={mode !== 'pages' || Boolean(pageSelection)}><summary>{t("Pages")}</summary>
       <div className="text-edit-actions">
-        {supports('pages.rotate') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.rotate', pageIds: [page.id], degrees: 90 }]))}>Rotate page</button>}
-        {supports('pages.insert') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.insert', pageId: crypto.randomUUID(), afterPageId: page.id, widthPt: page.widthPt, heightPt: page.heightPt }]))}>Add blank page</button>}
+        {supports('pages.rotate') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.rotate', pageIds: [page.id], degrees: 90 }]))}>{t("Rotate page")}</button>}
+        {supports('pages.insert') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.insert', pageId: crypto.randomUUID(), afterPageId: page.id, widthPt: page.widthPt, heightPt: page.heightPt }]))}>{t("Add blank page")}</button>}
         {supports('pages.duplicate') && <button disabled={locked} onClick={() => void run(() => execute([
           { type: 'pages.duplicate', pageIds: [page.id], newPageIds: [crypto.randomUUID()], afterPageId: page.id },
-        ]))}>Duplicate page</button>}
-        {supports('pages.import') && host.pickResource && <button disabled={locked} onClick={() => void run(() => insertResource('pdf', 'pages'))}>Import PDF pages</button>}
+        ]))}>{t("Duplicate page")}</button>}
+        {supports('pages.import') && host.pickResource && <button disabled={locked} onClick={() => void run(() => insertResource('pdf', 'pages'))}>{t("Import PDF pages")}</button>}
         {supports('pages.delete') && <button disabled={locked || document.pageOrder.length <= 1} onClick={() => {
-          if (window.confirm('Delete the current page and its annotations and fields? Links and bookmarks targeting it will also be removed. This can be undone.')) void run(() => execute([{ type: 'pages.delete', pageIds: [page.id] }]));
-        }}>Delete page</button>}
+          if (window.confirm(t("Delete this page? You can undo this action."))) void run(() => execute([{ type: 'pages.delete', pageIds: [page.id] }]));
+        }}>{t("Delete page")}</button>}
         {supports('pages.reorder') && <>
-          <button disabled={locked || document.pageOrder[0] === page.id} onClick={() => void run(async () => { await reorder(-1); })}>Move page earlier</button>
-          <button disabled={locked || document.pageOrder.at(-1) === page.id} onClick={() => void run(async () => { await reorder(1); })}>Move page later</button>
+          <button disabled={locked || document.pageOrder[0] === page.id} onClick={() => void run(async () => { await reorder(-1); })}>{t("Move page earlier")}</button>
+          <button disabled={locked || document.pageOrder.at(-1) === page.id} onClick={() => void run(async () => { await reorder(1); })}>{t("Move page later")}</button>
         </>}
       </div>
-      {numberField('Move X (pt)', dx, setDx)}{numberField('Move Y (pt)', dy, setDy)}
+    </details>
+    <details open={mode === 'arrange'} hidden={mode !== 'edit' && mode !== 'arrange'}><summary>{t("Arrange objects")}</summary>
+      {numberField(t("Move X (pt)"), dx, setDx)}{numberField(t("Move Y (pt)"), dy, setDy)}
       {supports('objects.transform') && <>
-        {numberField('Scale (%)', scale, setScale)}{numberField('Rotation (degrees)', angle, setAngle)}
-        <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('scale'))}>Scale selected objects</button>
-        <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('rotate'))}>Rotate selected objects</button>
+        {numberField(t("Scale (%)"), scale, setScale)}{numberField(t("Rotation (degrees)"), angle, setAngle)}
+        <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('scale'))}>{t("Scale")}</button>
+        <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('rotate'))}>{t("Rotate")}</button>
       </>}
-      {supports('objects.align') && <div className="text-edit-actions" aria-label="Align selected objects">
+      {supports('objects.align') && <div className="text-edit-actions" aria-label={t("Align selected objects")}>
         {(['left', 'center', 'right', 'top', 'middle', 'bottom'] as const).map(axis =>
           <button key={axis} disabled={locked || selectedIds.length < 2}
-            onClick={() => void run(() => alignSelection(axis))}>Align {axis}</button>)}
+            onClick={() => void run(() => alignSelection(axis))}>{t("Align")} {axis}</button>)}
       </div>}
-      {supports('objects.distribute') && <div className="text-edit-actions" aria-label="Distribute selected objects">
-        <button disabled={locked || selectedIds.length < 3} onClick={() => void run(() => distributeSelection('horizontal'))}>Distribute horizontally</button>
-        <button disabled={locked || selectedIds.length < 3} onClick={() => void run(() => distributeSelection('vertical'))}>Distribute vertically</button>
+      {supports('objects.distribute') && <div className="text-edit-actions" aria-label={t("Distribute selected objects")}>
+        <button disabled={locked || selectedIds.length < 3} onClick={() => void run(() => distributeSelection('horizontal'))}>{t("Distribute horizontally")}</button>
+        <button disabled={locked || selectedIds.length < 3} onClick={() => void run(() => distributeSelection('vertical'))}>{t("Distribute vertically")}</button>
       </div>}
       <div className="text-edit-actions">
-        {supports('objects.group') && <button disabled={locked || !canGroup} onClick={() => void run(groupSelection)}>Group selected objects</button>}
-        {supports('objects.ungroup') && <button disabled={locked || !selectedGroup} onClick={() => void run(ungroupSelection)}>Ungroup selected objects</button>}
-        {selectedGroup && <button disabled={locked} onClick={selectGroupContents}>Edit group contents</button>}
-        {parentGroup && <button disabled={locked} onClick={() => onSelectionChange([parentGroup.id])}>Select parent group</button>}
+        {supports('objects.group') && <button disabled={locked || !canGroup} onClick={() => void run(groupSelection)}>{t("Group")}</button>}
+        {supports('objects.ungroup') && <button disabled={locked || !selectedGroup} onClick={() => void run(ungroupSelection)}>{t("Ungroup")}</button>}
+        {selectedGroup && <button disabled={locked} onClick={selectGroupContents}>{t("Edit group contents")}</button>}
+        {parentGroup && <button disabled={locked} onClick={() => onSelectionChange([parentGroup.id])}>{t("Select parent group")}</button>}
         {supports('objects.transform') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
-        ]))}>Move selected objects</button>}
+        ]))}>{t("Move")}</button>}
         {supports('objects.copy') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.copy', pageId: page.id, objectIds: selectedIds,
             newObjectIds: selectedIds.map(() => crypto.randomUUID()), offset: { x: dx, y: dy } },
-        ]))}>Duplicate selected objects</button>}
+        ]))}>{t("Duplicate")}</button>}
         {supports('objects.delete') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.delete', pageId: page.id, objectIds: selectedIds },
-        ]))}>Delete selected objects</button>}
+        ]))}>{t("Delete selected objects")}</button>}
       </div>
     </details>
-    {engine.extractPages && <details><summary>Extract pages to a new PDF</summary>
-      <label>Pages to extract<input value={extractRange} disabled={locked}
-        placeholder="current, all, or 1-3,5" onChange={event => setExtractRange(event.target.value)} /></label>
+    {engine.extractPages && <details open hidden={mode !== 'pages'}><summary>{t("Extract pages to a new PDF")}</summary>
+      <label>{t("Pages to extract")}<input value={extractRange} disabled={locked}
+        placeholder={t("current, all, or 1-3,5")} onChange={event => setExtractRange(event.target.value)} /></label>
       <button type="button" disabled={locked || !document.permissions.copy || document.permissions.encrypted}
-        onClick={() => void run(extractSelectedPages)}>Extract PDF copy</button>
-      <p>The active document and undo history are unchanged. Encrypted or structurally linked pages may not be extractable.</p>
+        onClick={() => void run(extractSelectedPages)}>{t("Extract PDF copy")}</button>
+
     </details>}
-    {supports('text.insert') && <details><summary>Page numbers, headers, footers & watermark</summary>
-      <label>Pages<input value={pageRange} disabled={locked} placeholder="current, all, or 1-3,5"
+    {supports('text.insert') && <details ref={decorationSection} hidden={mode !== 'pages'}><summary>{t("Page numbers & watermark")}</summary>
+      <label>{t("Pages")}<input value={pageRange} disabled={locked} placeholder={t("current, all, or 1-3,5")}
         onChange={event => setPageRange(event.target.value)} /></label>
-      <label>Decoration<select value={decoration} disabled={locked}
+      <label>{t("Decoration")}<select value={decoration} disabled={locked}
         onChange={event => setDecoration(event.target.value as typeof decoration)}>
-        <option value="number">Page number</option><option value="header">Header</option>
-        <option value="footer">Footer</option><option value="watermark">Watermark</option>
+        <option value="number">{t("Page number")}</option><option value="header">{t("Header")}</option>
+        <option value="footer">{t("Footer")}</option><option value="watermark">{t("Watermark")}</option>
       </select></label>
-      {decoration !== 'number' && <label>Decoration text (use {'{page}'} for page number)
-        <input value={decorationText} disabled={locked} onChange={event => setDecorationText(event.target.value)} />
+      {decoration !== 'number' && <label>{t("Decoration text (use")} {'{page}'} {t("for page number)")}<input value={decorationText} disabled={locked} onChange={event => setDecorationText(event.target.value)} />
       </label>}
-      <label>Decoration font<select disabled={locked} value={chosenFont ?? ''}
+      <label>{t("Decoration font")}<select disabled={locked} value={chosenFont ?? ''}
         onChange={event => setFontId(event.target.value)}>
         {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
       </select></label>
-      {numberField('Decoration font size (pt)', fontSize, setFontSize)}
-      <label>Decoration color<input type="color" value={color} disabled={locked}
+      {numberField(t("Decoration font size (pt)"), fontSize, setFontSize)}
+      <label>{t("Decoration color")}<input type="color" value={color} disabled={locked}
         onChange={event => setColor(event.target.value)} /></label>
-      <button disabled={locked || !chosenFont} onClick={() => void run(addPageDecoration)}>Apply to selected pages</button>
-      <p>Inserts real searchable PDF text in one undoable transaction; existing page content is not covered.</p>
+      <button disabled={locked || !chosenFont} onClick={() => void run(addPageDecoration)}>{t("Apply to selected pages")}</button>
+
     </details>}
-    <details><summary>Insert & format</summary>
-      <p>Top-left coordinates and dimensions in PDF points.</p>
-      {numberField('X (pt)', x, setX)}{numberField('Y (pt)', y, setY)}
-      {numberField('Width (pt)', width, setWidth)}{numberField('Height (pt)', height, setHeight)}
+    <details open hidden={mode !== 'edit'}><summary>{t("Add text & images")}</summary>
+
+      {numberField(t("X (pt)"), x, setX)}{numberField(t("Y (pt)"), y, setY)}
+      {numberField(t("Width (pt)"), width, setWidth)}{numberField(t("Height (pt)"), height, setHeight)}
       {supports('pages.crop') && <>
         <button disabled={locked} onClick={() => {
-          if (window.confirm('Crop this page to the specified box? Hidden content remains in the PDF and this can be undone.'))
+          if (window.confirm(t("Crop this page?")))
             void run(() => execute([{ type: 'pages.crop', pageIds: [page.id], bounds }]));
-        }}>Crop page to box</button>
-        <p>Page cropping changes the real PDF CropBox; it is not secure redaction.</p>
+        }}>{t("Crop page to box")}</button>
+
       </>}
       {host.pickResource && <>
         {supports('image.insert') && <>
-          <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>Insert image</button>
-          <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>Place visual signature image</button>
-          <p>A visual signature is an editable PDF image object, not a certificate signature. Existing digital signatures may be invalidated.</p>
+          <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>{t("Insert image")}</button>
+          <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>{t("Place visual signature image")}</button>
+
         </>}
         {supports('image.replace') && <button disabled={locked || selectedIds.length !== 1 || page.objects.find(object => object.id === selectedIds[0])?.type !== 'image'}
-          onClick={() => void run(() => insertResource('image', 'replace'))}>Replace selected image</button>}
+          onClick={() => void run(() => insertResource('image', 'replace'))}>{t("Replace selected image")}</button>}
         {supports('image.crop') && <>
           <button disabled={locked || selectedIds.length !== 1 || page.objects.find(object => object.id === selectedIds[0])?.type !== 'image'}
-            onClick={() => void run(() => execute([{ type: 'image.crop', pageId: page.id, objectId: selectedIds[0]!, bounds }]))}>Crop selected image to box</button>
-          <p>Cropping hides pixels and can be undone. It is not secure redaction.</p>
+            onClick={() => void run(() => execute([{ type: 'image.crop', pageId: page.id, objectId: selectedIds[0]!, bounds }]))}>{t("Crop selected image to box")}</button>
+
         </>}
         {supports('content.insert') && <>
-          {numberField('Source PDF page', resourcePage, setResourcePage)}
-          <button disabled={locked} onClick={() => void run(() => insertResource('pdf'))}>Insert PDF content</button>
+          {numberField(t("Source PDF page"), resourcePage, setResourcePage)}
+          <button disabled={locked} onClick={() => void run(() => insertResource('pdf'))}>{t("Insert PDF content")}</button>
         </>}
       </>}
-      <label>Font<select disabled={locked} value={chosenFont ?? ''} onChange={event => setFontId(event.target.value)}>
+      <label>{t("Font")}<select disabled={locked} value={chosenFont ?? ''} onChange={event => setFontId(event.target.value)}>
         {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
       </select></label>
-      {numberField('Font size (pt)', fontSize, setFontSize)}
-      <label>Text color<input type="color" value={color} disabled={locked} onChange={event => setColor(event.target.value)} /></label>
-      <label>New text<textarea rows={4} value={text} disabled={locked} onChange={event => setText(event.target.value)} /></label>
-      {numberField('Line height (em)', lineHeight, setLineHeight)}
-      <label>Text alignment<select value={alignment} disabled={locked} onChange={event => setAlignment(event.target.value as typeof alignment)}>
-        <option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+      {numberField(t("Font size (pt)"), fontSize, setFontSize)}
+      <label>{t("Text color")}<input type="color" value={color} disabled={locked} onChange={event => setColor(event.target.value)} /></label>
+      <label>{t("New text")}<textarea rows={4} value={text} disabled={locked} onChange={event => setText(event.target.value)} /></label>
+      {numberField(t("Line height (em)"), lineHeight, setLineHeight)}
+      <label>{t("Text alignment")}<select value={alignment} disabled={locked} onChange={event => setAlignment(event.target.value as typeof alignment)}>
+        <option value="left">{t("Left")}</option><option value="center">{t("Center")}</option><option value="right">{t("Right")}</option>
       </select></label>
       {supports('text.insert') && <>
         {engine.previewTextInsert && <button disabled={locked || !chosenFont} onClick={() => void run(async () => {
           const layout = await engine.previewTextInsert!({ docId: document.id, baseRevision: document.revision, command: textCommand() });
           setTextPreview({ key: layoutKey, layout });
-        })}>Preview text box</button>}
-        <button disabled={locked || !chosenFont || Boolean(currentTextPreview?.overflow)} onClick={() => void run(insertText)}>Insert text</button>
-        {currentTextPreview && <p role="status">{currentTextPreview.overflow ? 'Text box overflow' : 'Text fits box'} · {currentTextPreview.lines.length} lines</p>}
+        })}>{t("Preview text box")}</button>}
+        <button disabled={locked || !chosenFont || Boolean(currentTextPreview?.overflow)} onClick={() => void run(insertText)}>{t("Insert text")}</button>
+        {currentTextPreview && <p role="status">{currentTextPreview.overflow ? t("Text box overflow") : t("Text fits box")} · {currentTextPreview.lines.length} {t("lines")}</p>}
       </>}
       {supports('text.style') && <button disabled={locked || !selectedIds.some(id => page.objects.find(object => object.id === id)?.textBlock)} onClick={() => void run(() => execute([
         { type: 'text.style', pageId: page.id,
           blockIds: page.objects.filter(object => selectedIds.includes(object.id) && object.textBlock).map(object => object.textBlock!.id),
           style: { fontSize, color: rgb, ...(chosenFont ? { fontId: chosenFont } : {}) } },
-      ]))}>Format selected text</button>}
+      ]))}>{t("Format selected text")}</button>}
     </details>
-    {error && <p role="alert">{error}</p>}
+    {error && <p role="alert">{t(error)}</p>}
   </section>;
 }
 

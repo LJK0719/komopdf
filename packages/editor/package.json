@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./worker": "./src/worker/index.ts",
+    "./i18n": "./src/ui/i18n.ts",
     "./web": "./src/host/web-host-adapter.ts"
   },
   "scripts": {
@@ -13,9 +14,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@base-ui/react": "1.8.0",
     "@pdf-editor/ai-client": "workspace:*",
     "@pdf-editor/commands": "workspace:*",
-    "@pdf-editor/contracts": "workspace:*"
+    "@pdf-editor/contracts": "workspace:*",
+    "lucide-react": "1.47.0"
   },
   "peerDependencies": {
     "react": "19.3.0",

@@ -1,0 +1,779 @@
+{
+  "repository": "https://github.com/google/fonts",
+  "commit": "23e54b51ddffbc7713c583748e3bd86f62b1fa4a",
+  "families": [
+    {
+      "id": "inter",
+      "fonts": [
+        {
+          "path": "ofl/inter/Inter-Italic[opsz,wght].ttf",
+          "sha": "c177578428248f08eedcc60e292acc6f414c2167",
+          "size": 906596
+        },
+        {
+          "path": "ofl/inter/Inter[opsz,wght].ttf",
+          "sha": "047c92f6e2212473dc436020afed689527076d44",
+          "size": 876576
+        }
+      ],
+      "notice": "ofl/inter/OFL.txt"
+    },
+    {
+      "id": "roboto",
+      "fonts": [
+        {
+          "path": "ofl/roboto/Roboto-Italic[wdth,wght].ttf",
+          "sha": "a122c13964daac37f1186a22603a5180d2dba5d6",
+          "size": 530944
+        },
+        {
+          "path": "ofl/roboto/Roboto[wdth,wght].ttf",
+          "sha": "5522a368d9072fd88c299916e61fcff369949061",
+          "size": 488584
+        }
+      ],
+      "notice": "ofl/roboto/OFL.txt"
+    },
+    {
+      "id": "opensans",
+      "fonts": [
+        {
+          "path": "ofl/opensans/OpenSans-Italic[wdth,wght].ttf",
+          "sha": "6c2997999ce43d4ab5b377b712f2b10aca5e4bc1",
+          "size": 583992
+        },
+        {
+          "path": "ofl/opensans/OpenSans[wdth,wght].ttf",
+          "sha": "9db85693b027f3b05f6d77471d215f20707127c1",
+          "size": 532636
+        }
+      ],
+      "notice": "ofl/opensans/OFL.txt"
+    },
+    {
+      "id": "lato",
+      "fonts": [
+        {
+          "path": "ofl/lato/Lato-Black.ttf",
+          "sha": "53a31ac8f56e9e3f67d35844f2b41ef9ade0e156",
+          "size": 664748
+        },
+        {
+          "path": "ofl/lato/Lato-BlackItalic.ttf",
+          "sha": "b3cee668d64c5ae179b7554f315df274055b6d28",
+          "size": 698264
+        },
+        {
+          "path": "ofl/lato/Lato-Bold.ttf",
+          "sha": "1d23c7066e095b5bff2c373d4064dc4f33659783",
+          "size": 656544
+        },
+        {
+          "path": "ofl/lato/Lato-BoldItalic.ttf",
+          "sha": "a3b8e33229be7db3b6cf59da16226b5c4d834373",
+          "size": 698364
+        },
+        {
+          "path": "ofl/lato/Lato-ExtraBold.ttf",
+          "sha": "8612461da3fd4a251a8ba3d76a5be1182b1136b9",
+          "size": 613920
+        },
+        {
+          "path": "ofl/lato/Lato-ExtraBoldItalic.ttf",
+          "sha": "516676f3f7ca16410e96006bcda789ee6ed1a2b9",
+          "size": 671876
+        },
+        {
+          "path": "ofl/lato/Lato-ExtraLight.ttf",
+          "sha": "648e78c4dfa9cc52189eb952063f4f18474068d0",
+          "size": 626624
+        },
+        {
+          "path": "ofl/lato/Lato-ExtraLightItalic.ttf",
+          "sha": "569692ad7050ed5ebf5f48f58e45df7c195ab08b",
+          "size": 653640
+        },
+        {
+          "path": "ofl/lato/Lato-Italic.ttf",
+          "sha": "70a870f40ad0be24f2409f3875c8126b55aa41aa",
+          "size": 722900
+        },
+        {
+          "path": "ofl/lato/Lato-Light.ttf",
+          "sha": "c3f3cb576ae699ad5906fc892f4da127ca2b1a1b",
+          "size": 643884
+        },
+        {
+          "path": "ofl/lato/Lato-LightItalic.ttf",
+          "sha": "9368e065b7d05a90e8873c08baf0933308877232",
+          "size": 657552
+        },
+        {
+          "path": "ofl/lato/Lato-Medium.ttf",
+          "sha": "0648fb2d7ce7c07af9776f37a5b404d2325ca820",
+          "size": 636396
+        },
+        {
+          "path": "ofl/lato/Lato-MediumItalic.ttf",
+          "sha": "af296abd8fa1a8ffe9e5e2e1b1f61732a0e02bff",
+          "size": 694924
+        },
+        {
+          "path": "ofl/lato/Lato-Regular.ttf",
+          "sha": "0f3d0f837d24834b9b5b0a6b735459c56f5e75c3",
+          "size": 656568
+        },
+        {
+          "path": "ofl/lato/Lato-SemiBold.ttf",
+          "sha": "3b1bcccc3384aef84a68242e331e1018c8e141e0",
+          "size": 668548
+        },
+        {
+          "path": "ofl/lato/Lato-SemiBoldItalic.ttf",
+          "sha": "032b99d39509077f4cacb46cdee858698970f206",
+          "size": 697364
+        },
+        {
+          "path": "ofl/lato/Lato-Thin.ttf",
+          "sha": "81167facd97925603fbb5670d4f2ab318818bda4",
+          "size": 584056
+        },
+        {
+          "path": "ofl/lato/Lato-ThinItalic.ttf",
+          "sha": "339d2dcc2e177aad522d05547a91437a6bef1965",
+          "size": 608716
+        }
+      ],
+      "notice": "ofl/lato/OFL.txt"
+    },
+    {
+      "id": "montserrat",
+      "fonts": [
+        {
+          "path": "ofl/montserrat/Montserrat-Italic[wght].ttf",
+          "sha": "c8b8441744f2092ea8cbeb7b6f881e53bfe9c623",
+          "size": 762376
+        },
+        {
+          "path": "ofl/montserrat/Montserrat[wght].ttf",
+          "sha": "c97aca18592834d8706549c279cb8d5ac5d85f69",
+          "size": 744936
+        }
+      ],
+      "notice": "ofl/montserrat/OFL.txt"
+    },
+    {
+      "id": "sourcesans3",
+      "fonts": [
+        {
+          "path": "ofl/sourcesans3/SourceSans3-Italic[wght].ttf",
+          "sha": "ee54b36fd07749f63466845ae14d533be06f3c22",
+          "size": 395372
+        },
+        {
+          "path": "ofl/sourcesans3/SourceSans3[wght].ttf",
+          "sha": "d259aa494fe7117141a2752a998a52c172bbd42b",
+          "size": 646340
+        }
+      ],
+      "notice": "ofl/sourcesans3/OFL.txt"
+    },
+    {
+      "id": "sourceserif4",
+      "fonts": [
+        {
+          "path": "ofl/sourceserif4/SourceSerif4-Italic[opsz,wght].ttf",
+          "sha": "ccb969aa6847e1169ff9c8c8bdc28daff6966861",
+          "size": 855432
+        },
+        {
+          "path": "ofl/sourceserif4/SourceSerif4[opsz,wght].ttf",
+          "sha": "40bbb58cb58e893ad0470f0bb291e096c73d3554",
+          "size": 1209508
+        }
+      ],
+      "notice": "ofl/sourceserif4/OFL.txt"
+    },
+    {
+      "id": "notosans",
+      "fonts": [
+        {
+          "path": "ofl/notosans/NotoSans-Italic[wdth,wght].ttf",
+          "sha": "429692da4c3f2751f50bdfab7d0fdb3639717524",
+          "size": 2322640
+        },
+        {
+          "path": "ofl/notosans/NotoSans[wdth,wght].ttf",
+          "sha": "75575046c015ff623a848096a15779867ba71453",
+          "size": 2049096
+        }
+      ],
+      "notice": "ofl/notosans/OFL.txt"
+    },
+    {
+      "id": "notoserif",
+      "fonts": [
+        {
+          "path": "ofl/notoserif/NotoSerif-Italic[wdth,wght].ttf",
+          "sha": "0e60f3e9248b524e6c9a28d38fbfc147463b1f5a",
+          "size": 2448496
+        },
+        {
+          "path": "ofl/notoserif/NotoSerif[wdth,wght].ttf",
+          "sha": "7664d59c95d6c589f7b15017a218f7a42b93f86d",
+          "size": 1887192
+        }
+      ],
+      "notice": "ofl/notoserif/OFL.txt"
+    },
+    {
+      "id": "nunito",
+      "fonts": [
+        {
+          "path": "ofl/nunito/Nunito-Italic[wght].ttf",
+          "sha": "e63b7a6b390495bfe2ec827b723b51679022b61e",
+          "size": 281832
+        },
+        {
+          "path": "ofl/nunito/Nunito[wght].ttf",
+          "sha": "2ec1f4b0676c83ef33049db87b311171699e9192",
+          "size": 276932
+        }
+      ],
+      "notice": "ofl/nunito/OFL.txt"
+    },
+    {
+      "id": "raleway",
+      "fonts": [
+        {
+          "path": "ofl/raleway/Raleway-Italic[wght].ttf",
+          "sha": "62d9e8480909eb2df71e230a67a4013490d0d5f3",
+          "size": 318476
+        },
+        {
+          "path": "ofl/raleway/Raleway[wght].ttf",
+          "sha": "d81d42f537c7dc1bbde81b54e4c52a92977a8fde",
+          "size": 312352
+        }
+      ],
+      "notice": "ofl/raleway/OFL.txt"
+    },
+    {
+      "id": "ptsans",
+      "fonts": [
+        {
+          "path": "ofl/ptsans/PT_Sans-Web-Bold.ttf",
+          "sha": "3d4e6fe2f9f5282806cda0553d3ab321605ae37c",
+          "size": 470240
+        },
+        {
+          "path": "ofl/ptsans/PT_Sans-Web-BoldItalic.ttf",
+          "sha": "eb61f14b6b07a0e278374a4b551ccca8bd7a21fc",
+          "size": 375204
+        },
+        {
+          "path": "ofl/ptsans/PT_Sans-Web-Italic.ttf",
+          "sha": "180a5d68d3f9979aa58d59ff7c775d7aac095573",
+          "size": 436452
+        },
+        {
+          "path": "ofl/ptsans/PT_Sans-Web-Regular.ttf",
+          "sha": "83a21b724c47127a95e725b5c6bdfa30fcc1a7be",
+          "size": 442960
+        }
+      ],
+      "notice": "ofl/ptsans/OFL.txt"
+    },
+    {
+      "id": "ptserif",
+      "fonts": [
+        {
+          "path": "ofl/ptserif/PT_Serif-Web-Bold.ttf",
+          "sha": "0483e59fa9d9669c5e98a2b2a1b7cd059db98888",
+          "size": 339996
+        },
+        {
+          "path": "ofl/ptserif/PT_Serif-Web-BoldItalic.ttf",
+          "sha": "49d504b59335962a547ef7fa6ba74040ebf3521a",
+          "size": 337580
+        },
+        {
+          "path": "ofl/ptserif/PT_Serif-Web-Italic.ttf",
+          "sha": "b690e26058970205f7cb1bcb4434827281a1707c",
+          "size": 375356
+        },
+        {
+          "path": "ofl/ptserif/PT_Serif-Web-Regular.ttf",
+          "sha": "5310691a999658437d6db608b9447d606598753e",
+          "size": 359048
+        }
+      ],
+      "notice": "ofl/ptserif/OFL.txt"
+    },
+    {
+      "id": "merriweather",
+      "fonts": [
+        {
+          "path": "ofl/merriweather/Merriweather-Italic[opsz,wdth,wght].ttf",
+          "sha": "f16120757a8a92cfa12a5fc9a7dcbaa2f8297ab6",
+          "size": 4591168
+        },
+        {
+          "path": "ofl/merriweather/Merriweather[opsz,wdth,wght].ttf",
+          "sha": "cb775b80fa0a6f3b2aea114869a7171695b50a62",
+          "size": 4628080
+        }
+      ],
+      "notice": "ofl/merriweather/OFL.txt"
+    },
+    {
+      "id": "oswald",
+      "fonts": [
+        {
+          "path": "ofl/oswald/Oswald[wght].ttf",
+          "sha": "d1a3b9cb1325bf20b3a06ef9849d21c411212a3b",
+          "size": 172088
+        }
+      ],
+      "notice": "ofl/oswald/OFL.txt"
+    },
+    {
+      "id": "ubuntu",
+      "fonts": [
+        {
+          "path": "ufl/ubuntu/Ubuntu-Bold.ttf",
+          "sha": "7b855154e9fad7f3d115d2d491598e242ad117cf",
+          "size": 331612
+        },
+        {
+          "path": "ufl/ubuntu/Ubuntu-BoldItalic.ttf",
+          "sha": "7db9e20ca553ac484a429045981c161ebaf1e7d1",
+          "size": 354956
+        },
+        {
+          "path": "ufl/ubuntu/Ubuntu-Italic.ttf",
+          "sha": "9621a39877ecdf66bc319c14a943ec4b8740a44c",
+          "size": 384408
+        },
+        {
+          "path": "ufl/ubuntu/Ubuntu-Light.ttf",
+          "sha": "6a84adc7bf6e0cc5839b668c6aa8ac4113531e05",
+          "size": 413600
+        },
+        {
+          "path": "ufl/ubuntu/Ubuntu-LightItalic.ttf",
+          "sha": "0295cbbeba02b2d237dc96a7fff38309364c468c",
+          "size": 407728
+        },
+        {
+          "path": "ufl/ubuntu/Ubuntu-Medium.ttf",
+          "sha": "c6f048e44c6c16431cd6d95193186df6562929a8",
+          "size": 339360
+        },
+        {
+          "path": "ufl/ubuntu/Ubuntu-MediumItalic.ttf",
+          "sha": "5fe5c50200e2b2ce5c3491c939aaf9e9d078b425",
+          "size": 365080
+        },
+        {
+          "path": "ufl/ubuntu/Ubuntu-Regular.ttf",
+          "sha": "2001d6ec68f3022580a87e7ca69b092ff1c520de",
+          "size": 351884
+        }
+      ],
+      "notice": "ufl/ubuntu/LICENCE.txt"
+    },
+    {
+      "id": "jetbrainsmono",
+      "fonts": [
+        {
+          "path": "ofl/jetbrainsmono/JetBrainsMono-Italic[wght].ttf",
+          "sha": "5210f7350c95eef62d53de85b5953f4d5ff022ec",
+          "size": 191556
+        },
+        {
+          "path": "ofl/jetbrainsmono/JetBrainsMono[wght].ttf",
+          "sha": "aa310be8b717fe3774f9444dd89d5f4101cc6d10",
+          "size": 187208
+        }
+      ],
+      "notice": "ofl/jetbrainsmono/OFL.txt"
+    },
+    {
+      "id": "sourcecodepro",
+      "fonts": [
+        {
+          "path": "ofl/sourcecodepro/SourceCodePro-Italic[wght].ttf",
+          "sha": "f4321e7352540d2aa33023e19d9a65c447c5590a",
+          "size": 174852
+        },
+        {
+          "path": "ofl/sourcecodepro/SourceCodePro[wght].ttf",
+          "sha": "4d668281b3b2c6d699b5569e49bd60121152125f",
+          "size": 212340
+        }
+      ],
+      "notice": "ofl/sourcecodepro/OFL.txt"
+    },
+    {
+      "id": "robotomono",
+      "fonts": [
+        {
+          "path": "ofl/robotomono/RobotoMono-Italic[wght].ttf",
+          "sha": "414a5121f4ca743f0c64e82e22d91e426aa7d432",
+          "size": 196792
+        },
+        {
+          "path": "ofl/robotomono/RobotoMono[wght].ttf",
+          "sha": "f21d1d716bce3cc756bc618d32be71ce6f733f81",
+          "size": 183700
+        }
+      ],
+      "notice": "ofl/robotomono/OFL.txt"
+    },
+    {
+      "id": "ibmplexsans",
+      "fonts": [
+        {
+          "path": "ofl/ibmplexsans/IBMPlexSans-Italic[wdth,wght].ttf",
+          "sha": "35722e5e79e3616407f479ece5c60c39c1efd68f",
+          "size": 599624
+        },
+        {
+          "path": "ofl/ibmplexsans/IBMPlexSans[wdth,wght].ttf",
+          "sha": "30f837e8b02e8ecddce6cbebc425b1f422392515",
+          "size": 537244
+        }
+      ],
+      "notice": "ofl/ibmplexsans/OFL.txt"
+    },
+    {
+      "id": "ibmplexserif",
+      "fonts": [
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-Bold.ttf",
+          "sha": "e78e43ee5d830a0696c538ff035ea8662725a0a9",
+          "size": 163800
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-BoldItalic.ttf",
+          "sha": "ad8070edc567b984b00cf70f1490806cbca046fc",
+          "size": 173032
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-ExtraLight.ttf",
+          "sha": "5bb1c5e7bcafd2b147228f2f1b49b3b998515a15",
+          "size": 163956
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-ExtraLightItalic.ttf",
+          "sha": "522731b7f8c7ebd4ebd23dedc3aa91d96cc974ff",
+          "size": 172260
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-Italic.ttf",
+          "sha": "977ec6c4522dcd714bf51e49ec484e096e4f8d7c",
+          "size": 173004
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-Light.ttf",
+          "sha": "d1985914c33eaa04c0ebaae8261107c389069418",
+          "size": 162748
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-LightItalic.ttf",
+          "sha": "b18a4dbc2a59f8d0fa07224a3a5d87d6716b2a58",
+          "size": 171364
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-Medium.ttf",
+          "sha": "c90b241b3911ddb78de69339cd441c80d89c4440",
+          "size": 164104
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-MediumItalic.ttf",
+          "sha": "183d0663036b658a04fc18bf50b908d3deea7cc7",
+          "size": 173212
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-Regular.ttf",
+          "sha": "069d26a6c7951cd60811dcd100bdf2e6f39cfcc4",
+          "size": 163068
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-SemiBold.ttf",
+          "sha": "36a384606376da5be8493662d9f7c5f3b620ac6e",
+          "size": 164528
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-SemiBoldItalic.ttf",
+          "sha": "c6b010963c4400085a5f61bd986e4bb3f7134f6e",
+          "size": 173748
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-Thin.ttf",
+          "sha": "4a08cab9e5b2efd6916f9dbda788b4942d69ece2",
+          "size": 161232
+        },
+        {
+          "path": "ofl/ibmplexserif/IBMPlexSerif-ThinItalic.ttf",
+          "sha": "8cf501945fc4b3488d0dfcf6dcfe29a4c54fe071",
+          "size": 168660
+        }
+      ],
+      "notice": "ofl/ibmplexserif/OFL.txt"
+    },
+    {
+      "id": "ibmplexmono",
+      "fonts": [
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-Bold.ttf",
+          "sha": "17b406d221e7f27179344707bd543fb8470728ac",
+          "size": 137784
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-BoldItalic.ttf",
+          "sha": "f0291778c969fca0c255fe7e06c90eb97b34770d",
+          "size": 144512
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-ExtraLight.ttf",
+          "sha": "26877b8175e03ac26581afb2bf0eb4f7b9190594",
+          "size": 135980
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-ExtraLightItalic.ttf",
+          "sha": "bd50df2f9d7397e9772c75836277023d6e8e95b1",
+          "size": 144672
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-Italic.ttf",
+          "sha": "d7f69134614ebdcaa10ebd36b0be1a44a035e157",
+          "size": 143920
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-Light.ttf",
+          "sha": "61d43577842179cdffeb38b6c1928786981db0da",
+          "size": 135216
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-LightItalic.ttf",
+          "sha": "ecb1f6f52575afd8296df722ed4e7b395f9847b0",
+          "size": 143432
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-Medium.ttf",
+          "sha": "33c546f68b6007a45a3f10e845523abb2db25399",
+          "size": 136704
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-MediumItalic.ttf",
+          "sha": "d08961658e199bcabdb2fcb4f59abf06ab599fb3",
+          "size": 144004
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-Regular.ttf",
+          "sha": "0c9770d5183ba60dc4350d3e011b782a320761ae",
+          "size": 135580
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-SemiBold.ttf",
+          "sha": "8f8998a139d8f61d3b96bdd3b512fca501a1f6b9",
+          "size": 140216
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-SemiBoldItalic.ttf",
+          "sha": "50e47fa895a99c816061ad3b2bf433850a5f713b",
+          "size": 147368
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-Thin.ttf",
+          "sha": "44475c9d3e39e6f7e211ff7ce8a6fa711ab307ea",
+          "size": 137900
+        },
+        {
+          "path": "ofl/ibmplexmono/IBMPlexMono-ThinItalic.ttf",
+          "sha": "89eac6d51d5fb51874f1404980d64bd3f482f4a5",
+          "size": 146100
+        }
+      ],
+      "notice": "ofl/ibmplexmono/OFL.txt"
+    },
+    {
+      "id": "carlito",
+      "fonts": [
+        {
+          "path": "ofl/carlito/Carlito-Bold.ttf",
+          "sha": "67543b5a1efe4b910317116b02e8e9e01659692e",
+          "size": 682468
+        },
+        {
+          "path": "ofl/carlito/Carlito-BoldItalic.ttf",
+          "sha": "e2c5d8803828d9a3373459d71cf18ec06753cef5",
+          "size": 808508
+        },
+        {
+          "path": "ofl/carlito/Carlito-Italic.ttf",
+          "sha": "8dc3c84edfc8f0b6c6acdbd112abfda827b484ac",
+          "size": 615236
+        },
+        {
+          "path": "ofl/carlito/Carlito-Regular.ttf",
+          "sha": "427b95989fee609ab683d800ad00e22a4b14ecad",
+          "size": 628032
+        }
+      ],
+      "notice": "ofl/carlito/OFL.txt"
+    },
+    {
+      "id": "caladea",
+      "fonts": [
+        {
+          "path": "ofl/caladea/Caladea-Bold.ttf",
+          "sha": "a4a9703fbce8958e5dc141a5b498255d9e7a3d97",
+          "size": 84492
+        },
+        {
+          "path": "ofl/caladea/Caladea-BoldItalic.ttf",
+          "sha": "a9bb487022313de900d5c665baf9ebb166d38c84",
+          "size": 83356
+        },
+        {
+          "path": "ofl/caladea/Caladea-Italic.ttf",
+          "sha": "2c910c61f92637fd3ec1332340f14f80a0f82573",
+          "size": 83780
+        },
+        {
+          "path": "ofl/caladea/Caladea-Regular.ttf",
+          "sha": "a490e8f0ee259187614fb36ff3e6fae98dc5b355",
+          "size": 81600
+        }
+      ],
+      "notice": "ofl/caladea/OFL.txt"
+    },
+    {
+      "id": "arimo",
+      "fonts": [
+        {
+          "path": "ofl/arimo/Arimo-Italic[wght].ttf",
+          "sha": "2d2519e651227ab7c6bb6c9d1722529291a1f626",
+          "size": 543196
+        },
+        {
+          "path": "ofl/arimo/Arimo[wght].ttf",
+          "sha": "428b8cb4539e4910832f64384b53ae73de91e423",
+          "size": 496268
+        }
+      ],
+      "notice": "ofl/arimo/OFL.txt"
+    },
+    {
+      "id": "cousine",
+      "fonts": [
+        {
+          "path": "ofl/cousine/Cousine-Bold.ttf",
+          "sha": "966b5bdb8b94770baa7bb72ac269095946418f80",
+          "size": 298048
+        },
+        {
+          "path": "ofl/cousine/Cousine-BoldItalic.ttf",
+          "sha": "2c8731f8a5ab7aa32b966b162d8dc60993dca8e6",
+          "size": 308292
+        },
+        {
+          "path": "ofl/cousine/Cousine-Italic.ttf",
+          "sha": "e40f400320afdf8ae0d34181e8ac5e98ca51fc14",
+          "size": 306880
+        },
+        {
+          "path": "ofl/cousine/Cousine-Regular.ttf",
+          "sha": "e01ff6f05338a180c65ebadb5617f732d941e961",
+          "size": 296856
+        }
+      ],
+      "notice": "ofl/cousine/OFL.txt"
+    },
+    {
+      "id": "mashanzheng",
+      "fonts": [
+        {
+          "path": "ofl/mashanzheng/MaShanZheng-Regular.ttf",
+          "sha": "11bbfb9867d70612158229d037e7a5f622bd0e38",
+          "size": 5857936
+        }
+      ],
+      "notice": "ofl/mashanzheng/OFL.txt"
+    },
+    {
+      "id": "longcang",
+      "fonts": [
+        {
+          "path": "ofl/longcang/LongCang-Regular.ttf",
+          "sha": "363bb08696fe4d3827bd36d3d2fbc028d1205161",
+          "size": 5162508
+        }
+      ],
+      "notice": "ofl/longcang/OFL.txt"
+    },
+    {
+      "id": "zcoolxiaowei",
+      "fonts": [
+        {
+          "path": "ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf",
+          "sha": "2d8731a231f2e6625b32d96b87f84852e24f9d82",
+          "size": 6313808
+        }
+      ],
+      "notice": "ofl/zcoolxiaowei/OFL.txt"
+    },
+    {
+      "id": "zcoolqingkehuangyou",
+      "fonts": [
+        {
+          "path": "ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
+          "sha": "982a3b80143268592f573feb196791fbc2330e17",
+          "size": 8328684
+        }
+      ],
+      "notice": "ofl/zcoolqingkehuangyou/OFL.txt"
+    },
+    {
+      "id": "zcoolkuaile",
+      "fonts": [
+        {
+          "path": "ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf",
+          "sha": "3cf6cd927ee910d46875de173efdaac4330e84ac",
+          "size": 1514968
+        }
+      ],
+      "notice": "ofl/zcoolkuaile/OFL.txt"
+    },
+    {
+      "id": "zhimangxing",
+      "fonts": [
+        {
+          "path": "ofl/zhimangxing/ZhiMangXing-Regular.ttf",
+          "sha": "d037d1f00395175de01de33e62957c30a008a1b1",
+          "size": 4063532
+        }
+      ],
+      "notice": "ofl/zhimangxing/OFL.txt"
+    }
+  ],
+  "description": "Common Chinese and Latin families, pinned to official upstream files; regular/bold/italic faces are prepared on demand.",
+  "extraFamilies": [
+    {
+      "id": "zhuque-fangsong",
+      "repository": "https://github.com/TrionesType/zhuque",
+      "tag": "v0.212",
+      "assets": [
+        {
+          "name": "ZhuqueFangsong-v0.212.zip",
+          "url": "https://github.com/TrionesType/zhuque/releases/download/v0.212/ZhuqueFangsong-v0.212.zip",
+          "bytes": 5743932,
+          "digest": "sha256:bb8b661a7643d2296a72d9d10530a00949419c4e527fb61783f73c2ba1a8c062"
+        }
+      ]
+    }
+  ]
+}

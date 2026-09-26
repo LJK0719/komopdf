@@ -55,8 +55,7 @@ std::shared_ptr<const FontResource> ResolveParagraphFont(
   pdf_editor::PreparedFontFace face;
   std::string code, message;
   if (!pdf_editor::PrepareFontFace({bytes.data(), bytes.size()}, 0,
-                                   &face, &code, &message) ||
-      !face.info.editable_embedding) return {};
+                                   &face, &code, &message)) return {};
   auto embedded = std::make_shared<FontResource>();
   embedded->id = font_id;
   embedded->face = face.info;
@@ -484,6 +483,12 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
   if (!ReadParagraphStyles(info.Get(), static_cast<uint32_t>(decoded.utf16.size()),
                            resources, &fonts, &request)) return false;
   request.utf8 = original;
+  if (command.flags & kTextStyleLineHeightFlag) request.line_height = static_cast<float>(command.values[6]);
+  if (command.flags & kTextStyleAlignmentFlag) {
+    request.alignment = command.values[7] == 3 ? pdf_editor::ParagraphAlignment::kJustify :
+        command.values[7] == 2 ? pdf_editor::ParagraphAlignment::kRight :
+        command.values[7] == 1 ? pdf_editor::ParagraphAlignment::kCenter : pdf_editor::ParagraphAlignment::kLeft;
+  }
   if (request.styles.empty()) request.styles.push_back(
       {{0, static_cast<uint32_t>(decoded.utf16.size())}, 0,
        request.font_size, request.letter_spacing, request.color, request.underline});

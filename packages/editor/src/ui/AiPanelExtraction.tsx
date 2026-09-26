@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import React, { useState } from 'react';
 import type { CitationRef, DocumentInfo } from '@pdf-editor/contracts';
 import { resolveCitation, type EvidenceSnapshot } from '@pdf-editor/ai-client';
@@ -22,6 +23,7 @@ export function AiPanelExtraction({
   document,
   onLocate,
 }: AiPanelExtractionProps) {
+  useI18n();
   const [copied, setCopied] = useState(false);
 
   const copyAsText = async () => {
@@ -69,22 +71,20 @@ export function AiPanelExtraction({
   return (
     <div className="ai-extraction-container" style={{ display: 'grid', gap: '8px', marginTop: '8px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <strong>Extracted Structured Fields ({fields.length})</strong>
+        <strong>{t("Extracted Structured Fields (")}{fields.length})</strong>
         <div style={{ display: 'flex', gap: '6px' }}>
           <button
             type="button"
             onClick={() => void copyAsText()}
             style={{ fontSize: '10px', padding: '4px 8px' }}
           >
-            {copied ? 'Copied' : 'Copy Text'}
+            {copied ? t("Copied") : t("Copy Text")}
           </button>
           <button
             type="button"
             onClick={exportCsv}
             style={{ fontSize: '10px', padding: '4px 8px' }}
-          >
-            Export CSV
-          </button>
+          >{t("Export CSV")}</button>
         </div>
       </div>
 
@@ -100,10 +100,10 @@ export function AiPanelExtraction({
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10px' }}>
           <thead>
             <tr style={{ background: '#e8e6df', borderBottom: '1px solid #c2c1ba', textAlign: 'left' }}>
-              <th style={{ padding: '6px' }}>Field</th>
-              <th style={{ padding: '6px' }}>Raw Value</th>
-              <th style={{ padding: '6px' }}>Normalized</th>
-              <th style={{ padding: '6px' }}>Source</th>
+              <th style={{ padding: '6px' }}>{t("Field")}</th>
+              <th style={{ padding: '6px' }}>{t("Raw Value")}</th>
+              <th style={{ padding: '6px' }}>{t("Normalized")}</th>
+              <th style={{ padding: '6px' }}>{t("Source")}</th>
             </tr>
           </thead>
           <tbody>

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "esbuild src/engine.worker.ts --bundle --format=esm --platform=browser --target=es2022 --define:import.meta.env=\"{}\" --outfile=public/engines/engine.worker.js && next dev --webpack",
     "build:worker": "esbuild src/engine.worker.ts --bundle --format=esm --platform=browser --target=es2022 --define:import.meta.env=\"{}\" --outfile=public/engines/engine.worker.js",
-    "build": "esbuild src/engine.worker.ts --bundle --format=esm --platform=browser --target=es2022 --define:import.meta.env=\"{}\" --outfile=public/engines/engine.worker.js && next build --webpack",
+    "build": "esbuild src/engine.worker.ts --bundle --format=esm --platform=browser --target=es2022 --define:import.meta.env=\"{}\" --outfile=public/engines/engine.worker.js && next build --webpack && node ../../scripts/finalize-static-export.mjs && node ../../scripts/precompress-web-assets.mjs",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

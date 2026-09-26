@@ -38,6 +38,9 @@ server {
     index index.html;
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
+    charset utf-8;
+    gzip_static on;
+    gzip_vary on;
 
     # Security headers
     add_header X-Content-Type-Options nosniff always;
@@ -147,7 +150,7 @@ server {
         add_header Cache-Control "no-cache";
     }
 
-    location ~* \.(wasm|woff2?|ttf|otf|svg|png|jpe?g|webp|ico|css|js|map|json)$ {
+    location ~* \.(wasm|woff2?|ttf|otf|svg|png|jpe?g|webp|ico|css|js|map|json|txt)$ {
         try_files $uri =404;
         add_header Cache-Control "no-cache";
     }

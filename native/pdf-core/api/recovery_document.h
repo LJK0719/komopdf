@@ -220,9 +220,8 @@ uint32_t RestoreRecoverySnapshot(std::span<const uint8_t> bytes, const char* pas
         pdf_editor::RecoveryReader::Invalid();
       pdf_editor::PreparedFontFace prepared;
       std::string error_code, error_message;
-      if (!pdf_editor::PrepareFontFace(original, face_index, &prepared, &error_code, &error_message) ||
-          !prepared.info.editable_embedding) {
-        SetError("INVALID_REQUEST", "A recovered font is invalid or cannot be embedded.");
+      if (!pdf_editor::PrepareFontFace(original, face_index, &prepared, &error_code, &error_message)) {
+        SetError("INVALID_REQUEST", "A recovered font is invalid.");
         return 0;
       }
       font->face = prepared.info;

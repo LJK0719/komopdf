@@ -118,6 +118,9 @@ const char* pde_apply_text(uint32_t document,
 // flags 1/2/4/8 and their values retain the whole-block style layout. For a
 // logical paragraph or regular TextObject, type-2 flag 32 sets real vector
 // underline from values[5] (exactly 0=off, 1=on), for a range or full block.
+// Type-2 flags 64 and 128 set a logical paragraph's line-height multiplier
+// from values[6] and alignment from values[7] (0=left,1=center,2=right,3=justify).
+// Character spacing is effective tracking: Tc plus the typical TJ adjustment.
 // Derived decorations follow text edits and transformations. Range endpoints must be whole graphemes
 // and must not cut a previously shaped glyph cluster.
 // Type 3 also accepts 128=invisible, 256=fitBounds (requires invisible),

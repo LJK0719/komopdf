@@ -1,52 +1,27 @@
+'use client';
+
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { Languages, ArrowUpRight } from 'lucide-react';
+import { useI18n, type UiLocale } from '@pdf-editor/editor/i18n';
 
 export function SiteNav() {
-  return (
-    <nav className="flex items-center justify-between border-b border-[#a9aaa4] pb-4.5" aria-label="Main navigation">
-      <Link className="flex items-center gap-2.5 font-serif font-semibold text-[17px] leading-none text-[#20231f] no-underline" href="/">
-        <span
-          className="grid place-items-center w-[30px] h-[37px] text-[#20231f] bg-[#d7ff37] font-serif font-bold text-base not-italic shadow-sm"
-          style={{ clipPath: 'polygon(0 0, 78% 0, 100% 22%, 100% 100%, 0 100%)' }}
-          aria-hidden="true"
-        >
-          K
-        </span>
-        <span className="tracking-tight">komopdf</span>
-      </Link>
-
-      <div className="flex items-center gap-6 text-sm font-medium text-[#5b5e58]">
-        <Link href="/download/" className="hover:text-[#20231f] transition-colors">
-          Download
-        </Link>
-        <Link href="/help/" className="hover:text-[#20231f] transition-colors">
-          Help
-        </Link>
-        <Link href="/privacy/" className="hover:text-[#20231f] transition-colors">
-          Privacy
-        </Link>
-        <Link
-          href="/editor/"
-          className="rounded-sm bg-[#20231f] px-3.5 py-2 text-xs font-bold text-[#f7f5ed] no-underline hover:bg-[#333831] transition-colors shadow-sm"
-        >
-          Open Editor
-        </Link>
-      </div>
-    </nav>
-  );
+  const { t, locale, setLocale } = useI18n();
+  const pathname = usePathname();
+  return <nav className="site-nav" aria-label={t('Main navigation')}>
+    <Link href="/" className="site-brand"><span aria-hidden="true">k</span>komopdf</Link>
+    <div className="site-nav-links">
+      {[['/download/', 'Download'], ['/help/', 'Help']].map(([href, label]) => <Link key={href} href={href!} aria-current={pathname === href ? 'page' : undefined}>{t(label!)}</Link>)}
+      <label className="site-language"><Languages size={16} /><select aria-label={t('Language')} value={locale} onChange={event => setLocale(event.target.value as UiLocale)}><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
+      <Link href="/editor/" className="site-button site-button-primary">{t('Open editor')}<ArrowUpRight size={16} /></Link>
+    </div>
+  </nav>;
 }
 
 export function SiteFooter() {
-  return (
-    <footer className="mt-16 border-t border-[#a9aaa4] pt-8 pb-12 flex flex-col sm:flex-row items-center justify-between text-xs text-[#696c66] gap-4">
-      <div>
-        <span>komopdf &copy; 2026. Local-first PDF document editor & AI agent runtime.</span>
-      </div>
-      <div className="flex items-center gap-5">
-        <Link href="/help/" className="hover:text-[#20231f]">Documentation</Link>
-        <Link href="/download/" className="hover:text-[#20231f]">Desktop Releases</Link>
-        <Link href="/privacy/" className="hover:text-[#20231f]">Privacy Policy</Link>
-        <Link href="/editor/" className="hover:text-[#20231f]">Web Editor</Link>
-      </div>
-    </footer>
-  );
+  const { t } = useI18n();
+  return <footer className="site-footer"><span>© 2026 komopdf · {t('A little less paperwork.')}</span><div>
+    <Link href="/help/">{t('Help')}</Link><Link href="/download/">{t('Download')}</Link><Link href="/privacy/">{t('Privacy')}</Link>
+    <a href="https://github.com/LJK0719/komopdf" target="_blank" rel="noreferrer">GitHub ↗</a>
+  </div></footer>;
 }

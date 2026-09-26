@@ -34,6 +34,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: python3 scripts/prepare-fonts.py
+      - name: Prepare the extended font library
+        run: |
+          python3 -m venv tmp/font-tools
+          tmp/font-tools/bin/pip install fonttools==4.59.2 freetype-py==2.5.1
+          tmp/font-tools/bin/python scripts/prepare-font-library.py
       - run: node scripts/prepare-web-runtime.mjs
       - run: pnpm --filter @pdf-editor/web build
       - run: pnpm --filter @pdf-editor/gateway build
@@ -56,6 +61,11 @@ jobs:
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
       - run: pnpm install --frozen-lockfile
       - run: python3 scripts/prepare-fonts.py
+      - name: Prepare the extended font library
+        run: |
+          python3 -m venv tmp/font-tools
+          tmp/font-tools/bin/pip install fonttools==4.59.2 freetype-py==2.5.1
+          tmp/font-tools/bin/python scripts/prepare-font-library.py
       - run: node infra/prepare-release.mjs "$RELEASE_VERSION"
       - name: Verify extracted Linux production bundle without an upstream request
         run: |
