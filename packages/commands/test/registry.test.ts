@@ -77,6 +77,17 @@ describe('CommandRegistry & AI Plan 契约边界验证', () => {
     ]),
   };
 
+  it('validates formatting against the text after a replacement in the same transaction', () => {
+    const transaction = { id: 'edit-format', docId: 'doc-1', baseRevision: 1, source: 'manual', commands: [
+      { type: 'text.replace', pageId: 'page-1', blockId: 'block-1', range: [8, 14], text: ' wonderful world' },
+      { type: 'text.style', pageId: 'page-1', blockIds: ['block-1'], range: [0, 24], style: { characterSpacing: 2 } },
+    ] };
+    expect(() => validateTransaction(transaction, context)).not.toThrow();
+    transaction.commands[1]!.range = [0, 25];
+    expect(() => validateTransaction(transaction, context)).toThrow();
+    expect(textObject.textBlock!.runs[0]!.text).toBe('Hello 👋 world');
+  });
+
   it('accepts nested sibling grouping and follow-up edits without mutating the source snapshot', () => {
     const memberA: EditableObject = { ...textObject, id: 'nested-a', type: 'path',
       locator: { pageId: 'page-1', containerPath: [0], objectIndex: 0 } };

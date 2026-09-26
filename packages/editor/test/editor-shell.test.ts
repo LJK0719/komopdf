@@ -82,7 +82,9 @@ describe('Brand entrances', () => {
   it('declares komopdf as default productName in EditorShell', () => {
     const source = readFileSync(resolve(__dirname, '../src/ui/EditorShell.tsx'), 'utf-8');
     expect(source).toContain("productName = 'komopdf'");
-    expect(source).toContain('<span className="brand-mark" aria-hidden="true">K</span>');
+    expect(source).toContain('productName={productName}');
+    const chrome = readFileSync(resolve(__dirname, '../src/ui/EditorChrome.tsx'), 'utf-8');
+    expect(chrome).toContain('<span className="brand-mark" aria-hidden="true">k</span>');
   });
 
   it('declares recovery banner and actions in EditorShell', () => {

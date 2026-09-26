@@ -98,6 +98,8 @@ constexpr size_t kMaxTextBytes = 16 * 1024 * 1024;
 constexpr uint32_t kKnownStyleFlags = 1U | 2U | 4U | 8U;
 constexpr uint32_t kTextStyleRangeFlag = 16U;
 constexpr uint32_t kTextStyleUnderlineFlag = 32U;
+constexpr uint32_t kTextStyleLineHeightFlag = 64U;
+constexpr uint32_t kTextStyleAlignmentFlag = 128U;
 constexpr uint32_t kTextInsertLineHeightFlag = 16U;
 constexpr uint32_t kTextInsertCenterFlag = 32U;
 constexpr uint32_t kTextInsertRightFlag = 64U;
@@ -185,6 +187,8 @@ struct TextStyleData {
   std::optional<double> font_size;
   std::optional<std::array<double, 3>> color;
   std::optional<double> character_spacing;
+  std::optional<double> line_height;
+  std::optional<std::string> alignment;
   std::optional<int> weight;
   std::optional<bool> italic;
   std::optional<bool> underline;
@@ -1092,6 +1096,14 @@ bool SetTextUnderline(FPDF_PAGEOBJECT object, bool enabled) {
   return true;
 }
 
+float TypicalTextKerning(const CPDF_TextObject* text) {
+  const auto& values = text->GetCharKernings();
+  if (values.size() < 2) return 0;
+  std::vector<float> sorted(values.begin(), values.end() - 1);
+  std::sort(sorted.begin(), sorted.end());
+  return sorted[sorted.size() / 2];
+}
+
 TextStyleData GetTextStyle(FPDF_PAGEOBJECT object) {
   TextStyleData style;
   float font_size = 0;
@@ -1113,7 +1125,8 @@ TextStyleData GetTextStyle(FPDF_PAGEOBJECT object) {
   CPDF_TextObject* native_text =
       native_object ? native_object->AsText() : nullptr;
   if (native_text) {
-    const double spacing = native_text->text_state().GetCharSpace();
+    const double spacing = native_text->text_state().GetCharSpace() -
+        TypicalTextKerning(native_text) * native_text->GetFontSize() / 1000.0;
     if (std::isfinite(spacing)) {
       style.character_spacing = spacing;
     }
@@ -1121,6 +1134,16 @@ TextStyleData GetTextStyle(FPDF_PAGEOBJECT object) {
 
   const FPDF_FONT font = FPDFTextObj_GetFont(object);
   if (font) {
+    const auto dictionary = CPDFFontFromFPDFFont(font)->GetFontDict();
+    const ByteString registered = dictionary->GetUnicodeTextFor("KomoFontId").ToUTF8();
+    const std::string registered_id(registered.c_str(), registered.GetLength());
+    if (!registered.IsEmpty() &&
+        (!registered_id.starts_with("user-font-") || g_fonts.contains(registered_id))) {
+      style.font_id = registered_id;
+    } else {
+      const ByteString name = dictionary->GetByteStringFor("BaseFont");
+      if (!name.IsEmpty()) style.font_id = "pdf:" + std::string(name.c_str(), name.GetLength());
+    }
     const int weight = FPDFFont_GetWeight(font);
     if (weight >= 100 && weight <= 900) {
       style.weight = weight;
@@ -1673,6 +1696,9 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
         std::string(base_id.c_str(), base_id.GetLength());
     block.style.font_size = paragraph->GetFloatFor("FontSize");
     block.style.character_spacing = paragraph->GetFloatFor("LetterSpacing");
+    block.style.line_height = paragraph->GetFloatFor("LineHeight");
+    const auto alignment = paragraph->GetNameFor("Alignment");
+    block.style.alignment = alignment == "Justify" ? "justify" : alignment == "Center" ? "center" : alignment == "Right" ? "right" : "left";
     if (paragraph->GetBooleanFor("Underline", false)) block.style.underline = true;
     const auto color = paragraph->GetArrayFor("Color");
     if (color && color->size() == 3)
@@ -1697,6 +1723,8 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
                                      decoded.byte_offsets[last] - decoded.byte_offsets[first]);
         run.style.font_size = entry->GetFloatFor("FontSize");
         run.style.character_spacing = entry->GetFloatFor("LetterSpacing");
+        run.style.line_height = block.style.line_height;
+        run.style.alignment = block.style.alignment;
         run.style.underline = entry->GetBooleanFor("Underline", false);
         const ByteString font_id = entry->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
         if (!font_id.IsEmpty()) run.style.font_id =
@@ -1897,6 +1925,12 @@ void AppendTextStyle(std::string* output, const TextStyleData& style) {
     property();
     output->append("\"characterSpacing\":");
     AppendJsonNumber(output, *style.character_spacing);
+  }
+  if (style.line_height) {
+    property(); output->append("\"lineHeight\":"); AppendJsonNumber(output, *style.line_height);
+  }
+  if (style.alignment) {
+    property(); output->append("\"alignment\":"); AppendJsonString(output, *style.alignment);
   }
   if (style.weight) {
     property();
@@ -2334,11 +2368,6 @@ std::shared_ptr<const FontResource> RegisterFontResource(
              "The legacy API accepts a standalone TrueType font only.");
     return nullptr;
   }
-  if (!prepared.info.editable_embedding) {
-    SetError("UNSUPPORTED_CAPABILITY",
-             "The font license does not allow editable outline embedding.");
-    return nullptr;
-  }
   if (!ValidateFontWithPdfium(prepared)) {
     return nullptr;
   }
@@ -2627,6 +2656,9 @@ class CandidateFontCache {
       SetError("CORE_UNAVAILABLE", std::move(message));
       return nullptr;
     }
+    const auto id = WideString::FromUTF8(ByteStringView(resource->id));
+    CPDFFontFromFPDFFont(handle)->GetMutableFontDict()
+        ->SetNewFor<CPDF_String>("KomoFontId", id.AsStringView());
     handles_.push_back(handle);
     fonts_.emplace(resource->id, handle);
     return handle;
@@ -2919,6 +2951,60 @@ bool SetTextContent(FPDF_PAGEOBJECT object, std::string_view text) {
   return true;
 }
 
+// Tc/Tw live in the text state, but SetText() discards the TJ adjustments.
+// Keep unchanged glyph boundaries and carry the usual tracking into new text.
+bool SetTextPreservingSpacing(CPDF_TextObject* text, const CPDF_TextObject* original,
+                              const std::string& before, const std::string& after) {
+  if (!SetTextContent(FPDFPageObjectFromCPDFPageObject(text), after)) return false;
+  LayoutText old_text, new_text;
+  if (!DecodeLayoutText(before, &old_text) || !DecodeLayoutText(after, &new_text)) return false;
+  const auto& original_kernings = original->GetCharKernings();
+  if (original_kernings.size() < 2) return true;
+  std::map<uint32_t, float> adjustments;
+  std::vector<float> tracking;
+  std::string mapped;
+  uint32_t offset = 0;
+  for (size_t index = 0; index < original->CharCount(); ++index) {
+    const ByteString value = original->GetFont()->UnicodeFromCharCode(original->GetCharCode(index)).ToUTF8();
+    const std::string part(value.c_str(), value.GetLength());
+    mapped += part;
+    offset += Utf16Length(part);
+    if (index + 1 < original->CharCount()) {
+      adjustments[offset] = original_kernings[index];
+      tracking.push_back(original_kernings[index]);
+    }
+  }
+  if (mapped != before) return true;
+  std::sort(tracking.begin(), tracking.end());
+  const float usual = tracking[tracking.size() / 2];
+  size_t prefix = 0, suffix = 0;
+  while (prefix < old_text.utf16.size() && prefix < new_text.utf16.size() &&
+         old_text.utf16[prefix] == new_text.utf16[prefix]) ++prefix;
+  while (suffix < old_text.utf16.size() - prefix && suffix < new_text.utf16.size() - prefix &&
+         old_text.utf16[old_text.utf16.size() - suffix - 1] == new_text.utf16[new_text.utf16.size() - suffix - 1]) ++suffix;
+  std::vector<ByteString> strings;
+  std::vector<float> kernings;
+  offset = 0;
+  for (size_t index = 0; index < text->CharCount(); ++index) {
+    ByteString encoded;
+    text->GetFont()->AppendChar(&encoded, text->GetCharCode(index));
+    strings.push_back(std::move(encoded));
+    const ByteString value = text->GetFont()->UnicodeFromCharCode(text->GetCharCode(index)).ToUTF8();
+    offset += Utf16Length(std::string(value.c_str(), value.GetLength()));
+    if (index + 1 == text->CharCount()) break;
+    std::optional<uint32_t> old_offset;
+    if (offset <= prefix) old_offset = offset;
+    else if (offset >= new_text.utf16.size() - suffix)
+      old_offset = static_cast<uint32_t>(old_text.utf16.size() - (new_text.utf16.size() - offset));
+    const auto found = old_offset ? adjustments.find(*old_offset) : adjustments.end();
+    kernings.push_back(found != adjustments.end() ? found->second : usual);
+  }
+  text->SetSegments(strings, kernings);
+  text->SetTextMatrix(text->GetTextMatrix());
+  text->SetDirty(true);
+  return true;
+}
+
 bool SelectTextFont(
     FPDF_DOCUMENT pdf,
     CPDF_TextObject* text,
@@ -3107,6 +3193,7 @@ bool ApplyTextReplace(
     if (overflow) *overflow = false;
     return true;
   }
+  const auto original_text = native_text->Clone();
   CPDF_Font* selected_font = nullptr;
   if (!SelectTextFont(pdf, native_text, command.font_id, resources, font_cache,
                       &selected_font)) {
@@ -3121,7 +3208,7 @@ bool ApplyTextReplace(
                    "character.");
     return false;
   }
-  if (!SetTextContent(target.object, updated_text) ||
+  if (!SetTextPreservingSpacing(native_text, original_text.get(), current_text, updated_text) ||
       !pdf_editor::tagged::RefreshAllTextScopes(nested ? holder : source_holder,
                                                  native_object, updated_text) ||
       (search_layer && !FitOcrReplacement(native_text, original_ocr.get()) &&
@@ -3169,6 +3256,7 @@ bool ApplyStyleToText(
     const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
     CandidateFontCache* font_cache) {
   FPDF_PAGEOBJECT object = FPDFPageObjectFromCPDFPageObject(text);
+  const auto original_text = text->Clone();
   CPDF_Font* selected_font = nullptr;
   if (!SelectTextFont(pdf, text,
                       (command.flags & 1U) ? command.font_id : std::string(),
@@ -3198,10 +3286,11 @@ bool ApplyStyleToText(
     }
   }
   if (command.flags & 8U) {
-    text->mutable_text_state().SetCharSpace(static_cast<float>(command.values[4]));
+    text->mutable_text_state().SetCharSpace(static_cast<float>(command.values[4]) +
+        TypicalTextKerning(original_text.get()) * text->GetFontSize() / 1000.0);
   }
   if (font_changed) {
-    if (!SetTextContent(object, current_text)) return false;
+    if (!SetTextPreservingSpacing(text, original_text.get(), current_text, current_text)) return false;
   } else if (command.flags & (2U | 8U)) {
     text->SetTextMatrix(text->GetTextMatrix());
   }
@@ -3428,6 +3517,10 @@ bool ApplyTextStyle(
       if (!ApplyParagraphStyle(document, pdf, page.get(), metadata, page_index,
                                target, command, resources)) return false;
       continue;
+    }
+    if (command.flags & (kTextStyleLineHeightFlag | kTextStyleAlignmentFlag)) {
+      SetError("UNSUPPORTED_CAPABILITY", "Convert adjacent text to a paragraph before changing paragraph formatting.");
+      return false;
     }
     if (nested && !NestedFormPathIsStructurallyEditable(page.get(), target.object, target.path)) {
       SetError("UNSUPPORTED_CAPABILITY",
@@ -5807,8 +5900,8 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
     case EditType::kTextStyle:
       if (!require_page() || !require_ids() ||
           (target->flags & ~(kKnownStyleFlags | kTextStyleRangeFlag |
-                              kTextStyleUnderlineFlag)) != 0 ||
-          (target->flags & (kKnownStyleFlags | kTextStyleUnderlineFlag)) == 0) {
+                              kTextStyleUnderlineFlag | kTextStyleLineHeightFlag | kTextStyleAlignmentFlag)) != 0 ||
+          (target->flags & (kKnownStyleFlags | kTextStyleUnderlineFlag | kTextStyleLineHeightFlag | kTextStyleAlignmentFlag)) == 0) {
         if (g_error_code.empty()) {
           SetError("UNSUPPORTED_CAPABILITY", "Unknown or empty text style.");
         }
@@ -5822,6 +5915,11 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
       }
       if (((target->flags & 1U) != 0) != !target->font_id.empty()) {
         SetError("INVALID_REQUEST", "The text font flag and font ID disagree.");
+        return false;
+      }
+      if (((target->flags & kTextStyleLineHeightFlag) && (target->values[6] <= 0 || target->values[6] > 100)) ||
+          ((target->flags & kTextStyleAlignmentFlag) && (target->values[7] < 0 || target->values[7] > 3 || std::floor(target->values[7]) != target->values[7]))) {
+        SetError("INVALID_REQUEST", "The paragraph line height or alignment is invalid.");
         return false;
       }
       if ((target->flags & kTextStyleUnderlineFlag) &&

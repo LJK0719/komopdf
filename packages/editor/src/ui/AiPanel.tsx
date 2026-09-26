@@ -1,3 +1,5 @@
+import { commandLabel } from './command-labels.js';
+import { useI18n, translate as t } from './i18n.js';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   WEB_LIMITS,
@@ -55,18 +57,18 @@ export type FeatureConfig = {
 };
 
 const FEATURES: FeatureConfig[] = [
-  { id: 'text.translate', label: 'Translate Selected Text (A01)', description: 'Translate selected text while preserving numbers and proper names', nativeReady: true },
-  { id: 'text.proofread', label: 'Proofread & Polish (A02)', description: 'Spot typos and grammar issues with replacement suggestions and reasons', nativeReady: true },
-  { id: 'text.rewrite', label: 'Rewrite & Tone (A03)', description: 'Rewrite in formal, concise, casual, professional, or academic style', nativeReady: true },
-  { id: 'text.fit', label: 'Fit to Text Box (A04)', description: 'Shorten text to fit box dimensions with real font layout verification', nativeReady: true },
-  { id: 'commands.plan', label: 'Natural Language Commands (A05)', description: 'Plan rotate, delete, or formatting edits via natural language', nativeReady: true },
-  { id: 'document.ask', label: 'Ask with Citations (A06)', description: 'Ask questions grounded in frozen evidence with clickable page citations', nativeReady: true },
-  { id: 'document.summarize', label: 'Summarize & Outline (A07)', description: 'Generate executive summary and reading outline with source citations', nativeReady: true },
-  { id: 'document.translate', label: 'Batch Reading Translation (A08)', description: 'Translate multi-page document in batches with side-by-side writeback', nativeReady: true },
-  { id: 'document.extract', label: 'Structured Extraction (A09)', description: 'Extract fields, dates, amounts, and tables with CSV export', nativeReady: true },
-  { id: 'form.suggest', label: 'Form Filling Suggestions (A10)', description: 'Suggest form values from document context and map to AcroForm fields', nativeReady: true },
-  { id: 'blocks.organize', label: 'Organize Text Blocks (A11)', description: 'Propose alignment, font consistency, and layout adjustments for text blocks', nativeReady: true },
-  { id: 'image.explain', label: 'Explain Diagram or Chart (A12)', description: 'Explain cropped chart or diagram using vision understanding', nativeReady: true },
+  { id: 'text.translate', label: 'Translate text', description: 'Translate selected text while preserving numbers and proper names', nativeReady: true },
+  { id: 'text.proofread', label: 'Proofread', description: 'Spot typos and grammar issues with replacement suggestions and reasons', nativeReady: true },
+  { id: 'text.rewrite', label: 'Rewrite', description: 'Rewrite in formal, concise, casual, professional, or academic style', nativeReady: true },
+  { id: 'text.fit', label: 'Shorten text', description: 'Shorten text to fit box dimensions with real font layout verification', nativeReady: true },
+  { id: 'commands.plan', label: 'Edit with AI', description: 'Plan rotate, delete, or formatting edits via natural language', nativeReady: true },
+  { id: 'document.ask', label: 'Ask a question', description: 'Ask questions grounded in frozen evidence with clickable page citations', nativeReady: true },
+  { id: 'document.summarize', label: 'Summarize', description: 'Generate executive summary and reading outline with source citations', nativeReady: true },
+  { id: 'document.translate', label: 'Translate document', description: 'Translate multi-page document in batches with side-by-side writeback', nativeReady: true },
+  { id: 'document.extract', label: 'Extract data', description: 'Extract fields, dates, amounts, and tables with CSV export', nativeReady: true },
+  { id: 'form.suggest', label: 'Fill forms', description: 'Suggest form values from document context and map to AcroForm fields', nativeReady: true },
+  { id: 'blocks.organize', label: 'Improve layout', description: 'Propose alignment, font consistency, and layout adjustments for text blocks', nativeReady: true },
+  { id: 'image.explain', label: 'Explain an image', description: 'Explain cropped chart or diagram using vision understanding', nativeReady: true },
 ];
 
 const TONE_OPTIONS = [
@@ -78,18 +80,19 @@ const TONE_OPTIONS = [
 ];
 
 export function AiPanel(props: Props) {
+  useI18n();
   const current = useRef(props);
   current.current = props;
 
   const [authorization] = useState(() => (props.document ? new DocumentAiAuthorization(props.document.id) : null));
-  const [enabled, setEnabled] = useState(false);
-  const [feature, setFeature] = useState<AiFeature>('text.translate');
+  const enabled = Boolean(props.document);
+  const [feature, setFeature] = useState<AiFeature>('document.ask');
   const featureRef = useRef(feature); featureRef.current = feature;
   const [instruction, setInstruction] = useState('');
   const [language, setLanguage] = useState('English');
   const [tone, setTone] = useState('concise');
   const [targetCharLength, setTargetCharLength] = useState<number | ''>('');
-  const [askScope, setAskScope] = useState<'selection' | 'page' | 'document'>('page');
+  const [askScope, setAskScope] = useState<'selection' | 'page' | 'document'>('document');
   const [scanAllPages, setScanAllPages] = useState(false);
   const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
   const [analysisProgress, setAnalysisProgress] = useState('');
@@ -111,7 +114,6 @@ export function AiPanel(props: Props) {
 
   const [commandPlanPreview, setCommandPlanPreview] = useState<TransactionPreview<CommitResult> | null>(null);
   const [commandImpact, setCommandImpact] = useState<CommandImpactPreview | null>(null);
-  const [manualConfirmed, setManualConfirmed] = useState(false);
 
   // A10 表单状态
   const [formItems, setFormItems] = useState<FormSuggestionItem[]>([]);
@@ -131,7 +133,7 @@ export function AiPanel(props: Props) {
     if (!docId) return;
     let active = true;
     void restoreFullDocumentAnalysis(docId).then(saved => {
-      if (!active || !saved || current.current.document?.id !== docId || featureRef.current !== 'text.translate') return;
+      if (!active || !saved || current.current.document?.id !== docId || featureRef.current !== 'document.ask') return;
       setFeature(saved.feature);
       setAskScope('document');
       setScanAllPages(saved.feature === 'document.ask');
@@ -141,25 +143,16 @@ export function AiPanel(props: Props) {
         saved.analysis.document.revision !== current.current.document?.revision
         ? 'Saved document analysis belongs to an older revision; source links are read-only. Generate again to refresh.'
         : saved.status === 'completed' ? 'Restored completed document analysis from this device.'
-          : 'Document analysis is paused. Enable AI and Generate to continue; no request was sent on restore.');
+          : 'Paused. Select Generate to continue.');
     }).catch(() => {
       if (active) setRestoredAnalysisNote('Saved document analysis could not be loaded. Start a new request if needed.');
     });
     return () => { active = false; };
   }, [props.document?.id]);
 
-  const authorize = () => {
-    if (!authorization || !props.document) return;
-    authorization.enable(props.document.sourceIds);
-    setEnabled(true);
-  };
-
-  const revoke = () => {
-    controller.current?.abort();
-    authorization?.revoke();
-    setEnabled(false);
-    resetResults();
-  };
+  useEffect(() => {
+    if (authorization && props.document) authorization.enable(props.document.sourceIds);
+  }, [authorization, props.document?.sourceIds]);
 
   const resetResults = () => {
     setError('');
@@ -170,7 +163,7 @@ export function AiPanel(props: Props) {
     setSelectedEvidenceIds(new Set());
     setCommandPlanPreview(null);
     setCommandImpact(null);
-    setManualConfirmed(false);
+
     setFormItems([]);
     setSelectedFormIds(new Set());
     setRawFormCommands([]);
@@ -179,12 +172,6 @@ export function AiPanel(props: Props) {
     setRestoredAnalysisNote('');
     setRetrievalNote('');
   };
-
-  const needsSourceConsent = Boolean(
-    authorization &&
-      props.document &&
-      authorization.missingSourceIds(props.document.sourceIds).length > 0,
-  );
 
   const activeFeatureConfig = FEATURES.find(f => f.id === feature) ?? FEATURES[0]!;
   const fullDocumentAnalysis = askScope === 'document' && (feature === 'document.summarize' ||
@@ -681,7 +668,7 @@ export function AiPanel(props: Props) {
   };
 
   const handleApplyCommandPlan = async () => {
-    if (!commandPlanPreview || !commandImpact || (commandImpact.requiresManualConfirmation && !manualConfirmed) || applying || props.disabled) return;
+    if (!commandPlanPreview || !commandImpact || applying || props.disabled) return;
     setApplying(true);
     props.onBusyChange?.(true);
     setError('');
@@ -690,8 +677,7 @@ export function AiPanel(props: Props) {
       await props.onCommitted(res);
       setCommandPlanPreview(null);
       setCommandImpact(null);
-      setManualConfirmed(false);
-    } catch (err) {
+          } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply command plan');
     } finally {
       props.onBusyChange?.(false);
@@ -823,54 +809,9 @@ export function AiPanel(props: Props) {
         <small style={{ color: '#888', fontSize: '9px' }}>komopdf.com</small>
       </div>
 
-      {!enabled ? (
-        <div style={{ display: 'grid', gap: '8px' }}>
-          <p style={{ fontSize: '11px', lineHeight: 1.55 }}>
-            To use AI features for this document, necessary text or selected chart images will be sent to the AI service. Normal viewing, editing, and saving remain local on your device; full-document summary and translation send relevant text in batches. You can revoke AI authorization for this document at any time.
-          </p>
-          <button
-            type="button"
-            className="button-primary"
-            disabled={!props.document || props.disabled}
-            onClick={authorize}
-          >
-            Enable AI for this document
-          </button>
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gap: '8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '10px', color: '#445b0a', fontWeight: 600 }}>✓ AI enabled for this document</span>
-            <button
-              type="button"
-              onClick={revoke}
-              style={{ fontSize: '9px', padding: '2px 6px', background: 'transparent', border: '1px solid #c2c1ba' }}
-            >
-              Revoke authorization
-            </button>
-          </div>
-
-          {needsSourceConsent && (
-            <div
-              style={{
-                padding: '6px',
-                background: '#ffe0d8',
-                borderLeft: '3px solid #ff623d',
-                fontSize: '10px',
-                display: 'grid',
-                gap: '4px',
-              }}
-            >
-              <span>Document has new sources. Authorize new sources to include them in AI requests.</span>
-              <button type="button" onClick={authorize} style={{ fontSize: '9px', padding: '2px 6px' }}>
-                Authorize new sources
-              </button>
-            </div>
-          )}
-
-          <label>
-            Capability
-            <select
+      {!props.document ? <p>{t("Open a PDF to ask questions, summarize or translate.")}</p> : (
+        <div style={{ display: 'grid', gap: '12px' }}>
+          <label>{t("Task")}<select
               value={feature}
               onChange={e => {
                 setFeature(e.target.value as AiFeature);
@@ -880,20 +821,16 @@ export function AiPanel(props: Props) {
             >
               {FEATURES.map(f => (
                 <option key={f.id} value={f.id}>
-                  {f.label} {!f.nativeReady ? '(Native unready)' : ''}
+                  {t(f.label)}
                 </option>
               ))}
             </select>
           </label>
 
-          <p style={{ fontSize: '10px', color: '#666', margin: 0 }}>
-            {activeFeatureConfig.description}
-          </p>
+
 
           {(feature === 'text.translate' || feature === 'document.translate') && (
-            <label>
-              Target language
-              <input
+            <label>{t("Target language")}<input
                 value={language}
                 onChange={e => setLanguage(e.target.value)}
                 placeholder="e.g. English, French, Spanish, Chinese"
@@ -903,16 +840,14 @@ export function AiPanel(props: Props) {
           )}
 
           {feature === 'text.rewrite' && (
-            <label>
-              Tone & Style
-              <select
+            <label>{t("Tone & Style")}<select
                 value={tone}
                 onChange={e => setTone(e.target.value)}
                 disabled={props.disabled || busy}
               >
                 {TONE_OPTIONS.map(opt => (
                   <option key={opt.id} value={opt.id}>
-                    {opt.label}
+                    {t(opt.label)}
                   </option>
                 ))}
               </select>
@@ -920,9 +855,7 @@ export function AiPanel(props: Props) {
           )}
 
           {feature === 'text.fit' && (
-            <label>
-              Target maximum characters (optional, layout verified locally)
-              <input
+            <label>{t("Maximum characters (optional)")}<input
                 type="number"
                 value={targetCharLength}
                 onChange={e => setTargetCharLength(e.target.value ? parseInt(e.target.value, 10) : '')}
@@ -933,28 +866,25 @@ export function AiPanel(props: Props) {
           )}
 
           {(feature === 'document.ask' || feature === 'document.summarize') && (
-            <label>
-              Context scope
-              <select
+            <label>{t("Look in")}<select
                 value={askScope}
                 onChange={e => setAskScope(e.target.value as any)}
                 disabled={props.disabled || busy}
               >
-                <option value="selection">Selected text</option>
-                <option value="page">Extractable text on current page</option>
-                <option value="document">{feature === 'document.summarize' ? 'Entire document (batched)' : 'Search all pages for relevant passages'}</option>
+                <option value="selection">{t("Selected text")}</option>
+                <option value="page">{t("Current page")}</option>
+                <option value="document">{feature === 'document.summarize' ? t("Entire document") : t("Entire document")}</option>
               </select>
             </label>
           )}
           {askScope === 'document' && feature === 'document.ask' && <label>
             <input type="checkbox" checked={scanAllPages} disabled={props.disabled || busy}
-              onChange={event => setScanAllPages(event.target.checked)} /> Scan every page for an exhaustive answer
-          </label>}
+              onChange={event => setScanAllPages(event.target.checked)} /> {t("Scan every page for an exhaustive answer")}</label>}
 
           {['text.translate', 'text.proofread', 'text.rewrite', 'text.fit', 'blocks.organize', 'commands.plan'].includes(feature) && (
             <label>
-              {feature === 'blocks.organize' ? 'Font for merged paragraph (optional)'
-                : feature === 'commands.plan' ? 'Font for new page text' : 'Replacement font'}
+              {feature === 'blocks.organize' ? t("Font for merged paragraph (optional)")
+                : feature === 'commands.plan' ? t("Font for new page text") : t("Replacement font")}
               <select
                 value={feature === 'commands.plan' ? fontId || fonts[0]?.id || '' : fontId}
                 onChange={e => {
@@ -984,7 +914,7 @@ export function AiPanel(props: Props) {
                 }}
                 disabled={props.disabled || busy || applying}
               >
-                <option value="">{feature === 'commands.plan' ? 'Select a font for inserted text' : 'Preserve original font'}</option>
+                <option value="">{feature === 'commands.plan' ? t("Select a font for inserted text") : t("Preserve original font")}</option>
                 {fonts.map(font => (
                   <option key={font.id} value={font.id}>
                     {font.family} · {font.style}
@@ -993,20 +923,18 @@ export function AiPanel(props: Props) {
               </select>
             </label>
           )}
-          {fontError ? <p role="alert">{fontError}; preserving original font.</p> : null}
+          {fontError ? <p role="alert">{t(fontError)}{t("; preserving original font.")}</p> : null}
 
           {feature !== 'document.translate' && (
-            <label>
-              Instructions / Prompts
-              <textarea
+            <label>{t("Your request")}<textarea
                 value={instruction}
                 onChange={e => setInstruction(e.target.value)}
-                placeholder={defaultInstructionFor(feature, tone)}
+                placeholder={t(defaultInstructionFor(feature, tone))}
                 disabled={props.disabled || busy}
               />
             </label>
           )}
-          {feature === 'commands.plan' && <p>For page numbers, headers, footers, or watermarks, specify the target pages and exact text here. Use {'{page}'} for a page number template.</p>}
+          {feature === 'commands.plan' && <p>{t("For page numbers, headers, footers, or watermarks, specify the target pages and exact text here. Use")} {'{page}'} {t("for a page number template.")}</p>}
 
           {feature === 'document.translate' && props.document && props.page && authorization && (
             <AiPanelBatch
@@ -1028,14 +956,14 @@ export function AiPanel(props: Props) {
                 type="button"
                 className="button-primary"
                 onClick={() => void run()}
-                disabled={props.disabled || busy || applying || needsSourceConsent || !props.document || !props.page}
+                disabled={props.disabled || busy || applying || !props.document || !props.page}
                 style={{ flex: 1 }}
               >
-                {busy ? 'Processing AI…' : 'Generate'}
+                {busy ? t("Processing AI…") : t("Generate")}
               </button>
               {busy && (
                 <button type="button" onClick={() => controller.current?.abort()}>
-                  {fullDocumentAnalysis ? 'Pause' : 'Cancel'}
+                  {fullDocumentAnalysis ? t("Pause") : t("Cancel")}
                 </button>
               )}
             </div>
@@ -1043,41 +971,40 @@ export function AiPanel(props: Props) {
         </div>
       )}
 
-      {error && <p role="alert" style={{ color: '#ff623d' }}>{error}</p>}
-      {restoredAnalysisNote && <p role="status">{restoredAnalysisNote}</p>}
-      {analysisProgress && <p role="status">{analysisProgress}</p>}
-      {retrievalNote && <p role="status">{retrievalNote}</p>}
+      {error && <p role="alert" style={{ color: '#ff623d' }}>{t(error)}</p>}
+      {restoredAnalysisNote && <p role="status">{t(restoredAnalysisNote)}</p>}
+      {analysisProgress && <p role="status">{t(analysisProgress)}</p>}
+      {retrievalNote && <p role="status">{t(retrievalNote)}</p>}
       {analysis && props.document?.revision !== analysis.document.revision &&
-        <p role="status">This analysis belongs to an older PDF revision. Source links are read-only; Generate to refresh.</p>}
-      {analysis && <p role="status">Scanned {analysis.pagesScanned} pages; {analysis.pagesWithText} contained extractable text ({analysis.passagesScanned} passages). Scanned pages without text require desktop OCR. Section findings and source locations follow.</p>}
+        <p role="status">{t("This analysis belongs to an older PDF revision. Source links are read-only; Generate to refresh.")}</p>}
+      {analysis && <p role="status">{t("Scanned")} {analysis.pagesScanned} {t("pages;")} {analysis.pagesWithText} {t("contained extractable text (")}{analysis.passagesScanned} {t("passages). Scanned pages without text require desktop OCR. Section findings and source locations follow.")}</p>}
 
       {answerText && (
         <div style={{ marginTop: '8px', padding: '10px', background: '#fffdf6', border: '1px solid #c2c1ba', borderRadius: '2px' }}>
-          <strong style={{ fontSize: '11px' }}>AI Response</strong>
+          <strong style={{ fontSize: '11px' }}>{t("AI Response")}</strong>
           <p style={{ whiteSpace: 'pre-wrap', fontSize: '11px', lineHeight: 1.6, margin: '6px 0 0' }}>{answerText}</p>
         </div>
       )}
 
       {analysis && <div style={{ display: 'grid', gap: '8px', marginTop: '8px' }}>
         {analysis.sections.map((section, index) => <details key={index}>
-          <summary>Section {index + 1} · {section.citations.length} source citations</summary>
+          <summary>{t("Section")} {index + 1} · {section.citations.length} {t("source citations")}</summary>
           <p style={{ whiteSpace: 'pre-wrap' }}>{section.text}</p>
           {section.citations.map((citation, citationIndex) => <button key={citationIndex} type="button"
             disabled={!props.onLocate || props.document?.id !== analysis.document.id || props.document?.revision !== analysis.document.revision}
-            onClick={() => props.onLocate?.(citation.pageId, citation.blockId)}>
-            Page {citation.pageNumber}{citation.quote ? ` · ${citation.quote}` : ''}
+            onClick={() => props.onLocate?.(citation.pageId, citation.blockId)}>{t("Page")} {citation.pageNumber}{citation.quote ? ` · ${citation.quote}` : ''}
           </button>)}
-          {!section.citations.length && <p>No PDF citation was verified for this section.</p>}
+          {!section.citations.length && <p>{t("No PDF citation was verified for this section.")}</p>}
         </details>)}
       </div>}
 
       {result?.kind === 'answer' && snapshot && props.document && result.citations.length > 0 && (
         <div style={{ marginTop: '6px', display: 'grid', gap: '4px' }}>
-          <strong style={{ fontSize: '10px', color: '#666' }}>Sources & Citations (click to locate)</strong>
+          <strong style={{ fontSize: '10px', color: '#666' }}>{t("Sources & Citations (click to locate)")}</strong>
           {result.citations.map((citation, idx) => {
             const resolved = resolveCitation(snapshot, citation, props.document!);
             if (resolved.status !== 'resolved') {
-              return <p key={idx} style={{ fontSize: '10px', color: '#888' }}>Citation could not be located</p>;
+              return <p key={idx} style={{ fontSize: '10px', color: '#888' }}>{t("Citation could not be located")}</p>;
             }
             return (
               <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px' }}>
@@ -1086,8 +1013,7 @@ export function AiPanel(props: Props) {
                   disabled={!resolved.currentLocation || !props.onLocate}
                   onClick={() => props.onLocate?.(resolved.frozenLocation.pageId, resolved.frozenLocation.blockId)}
                   style={{ fontSize: '9px', padding: '2px 6px' }}
-                >
-                  Page {resolved.frozenLocation.pageNumber}
+                >{t("Page")} {resolved.frozenLocation.pageNumber}
                   {resolved.currentLocation ? '' : ' (older revision)'}
                 </button>
                 {citation.quote && <span style={{ color: '#555' }}>"{citation.quote}"</span>}
@@ -1099,7 +1025,7 @@ export function AiPanel(props: Props) {
 
       {result?.kind === 'clarification' && (
         <div style={{ padding: '8px', background: '#f5f4ef', border: '1px solid #c2c1ba', borderRadius: '2px' }}>
-          <strong>Clarification required:</strong>
+          <strong>{t("Clarification required:")}</strong>
           <p>{result.question}</p>
           {result.choices && result.choices.length > 0 && (
             <ul style={{ margin: '4px 0 0', paddingLeft: '18px', fontSize: '10px' }}>
@@ -1168,58 +1094,28 @@ export function AiPanel(props: Props) {
       {/* Command Plan (A05 / A11) */}
       {feature !== 'form.suggest' && result?.kind === 'commandPlan' && (
         <div style={{ marginTop: '8px', display: 'grid', gap: '6px', border: '1px solid #c2c1ba', padding: '10px', background: '#fffdf6' }}>
-          <strong>Proposed Command Plan</strong>
+          <strong>{t('Review changes')}</strong>
           <p style={{ fontSize: '11px', margin: 0 }}>{result.explanation}</p>
-          {stale && <p role="alert" style={{ color: '#963e1b', margin: 0 }}>Document revision changed. Regenerate this command plan before applying.</p>}
-          <div style={{ display: 'grid', gap: '3px', marginTop: '4px' }}>
-            <strong style={{ fontSize: '10px', color: '#666' }}>Commands to execute ({result.commands.length})</strong>
-            {result.commands.map((cmd, i) => (
-              <div key={i} style={{ fontSize: '10px', padding: '3px 6px', background: '#f0eee7', borderRadius: '2px' }}>
-                {i + 1}. <strong>{cmd.type}</strong>
-                {'pageIds' in cmd && <span> · Pages: {cmd.pageIds.join(', ')}</span>}
-                {'objectIds' in cmd && <span> · Objects: {cmd.objectIds.length}</span>}
-                {cmd.type === 'text.reflow' && <span> · Text blocks in order: {cmd.blockIds.join(', ')}</span>}
-              </div>
-            ))}
-          </div>
-          {commandImpact && <div style={{ display: 'grid', gap: '6px', fontSize: '10px' }}>
-            <strong>Before → after · structural preview</strong>
-            <p style={{ margin: 0 }}>Affected pages (engine-validated): {commandImpact.affectedPages.length
-              ? commandImpact.affectedPages.map(id => {
-                const before = commandImpact.beforeOrder.indexOf(id);
-                const after = commandImpact.afterOrder.indexOf(id);
-                return `Page ${before < 0 ? 'new' : before + 1}${after < 0 ? ' → removed' : before !== after ? ` → ${after + 1}` : ''} (${id})`;
-              }).join('; ') : 'No changed pages reported'}</p>
-            {!commandImpact.beforeOrder.every((id, index) => commandImpact.afterOrder[index] === id) &&
-              <details>
-                <summary>Page order before → after</summary>
-                <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>Before: {commandImpact.beforeOrder.join(' → ')}</p>
-                <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>After: {commandImpact.afterOrder.join(' → ')}</p>
-              </details>}
-            {commandImpact.commands.map((command, index) => <div key={index} style={{ borderTop: '1px solid #c2c1ba', paddingTop: '6px' }}>
-              <strong>{index + 1}. {command.type}</strong>
-              {command.changes.map((change, changeIndex) => <div key={changeIndex} style={{ padding: '4px 0', overflowWrap: 'anywhere' }}>
-                <span>{change.subject}</span>
-                {change.manual && <strong style={{ color: '#963e1b' }}> · Structural change needs manual confirmation</strong>}
-                <div style={{ whiteSpace: 'pre-wrap' }}>Before: {change.before}</div>
-                <div style={{ whiteSpace: 'pre-wrap' }}>After / requested: {change.after}</div>
-              </div>)}
-            </div>)}
-            <p style={{ margin: 0, color: '#666' }}>This compares document data and requested commands, not rendered PDF pages. Final layout and appearance are not verified here.</p>
-            {commandImpact.requiresManualConfirmation && <label style={{ display: 'flex', gap: '5px', alignItems: 'start' }}>
-              <input type="checkbox" checked={manualConfirmed} onChange={event => setManualConfirmed(event.target.checked)} disabled={applying || stale || props.disabled} />
-              I reviewed the structural changes that cannot be previewed precisely.
-            </label>}
-          </div>}
+          {stale && <p role="alert" style={{ color: '#963e1b', margin: 0 }}>{t("Document revision changed. Regenerate this command plan before applying.")}</p>}
+          <ol className="ai-change-list">
+            {result.commands.map((command, index) => <li key={index}>
+              <strong>{t(commandLabel(command.type))}</strong>
+              {'pageIds' in command && <span>{t('Pages')}: {command.pageIds.map(id => {
+                const number = props.document?.pageOrder.indexOf(id) ?? -1;
+                return number < 0 ? t('New page') : number + 1;
+              }).join(', ')}</span>}
+              {'text' in command && typeof command.text === 'string' && <p>{command.text}</p>}
+            </li>)}
+          </ol>
 
           <button
             type="button"
             className="button-primary"
             onClick={() => void handleApplyCommandPlan()}
-            disabled={!commandPlanPreview || !commandImpact || (commandImpact.requiresManualConfirmation && !manualConfirmed) || applying || stale || props.disabled}
+            disabled={!commandPlanPreview || !commandImpact || applying || stale || props.disabled}
             style={{ marginTop: '6px' }}
           >
-            {applying ? 'Applying commands…' : 'Apply Command Plan'}
+            {applying ? t("Applying commands…") : t("Apply changes")}
           </button>
         </div>
       )}

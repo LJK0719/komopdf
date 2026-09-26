@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CommandRegistry, validateTransaction, type CommandContext } from '@pdf-editor/commands';
 import {
@@ -43,6 +44,7 @@ export function ParagraphPanel({
   onDraftChange,
   onCommitted,
 }: ParagraphPanelProps) {
+  useI18n();
   const [text, setText] = useState('');
   const [fontId, setFontId] = useState('');
   const [fontSize, setFontSize] = useState('18');
@@ -372,8 +374,8 @@ export function ParagraphPanel({
   if (!document || !page) {
     return (
       <section className="text-edit-panel" aria-label="Paragraph reflow and insertion">
-        <span className="eyebrow">Paragraph Reflow & Insert</span>
-        <p>Open a document to insert or reflow paragraphs.</p>
+        <span className="eyebrow">{t("Paragraph")}</span>
+        <p>{t("Open a document to insert or reflow paragraphs.")}</p>
       </section>
     );
   }
@@ -381,46 +383,38 @@ export function ParagraphPanel({
   if (!supportsParagraph) return null;
 
   return (
-    <section className="text-edit-panel" aria-label="Paragraph reflow and insertion">
-      <span className="eyebrow">Paragraph Reflow & Insert</span>
-      <p>
-        Reflow multiple selected text lines into a native ICU paragraph or insert a new paragraph.
-      </p>
+    <section className="text-edit-panel" aria-label={t("Paragraph")}><details><summary>{t("Paragraph")}</summary>
+      <span className="eyebrow">{t("Paragraph")}</span>
+      <p>{t("Combine selected lines or add a new paragraph.")}</p>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
         <span style={{ fontSize: '11px', color: '#646761' }}>
           {selectedTextObjects.length > 0
             ? `${selectedTextObjects.length} text object${selectedTextObjects.length === 1 ? '' : 's'} selected`
-            : 'No text objects selected'}
+            : t("No text objects selected")}
         </span>
         <button
           type="button"
           disabled={locked || selectedTextObjects.length === 0}
           onClick={handleUseSelectedText}
           style={{ minHeight: '28px', padding: '4px 8px', fontSize: '10px' }}
-        >
-          Use selected text
-        </button>
+        >{t("Use selected text")}</button>
       </div>
 
-      <label>
-        Paragraph text
-        <textarea
+      <label>{t("Paragraph text")}<textarea
           value={text}
           onChange={e => {
             setText(e.target.value);
             clearPreview();
           }}
           disabled={locked}
-          placeholder="Enter paragraph text or use selected text above…"
+          placeholder={t("Enter paragraph text or use selected text above…")}
           rows={4}
         />
       </label>
 
       <div className="document-tools-grid">
-        <label>
-          Box X (pt)
-          <input
+        <label>{t("Box X (pt)")}<input
             type="number"
             step="0.5"
             value={x}
@@ -431,9 +425,7 @@ export function ParagraphPanel({
             disabled={locked}
           />
         </label>
-        <label>
-          Box Y (pt)
-          <input
+        <label>{t("Box Y (pt)")}<input
             type="number"
             step="0.5"
             value={y}
@@ -447,9 +439,7 @@ export function ParagraphPanel({
       </div>
 
       <div className="document-tools-grid">
-        <label>
-          Box Width (pt)
-          <input
+        <label>{t("Box Width (pt)")}<input
             type="number"
             min="1"
             step="0.5"
@@ -461,9 +451,7 @@ export function ParagraphPanel({
             disabled={locked}
           />
         </label>
-        <label>
-          Box Height (pt)
-          <input
+        <label>{t("Box Height (pt)")}<input
             type="number"
             min="1"
             step="0.5"
@@ -477,9 +465,7 @@ export function ParagraphPanel({
         </label>
       </div>
 
-      <label>
-        Font
-        <select
+      <label>{t("Font")}<select
           value={chosenFontId}
           onChange={e => {
             setFontId(e.target.value);
@@ -497,9 +483,7 @@ export function ParagraphPanel({
 
       {chosenFont && (
         <div className="document-tools-grid">
-          <label>
-            Font weight
-            <select
+          <label>{t("Font weight")}<select
               value={getFontWeight(chosenFont)}
               onChange={e => {
                 const targetWeight = Number(e.target.value);
@@ -524,9 +508,7 @@ export function ParagraphPanel({
               ))}
             </select>
           </label>
-          <label>
-            Font posture
-            <select
+          <label>{t("Font posture")}<select
               value={getFontItalic(chosenFont) ? 'italic' : 'normal'}
               onChange={e => {
                 const targetItalic = e.target.value === 'italic';
@@ -544,9 +526,8 @@ export function ParagraphPanel({
               }}
               disabled={locked}
             >
-              <option value="normal">Regular (Upright)</option>
-              <option value="italic">
-                Italic{!canItalic ? ' (Unavailable)' : ''}
+              <option value="normal">{t("Regular (Upright)")}</option>
+              <option value="italic">{t("Italic")}{!canItalic ? ' (Unavailable)' : ''}
               </option>
             </select>
           </label>
@@ -554,9 +535,7 @@ export function ParagraphPanel({
       )}
 
       <div className="document-tools-grid">
-        <label>
-          Font size (pt)
-          <input
+        <label>{t("Font size (pt)")}<input
             type="number"
             min="1"
             max="1000"
@@ -569,9 +548,7 @@ export function ParagraphPanel({
             disabled={locked}
           />
         </label>
-        <label>
-          Line height
-          <input
+        <label>{t("Line height")}<input
             type="number"
             min="0.5"
             max="10"
@@ -587,9 +564,7 @@ export function ParagraphPanel({
       </div>
 
       <div className="document-tools-grid">
-        <label>
-          Alignment
-          <select
+        <label>{t("Alignment")}<select
             value={alignment}
             onChange={e => {
               setAlignment(e.target.value as 'left' | 'center' | 'right' | 'justify');
@@ -597,15 +572,13 @@ export function ParagraphPanel({
             }}
             disabled={locked}
           >
-            <option value="left">Left</option>
-            <option value="center">Center</option>
-            <option value="right">Right</option>
-            <option value="justify">Justify</option>
+            <option value="left">{t("Left")}</option>
+            <option value="center">{t("Center")}</option>
+            <option value="right">{t("Right")}</option>
+            <option value="justify">{t("Justify")}</option>
           </select>
         </label>
-        <label>
-          Color
-          <input
+        <label>{t("Color")}<input
             value={color}
             onChange={e => {
               setColor(e.target.value);
@@ -617,9 +590,7 @@ export function ParagraphPanel({
         </label>
       </div>
 
-      <label>
-        Character spacing (pt)
-        <input
+      <label>{t("Character spacing (pt)")}<input
           type="number"
           step="0.1"
           value={characterSpacing}
@@ -632,7 +603,7 @@ export function ParagraphPanel({
         />
       </label>
       <label><input type="checkbox" checked={underline} disabled={locked}
-        onChange={event => { setUnderline(event.target.checked); clearPreview(); }} />Underline paragraph</label>
+        onChange={event => { setUnderline(event.target.checked); clearPreview(); }} />{t("Underline paragraph")}</label>
 
       <div className="text-edit-actions">
         <button
@@ -640,24 +611,21 @@ export function ParagraphPanel({
           onClick={() => void runPreview()}
           disabled={locked || previewing || !text.trim() || !chosenFontId || !validBounds}
         >
-          {previewing ? 'Previewing…' : 'Preview paragraph'}
+          {previewing ? t("Previewing…") : t("Preview paragraph")}
         </button>
         <button
           type="button"
           disabled={locked || (!draftDirty && !preview)}
           onClick={handleDiscard}
-        >
-          Discard draft
-        </button>
+        >{t("Discard draft")}</button>
       </div>
 
       {preview ? (
         <div className={preview.overflow ? 'layout-result layout-result-overflow' : 'layout-result'}>
-          <strong>{preview.overflow ? 'Overflow detected (does not fit bounds)' : 'Fits paragraph bounds'}</strong>
-          <span>
-            Lines: {preview.lines.length} · Box: {formatNumber(preview.bounds.width)} × {formatNumber(preview.bounds.height)} pt
+          <strong>{preview.overflow ? t("Overflow detected (does not fit bounds)") : t("Fits paragraph bounds")}</strong>
+          <span>{t("Lines:")} {preview.lines.length} {t("· Box:")} {formatNumber(preview.bounds.width)} × {formatNumber(preview.bounds.height)} pt
           </span>
-          {preview.replacementFontId ? <span>Core font: {preview.replacementFontId}</span> : null}
+          {preview.replacementFontId ? <span>{t("Core font:")} {preview.replacementFontId}</span> : null}
         </div>
       ) : null}
 
@@ -670,13 +638,13 @@ export function ParagraphPanel({
             selectedTextObjects.length === 0
               ? 'Select one or more text objects to reflow'
               : !isPreviewCurrent
-              ? 'Preview paragraph first'
+              ? t("Preview paragraph first")
               : preview?.overflow
-              ? 'Fix overflow before reflowing'
-              : 'Reflow selected text objects into one paragraph'
+              ? t("Fix overflow before reflowing")
+              : t("Reflow selected text objects into one paragraph")
           }
         >
-          {busy ? 'Reflowing…' : 'Reflow selected text'}
+          {busy ? t("Reflowing…") : t("Reflow selected text")}
         </button>
         <button
           type="button"
@@ -684,23 +652,21 @@ export function ParagraphPanel({
           disabled={!canInsert}
           title={
             !isPreviewCurrent
-              ? 'Preview paragraph first'
+              ? t("Preview paragraph first")
               : preview?.overflow
-              ? 'Fix overflow before inserting'
-              : 'Insert as a new paragraph'
+              ? t("Fix overflow before inserting")
+              : t("Insert as a new paragraph")
           }
         >
-          {busy ? 'Inserting…' : 'Insert paragraph'}
+          {busy ? t("Inserting…") : t("Insert paragraph")}
         </button>
       </div>
 
-      <p style={{ fontSize: '9px', color: '#777a74', margin: '4px 0 0' }}>
-        Reflow operates only on adjacent top-level text blocks in content order. Cross-page or arbitrary non-adjacent layout detection is not supported.
-      </p>
 
-      {error ? <p role="alert">{error}</p> : null}
-      {fontError ? <p role="alert">{fontError}</p> : null}
-    </section>
+
+      {error ? <p role="alert">{t(error)}</p> : null}
+      {fontError ? <p role="alert">{t(fontError)}</p> : null}
+    </details></section>
   );
 }
 

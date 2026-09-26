@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
@@ -14,6 +15,7 @@ import {
 import { useFontResources } from './font-resources.js';
 
 type Props = {
+  mode?: 'comment' | 'forms';
   document: DocumentInfo;
   page: PageModel;
   selectedIds: string[];
@@ -35,7 +37,8 @@ type FieldPropertiesDraft = {
 
 const DEFAULT_FORM_FONT_ID = 'noto-sans-cjk-sc-regular';
 
-export function DocumentToolsPanel({ document, page, selectedIds, engine, disabled, onBusyChange, onCommitted }: Props) {
+export function DocumentToolsPanel({ mode = 'comment', document, page, selectedIds, engine, disabled, onBusyChange, onCommitted }: Props) {
+  useI18n();
   const [boundsDraft, setBoundsDraft] = useState<BoundsDraft>({ x: '36', y: '36', width: '180', height: '48' });
   const [annotationText, setAnnotationText] = useState('');
   const [annotationColor, setAnnotationColor] = useState('#fff176');
@@ -298,22 +301,22 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
   }
 
   return <section className="text-edit-panel document-tools-panel" aria-label="Annotations and forms">
-    <span className="eyebrow">Document Tools</span>
-    <p>Coordinates and dimensions use PDF points on the current page.</p>
+    <span className="eyebrow">{t("Document Tools")}</span>
+
     <div className="document-tools-grid">
       {boundsInput('X', 'x', boundsDraft, setBoundsDraft, locked)}
       {boundsInput('Y', 'y', boundsDraft, setBoundsDraft, locked)}
-      {boundsInput('Width', 'width', boundsDraft, setBoundsDraft, locked)}
-      {boundsInput('Height', 'height', boundsDraft, setBoundsDraft, locked)}
+      {boundsInput(t("Width"), 'width', boundsDraft, setBoundsDraft, locked)}
+      {boundsInput(t("Height"), 'height', boundsDraft, setBoundsDraft, locked)}
     </div>
-    <button type="button" disabled={locked || !selectedBounds} onClick={useSelectionBounds}>Use selection bounds</button>
+    <button type="button" disabled={locked || !selectedBounds} onClick={useSelectionBounds}>{t("Use selection bounds")}</button>
 
-    <details open>
-      <summary>Annotations on this page</summary>
-      {!supportsAnnotations ? <p role="status">The current PDF core does not advertise annotation editing.</p> : <>
-        {!engine.describeAnnotations ? <p role="alert">Annotation inspection is unavailable in this adapter.</p> : null}
-        {loading ? <p role="status">Loading annotations…</p> : null}
-        {!loading && canReadAnnotations && currentAnnotations.length === 0 ? <p>No annotations on this page.</p> : null}
+    <details open hidden={mode !== 'comment'}>
+      <summary>{t("Annotations on this page")}</summary>
+      {!supportsAnnotations ? <p role="status">{t("The current PDF core does not advertise annotation editing.")}</p> : <>
+        {!engine.describeAnnotations ? <p role="alert">{t("Annotation inspection is unavailable in this adapter.")}</p> : null}
+        {loading ? <p role="status">{t("Loading annotations…")}</p> : null}
+        {!loading && canReadAnnotations && currentAnnotations.length === 0 ? <p>{t("No annotations on this page.")}</p> : null}
         {currentAnnotations.length > 0 ? <ul className="document-tools-list">
           {currentAnnotations.map(annotation => <li key={annotation.id}>
             <strong>{annotation.subtype}</strong>
@@ -323,49 +326,47 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
               <span className="document-tools-readonly">{annotation.subtype === 'link' ? 'Link (read-only)' : 'Unsupported (read-only)'}</span>
             ) : (
               <button type="button" disabled={locked} onClick={() => selectAnnotation(annotation)}
-                aria-label={`Edit ${annotation.subtype} annotation`}>Select for editing</button>
+                aria-label={`Edit ${annotation.subtype} annotation`}>{t("Select for editing")}</button>
             )}
             {canDeleteAnnotation && <button type="button" disabled={locked || !document.permissions.annotate}
               aria-label={`Delete ${annotation.subtype} annotation`} onClick={() => {
-                if (window.confirm('Delete this annotation? You can undo this change.'))
+                if (window.confirm(t("Delete this annotation? You can undo this change.")))
                   void run(() => deleteAnnotation(annotation));
-              }}>Delete</button>}
+              }}>{t("Delete")}</button>}
           </li>)}
         </ul> : null}
-        <label>Annotation text<textarea rows={2} value={annotationText} disabled={locked || !supportsAnnotations}
+        <label>{t("Annotation text")}<textarea rows={2} value={annotationText} disabled={locked || !supportsAnnotations}
           onChange={event => setAnnotationText(event.target.value)} /></label>
         <div className="document-tools-grid">
-          <label>Color<input type="color" value={annotationColor} disabled={locked || !supportsAnnotations}
+          <label>{t("Color")}<input type="color" value={annotationColor} disabled={locked || !supportsAnnotations}
             onChange={event => setAnnotationColor(event.target.value)} /></label>
-          <label>Opacity<input type="number" min="0" max="1" step="0.05" value={opacity} disabled={locked || !supportsAnnotations}
+          <label>{t("Opacity")}<input type="number" min="0" max="1" step="0.05" value={opacity} disabled={locked || !supportsAnnotations}
             onChange={event => setOpacity(event.target.value)} /></label>
-          <label>Stroke width<input type="number" min="0.1" step="0.1" value={strokeWidth} disabled={locked || !supportsAnnotations}
+          <label>{t("Stroke width")}<input type="number" min="0.1" step="0.1" value={strokeWidth} disabled={locked || !supportsAnnotations}
             onChange={event => setStrokeWidth(event.target.value)} /></label>
         </div>
         {canUpdateAnnotation && selectedAnnotation && selectedAnnotation.subtype !== 'other' && <button type="button"
-          disabled={locked || !document.permissions.annotate} onClick={() => void run(() => updateAnnotation(selectedAnnotation))}>
-          Update selected annotation
-        </button>}
+          disabled={locked || !document.permissions.annotate} onClick={() => void run(() => updateAnnotation(selectedAnnotation))}>{t("Update selected annotation")}</button>}
         <div className="text-edit-actions">
-          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('text'))}>Add note</button>
-          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('highlight'))}>Add highlight</button>
-          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('rectangle'))}>Add rectangle</button>
+          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('text'))}>{t("Add note")}</button>
+          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('highlight'))}>{t("Add highlight")}</button>
+          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('rectangle'))}>{t("Add rectangle")}</button>
         </div>
-        <label>Ink points (x,y; x,y; …)<textarea rows={2} value={inkPoints}
+        <label>{t("Ink points (x,y; x,y; …)")}<textarea rows={2} value={inkPoints}
           disabled={locked || (!canAddAnnotation && !(canUpdateAnnotation && selectedAnnotation?.subtype === 'ink'))}
           onChange={event => setInkPoints(event.target.value)} /></label>
-        {selectedAnnotation?.subtype === 'ink' && <p>Updating ink replaces its stroke with these points.</p>}
-        <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(addInk)}>Add ink</button>
-        {!document.permissions.annotate ? <p role="alert">This document does not permit annotations.</p> : null}
+        {selectedAnnotation?.subtype === 'ink' && <p>{t("Updating ink replaces its stroke with these points.")}</p>}
+        <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(addInk)}>{t("Add ink")}</button>
+        {!document.permissions.annotate ? <p role="alert">{t("This document does not permit annotations.")}</p> : null}
       </>}
     </details>
 
     <details open>
-      <summary>Forms on this page</summary>
-      {!supportsFormCreate && !supportsFormUpdate && !supportsFormFill ? <p role="status">The current PDF core does not advertise form editing.</p> : <>
-        {!engine.describeForms ? <p role="alert">Form inspection is unavailable in this adapter.</p> : null}
-        {loading ? <p role="status">Loading fields…</p> : null}
-        {!loading && canReadForms && currentFields.length === 0 ? <p>No form fields on this page.</p> : null}
+      <summary>{t("Forms on this page")}</summary>
+      {!supportsFormCreate && !supportsFormUpdate && !supportsFormFill ? <p role="status">{t("The current PDF core does not advertise form editing.")}</p> : <>
+        {!engine.describeForms ? <p role="alert">{t("Form inspection is unavailable in this adapter.")}</p> : null}
+        {loading ? <p role="status">{t("Loading fields…")}</p> : null}
+        {!loading && canReadForms && currentFields.length === 0 ? <p>{t("No form fields on this page.")}</p> : null}
         {currentFields.length > 0 ? <div className="document-fields-list">
           {currentFields.map(field => {
             const draft = fieldDrafts[field.id] ?? field.value;
@@ -392,66 +393,65 @@ export function DocumentToolsPanel({ document, page, selectedIds, engine, disabl
                 setFieldDrafts(current => ({ ...current, [field.id]: value }));
               })}
               <button type="button" disabled={locked || field.readOnly || !supportsFormFill || !document.permissions.fillForms}
-                onClick={() => void run(() => fillField(field))}>Apply value</button>
+                onClick={() => void run(() => fillField(field))}>{t("Apply value")}</button>
               {supportsFormUpdate && <div role="group" aria-label={`Properties for ${field.name}`}>
                 <label><input type="checkbox" checked={properties.readOnly} disabled={locked || !document.permissions.modify}
                   onChange={event => setFieldPropertyDrafts(current => ({ ...current,
-                    [field.id]: { ...properties, readOnly: event.target.checked } }))} />Read-only</label>
+                    [field.id]: { ...properties, readOnly: event.target.checked } }))} />{t("Read-only")}</label>
                 <label><input type="checkbox" checked={properties.required} disabled={locked || !document.permissions.modify}
                   onChange={event => setFieldPropertyDrafts(current => ({ ...current,
-                    [field.id]: { ...properties, required: event.target.checked } }))} />Required</label>
+                    [field.id]: { ...properties, required: event.target.checked } }))} />{t("Required")}</label>
                 {field.choiceKind === 'list' && <label><input type="checkbox" checked={properties.multiple}
                   disabled={locked || !document.permissions.modify}
                   onChange={event => setFieldPropertyDrafts(current => ({ ...current,
-                    [field.id]: { ...properties, multiple: event.target.checked } }))} />Multiple selections</label>}
-                <label>Tooltip<input type="text" value={properties.tooltip} placeholder="No tooltip"
+                    [field.id]: { ...properties, multiple: event.target.checked } }))} />{t("Multiple selections")}</label>}
+                <label>{t("Tooltip")}<input type="text" value={properties.tooltip} placeholder={t("No tooltip")}
                   disabled={locked || !document.permissions.modify}
                   onChange={event => setFieldPropertyDrafts(current => ({ ...current,
                     [field.id]: { ...properties, tooltip: event.target.value } }))} /></label>
-                {field.type === 'text' && <label>Max length<input type="number" min="0" step="1"
-                  value={properties.maxLen} placeholder="No limit"
+                {field.type === 'text' && <label>{t("Max length")}<input type="number" min="0" step="1"
+                  value={properties.maxLen} placeholder={t("No limit")}
                   disabled={locked || !document.permissions.modify}
                   onChange={event => setFieldPropertyDrafts(current => ({ ...current,
                     [field.id]: { ...properties, maxLen: event.target.value } }))} /></label>}
                 <button type="button" disabled={locked || !document.permissions.modify || !propertiesChanged}
-                  onClick={() => void run(() => updateField(field))}>Apply field properties</button>
+                  onClick={() => void run(() => updateField(field))}>{t("Apply field properties")}</button>
               </div>}
             </div>;
           })}
         </div> : null}
-        {supportsFormFill && !document.permissions.fillForms ? <p role="alert">This document does not permit form filling.</p> : null}
+        {supportsFormFill && !document.permissions.fillForms ? <p role="alert">{t("This document does not permit form filling.")}</p> : null}
 
         {supportsFormCreate ? <fieldset disabled={locked || !document.permissions.modify}>
-          <legend>Create a field</legend>
-          <label>Field name<input value={fieldName} onChange={event => setFieldName(event.target.value)} /></label>
-          <label>Field type<select value={fieldType} onChange={event => setFieldType(event.target.value as typeof fieldType)}>
-            <option value="text">Text</option><option value="checkbox">Checkbox</option>
-            <option value="combo">Dropdown choice</option><option value="list">List choice</option>
-            <option value="radio">Radio group</option>
+          <legend>{t("Create a field")}</legend>
+          <label>{t("Field name")}<input value={fieldName} onChange={event => setFieldName(event.target.value)} /></label>
+          <label>{t("Field type")}<select value={fieldType} onChange={event => setFieldType(event.target.value as typeof fieldType)}>
+            <option value="text">{t("Text")}</option><option value="checkbox">{t("Checkbox")}</option>
+            <option value="combo">{t("Dropdown choice")}</option><option value="list">{t("List choice")}</option>
+            <option value="radio">{t("Radio group")}</option>
           </select></label>
-          {(fieldType === 'combo' || fieldType === 'list' || fieldType === 'radio') && <label>Options (one per line)
-            <textarea rows={4} value={fieldOptions} onChange={event => setFieldOptions(event.target.value)} />
+          {(fieldType === 'combo' || fieldType === 'list' || fieldType === 'radio') && <label>{t("Options (one per line)")}<textarea rows={4} value={fieldOptions} onChange={event => setFieldOptions(event.target.value)} />
           </label>}
           {fieldType === 'text' || fieldType === 'combo' || fieldType === 'list' ? <>
-            <label>Field font<select value={chosenFont?.id ?? ''} onChange={event => setFieldFontId(event.target.value)}>
+            <label>{t("Field font")}<select value={chosenFont?.id ?? ''} onChange={event => setFieldFontId(event.target.value)}>
               {fonts.map(font => <option key={font.id} value={font.id}>{font.family} · {font.style}</option>)}
             </select></label>
-            <label>Font size<input type="number" min="0.1" max="1000" step="0.1" value={fieldFontSize}
+            <label>{t("Font size")}<input type="number" min="0.1" max="1000" step="0.1" value={fieldFontSize}
               onChange={event => setFieldFontSize(event.target.value)} /></label>
-            {fontError ? <p role="alert">{fontError}</p> : null}
+            {fontError ? <p role="alert">{t(fontError)}</p> : null}
           </> : null}
-          <label><input type="checkbox" checked={fieldReadOnly} onChange={event => setFieldReadOnly(event.target.checked)} />Read-only field</label>
-          <label><input type="checkbox" checked={fieldRequired} onChange={event => setFieldRequired(event.target.checked)} />Required field</label>
+          <label><input type="checkbox" checked={fieldReadOnly} onChange={event => setFieldReadOnly(event.target.checked)} />{t("Read-only field")}</label>
+          <label><input type="checkbox" checked={fieldRequired} onChange={event => setFieldRequired(event.target.checked)} />{t("Required field")}</label>
           {fieldType === 'list' && <label><input type="checkbox" checked={fieldMultiple}
-            onChange={event => setFieldMultiple(event.target.checked)} />Allow multiple selections</label>}
-          <button type="button" disabled={fieldType !== 'checkbox' && fieldType !== 'radio' && !chosenFont} onClick={() => void run(createField)}>Create field</button>
+            onChange={event => setFieldMultiple(event.target.checked)} />{t("Allow multiple selections")}</label>}
+          <button type="button" disabled={fieldType !== 'checkbox' && fieldType !== 'radio' && !chosenFont} onClick={() => void run(createField)}>{t("Create field")}</button>
         </fieldset> : null}
-        {supportsFormCreate && !document.permissions.modify ? <p role="alert">This document does not permit creating fields.</p> : null}
+        {supportsFormCreate && !document.permissions.modify ? <p role="alert">{t("This document does not permit creating fields.")}</p> : null}
       </>}
     </details>
 
-    {loadError ? <p role="alert">Unable to read document tools: {loadError}</p> : null}
-    {error ? <p role="alert">{error}</p> : null}
+    {loadError ? <p role="alert">{t("Unable to read document tools:")} {loadError}</p> : null}
+    {error ? <p role="alert">{t(error)}</p> : null}
   </section>;
 }
 
@@ -462,33 +462,33 @@ function boundsInput(
   setDraft: (value: BoundsDraft) => void,
   disabled: boolean,
 ) {
-  return <label>{label}<input type="number" step="any" value={draft[key]} disabled={disabled}
+  return <label>{t(label)}<input type="number" step="any" value={draft[key]} disabled={disabled}
     onChange={event => setDraft({ ...draft, [key]: event.target.value })} /></label>;
 }
 
 function fieldEditor(field: FormFieldInfo, value: FormValue, disabled: boolean, onChange: (value: FormValue) => void) {
   if (field.type === 'checkbox') {
     return <label className="document-checkbox"><input type="checkbox" checked={typeof value === 'boolean' ? value : false}
-      disabled={disabled} onChange={event => onChange(event.target.checked)} />Checked</label>;
+      disabled={disabled} onChange={event => onChange(event.target.checked)} />{t("Checked")}</label>;
   }
   if (field.type === 'radio') {
-    return <label>Value<select value={typeof value === 'string' ? value : ''} disabled={disabled}
+    return <label>{t("Value")}<select value={typeof value === 'string' ? value : ''} disabled={disabled}
       onChange={event => onChange(event.target.value)}>
-      {!field.required ? <option value="">None</option> : null}
+      {!field.required ? <option value="">{t("None")}</option> : null}
       {field.options.map(option => <option key={option} value={option}>{option}</option>)}
     </select></label>;
   }
   if (field.type === 'choice') {
     const multiple = field.multiple ?? Array.isArray(value);
-    return <label>Value<select multiple={multiple} value={multiple ? Array.isArray(value) ? value : [] : typeof value === 'string' ? value : ''} disabled={disabled}
+    return <label>{t("Value")}<select multiple={multiple} value={multiple ? Array.isArray(value) ? value : [] : typeof value === 'string' ? value : ''} disabled={disabled}
       onChange={event => onChange(multiple
         ? Array.from(event.currentTarget.selectedOptions, option => option.value)
         : event.currentTarget.value)}>
-      {!multiple && !field.required ? <option value="">None</option> : null}
+      {!multiple && !field.required ? <option value="">{t("None")}</option> : null}
       {field.options.map(option => <option key={option} value={option}>{option}</option>)}
     </select></label>;
   }
-  return <label>Value<input type="text" value={typeof value === 'string' ? value : ''} disabled={disabled}
+  return <label>{t("Value")}<input type="text" value={typeof value === 'string' ? value : ''} disabled={disabled}
     onChange={event => onChange(event.target.value)} /></label>;
 }
 

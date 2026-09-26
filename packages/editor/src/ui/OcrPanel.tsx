@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
@@ -61,6 +62,7 @@ export function OcrPanel({
   onBusyChange,
   onCommitted,
 }: OcrPanelProps) {
+  useI18n();
   // If engine has no OCR capabilities, do not display panel
   if (!engine.recognizeOcr) {
     return null;
@@ -508,27 +510,23 @@ export function OcrPanel({
     (!useImageRegion || !selectedImage || selectedImageOverlapsExistingText);
 
   return (
-    <section className="text-edit-panel" aria-label="OCR and searchable text">
+    <section className="text-edit-panel" aria-label={t("OCR and searchable text")}>
       <details open>
-        <summary>OCR & Searchable Text</summary>
-        <p>Recognize scanned documents and insert an invisible text layer for searching and selection.</p>
+        <summary>{t("OCR & Searchable Text")}</summary>
+        <p>{t("Recognize scanned documents and insert an invisible text layer for searching and selection.")}</p>
 
-        <label>
-          Scope
-          <select
+        <label>{t("Scope")}<select
             value={targetMode}
             disabled={locked}
             onChange={e => setTargetMode(e.target.value as 'current' | 'range')}
           >
-            <option value="current">Current page (Page {document.pageOrder.indexOf(page.id) + 1})</option>
-            <option value="range">Page range (batch)</option>
+            <option value="current">{t("Current page (Page")} {document.pageOrder.indexOf(page.id) + 1})</option>
+            <option value="range">{t("Page range (batch)")}</option>
           </select>
         </label>
 
         {targetMode === 'range' && (
-          <label>
-            Page range (e.g. 1-3, 5)
-            <input
+          <label>{t("Page range (e.g. 1-3, 5)")}<input
               type="text"
               value={pageRangeInput}
               disabled={locked}
@@ -546,16 +544,12 @@ export function OcrPanel({
               disabled={locked || !selectedImage}
               onChange={e => setUseImageRegion(e.target.checked)}
             />
-            <span>
-              Use selected image region
-              {!selectedImage ? ' (select 1 image to enable)' : ` (${Math.round(selectedImage.bounds.width)}×${Math.round(selectedImage.bounds.height)} pt)`}
+            <span>{t("Use selected image region")}{!selectedImage ? ' (select 1 image to enable)' : ` (${Math.round(selectedImage.bounds.width)}×${Math.round(selectedImage.bounds.height)} pt)`}
             </span>
           </label>
         )}
 
-        <label>
-          OCR Font (CJK Supported)
-          <select
+        <label>{t("OCR Font (CJK Supported)")}<select
             value={chosenFontId}
             disabled={locked}
             onChange={e => setFontId(e.target.value)}
@@ -567,28 +561,20 @@ export function OcrPanel({
             ))}
           </select>
         </label>
-        {fontError && <p role="alert">{fontError}</p>}
+        {fontError && <p role="alert">{t(fontError)}</p>}
 
         {targetMode === 'current' && hasExistingText && (
           <div style={{ background: '#fff3cd', padding: '8px', borderLeft: '3px solid #ffa000', fontSize: '10px' }}>
-            <p style={{ margin: 0, fontWeight: 700, color: '#856404' }}>
-              Notice: Page already contains text blocks.
-            </p>
-            <p style={{ margin: '4px 0 0', color: '#856404' }}>
-              Full-page OCR is disabled to prevent duplicate text. Only selecting an image region that does not overlap existing text is allowed.
-            </p>
+            <p style={{ margin: 0, fontWeight: 700, color: '#856404' }}>{t("Notice: Page already contains text blocks.")}</p>
+            <p style={{ margin: '4px 0 0', color: '#856404' }}>{t("Full-page OCR is disabled to prevent duplicate text. Only selecting an image region that does not overlap existing text is allowed.")}</p>
             {useImageRegion && selectedImage && selectedImageOverlapsExistingText && (
-              <p style={{ margin: '4px 0 0', color: 'var(--signal)', fontWeight: 700 }}>
-                Selected image overlaps existing text blocks. Deselect or choose a non-overlapping image.
-              </p>
+              <p style={{ margin: '4px 0 0', color: 'var(--signal)', fontWeight: 700 }}>{t("Selected image overlaps existing text blocks. Deselect or choose a non-overlapping image.")}</p>
             )}
           </div>
         )}
 
         {targetMode === 'range' && (
-          <p style={{ fontSize: '10px', color: '#646761' }}>
-            Run OCR range processes pages sequentially and commits searchable text per page. Pages with existing text blocks are skipped to prevent duplication. Pages already committed are retained if stopped.
-          </p>
+          <p style={{ fontSize: '10px', color: '#646761' }}>{t("Run OCR range processes pages sequentially and commits searchable text per page. Pages with existing text blocks are skipped to prevent duplication. Pages already committed are retained if stopped.")}</p>
         )}
 
         <div className="text-edit-actions">
@@ -598,7 +584,7 @@ export function OcrPanel({
               disabled={locked || isCurrentPageBlocked}
               onClick={() => void runCurrentPageOcr()}
             >
-              {busy ? 'Recognizing…' : 'Run OCR on page'}
+              {busy ? t("Recognizing…") : t("Run OCR on page")}
             </button>
           ) : (
             <button
@@ -606,7 +592,7 @@ export function OcrPanel({
               disabled={locked || !canWriteLayer}
               onClick={() => void runOcrRange()}
             >
-              {busy ? 'Running range…' : 'Run OCR range'}
+              {busy ? t("Running range…") : t("Run OCR range")}
             </button>
           )}
 
@@ -614,15 +600,13 @@ export function OcrPanel({
             type="button"
             disabled={!busy}
             onClick={() => void handleStop()}
-          >
-            Stop
-          </button>
+          >{t("Stop")}</button>
         </div>
 
         {targetMode === 'current' && candidateLines.length > 0 && (
           <div style={{ display: 'grid', gap: '8px', marginTop: '8px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span className="eyebrow">Candidates ({candidateLines.length} lines)</span>
+              <span className="eyebrow">{t("Candidates (")}{candidateLines.length} {t("lines)")}</span>
               <button
                 type="button"
                 className="button button-quiet"
@@ -632,18 +616,15 @@ export function OcrPanel({
                   setCandidateLines([]);
                   setCandidateBase(null);
                 }}
-              >
-                Clear
-              </button>
+              >{t("Clear")}</button>
             </div>
-            <p style={{ fontSize: '10px' }}>Review and edit recognized candidates below before adding to document.</p>
+            <p style={{ fontSize: '10px' }}>{t("Review and edit recognized candidates below before adding to document.")}</p>
 
             <ul className="document-tools-list" style={{ maxHeight: '200px', overflowY: 'auto' }}>
               {candidateLines.map(line => (
                 <li key={line.id} style={{ display: 'grid', gap: '4px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <small style={{ color: line.confidence > 0.8 ? '#4b8b3b' : '#b27300', fontWeight: 700 }}>
-                      Confidence: {Math.round(line.confidence * 100)}%
+                    <small style={{ color: line.confidence > 0.8 ? '#4b8b3b' : '#b27300', fontWeight: 700 }}>{t("Confidence:")} {Math.round(line.confidence * 100)}%
                       {line.transform && ' · Oriented'}
                     </small>
                     <button
@@ -658,7 +639,7 @@ export function OcrPanel({
                         cursor: 'pointer',
                       }}
                       disabled={locked}
-                      title="Remove candidate line"
+                      title={t("Remove candidate line")}
                       onClick={() => removeCandidateLine(line.id)}
                     >
                       ✕
@@ -678,9 +659,7 @@ export function OcrPanel({
               type="button"
               disabled={locked || !canWriteLayer || candidateLines.length === 0}
               onClick={() => void applyCandidates()}
-            >
-              Add searchable text
-            </button>
+            >{t("Add searchable text")}</button>
           </div>
         )}
 
@@ -692,15 +671,13 @@ export function OcrPanel({
 
         {error && (
           <p role="alert" style={{ color: 'var(--signal)', fontWeight: 700 }}>
-            {error}
+            {t(error)}
           </p>
         )}
 
         <div className="boundary-note" style={{ margin: '8px 0 0' }}>
-          <span>Searchable Text Layer</span>
-          <p>
-            Adds an invisible searchable text layer over the document. The original scanned image is preserved. Injected OCR text objects can later be inspected and edited using the Text panel. Recognition results are executed locally and never uploaded.
-          </p>
+          <span>{t("Searchable Text Layer")}</span>
+          <p>{t("Adds an invisible searchable text layer over the document. The original scanned image is preserved. Injected OCR text objects can later be inspected and edited using the Text panel. Recognition results are executed locally and never uploaded.")}</p>
         </div>
       </details>
     </section>

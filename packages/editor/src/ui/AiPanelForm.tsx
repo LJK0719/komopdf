@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import React, { useState } from 'react';
 import type { EditTransaction } from '@pdf-editor/contracts';
 
@@ -39,6 +40,7 @@ export function AiPanelForm({
   stale,
   canFillForms,
 }: AiPanelFormProps) {
+  useI18n();
   const count = items.length;
   const selectedItems = items.filter(i => selectedFieldIds.has(i.fieldId));
   const selectedCount = selectedItems.length;
@@ -47,26 +49,20 @@ export function AiPanelForm({
   return (
     <div className="ai-form-suggestions" style={{ display: 'grid', gap: '8px', marginTop: '8px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px' }}>
-        <strong>
-          Suggested Form Values ({selectedCount}/{count} selected)
-        </strong>
+        <strong>{t("Suggested Form Values (")}{selectedCount}/{count} {t("selected)")}</strong>
         <div style={{ display: 'flex', gap: '6px' }}>
           <button
             type="button"
             onClick={onSelectAll}
             disabled={disabled || applying || count === 0}
             style={{ fontSize: '10px', padding: '3px 7px' }}
-          >
-            Select All
-          </button>
+          >{t("Select All")}</button>
           <button
             type="button"
             onClick={onDeselectAll}
             disabled={disabled || applying || selectedCount === 0}
             style={{ fontSize: '10px', padding: '3px 7px' }}
-          >
-            Clear
-          </button>
+          >{t("Clear")}</button>
         </div>
       </div>
 
@@ -86,9 +82,7 @@ export function AiPanelForm({
             fontSize: '11px',
             color: '#701905',
           }}
-        >
-          Document has changed since suggestions were generated. Please regenerate based on current revision.
-        </div>
+        >{t("Document has changed since suggestions were generated. Please regenerate based on current revision.")}</div>
       )}
 
       {!canFillForms && (
@@ -101,9 +95,7 @@ export function AiPanelForm({
             fontSize: '11px',
             color: '#701905',
           }}
-        >
-          This document does not permit form filling.
-        </div>
+        >{t("This document does not permit form filling.")}</div>
       )}
 
       <div style={{ display: 'grid', gap: '8px', maxHeight: '320px', overflowY: 'auto' }}>
@@ -140,7 +132,7 @@ export function AiPanelForm({
                   />
                   <span>{item.fieldName || item.fieldId}</span>
                   <span style={{ fontSize: '9px', color: '#666', fontWeight: 400 }}>({item.fieldType})</span>
-                  {item.required && <span style={{ fontSize: '9px', color: '#b3260a' }}>*required</span>}
+                  {item.required && <span style={{ fontSize: '9px', color: '#b3260a' }}>{t("*required")}</span>}
                 </label>
 
                 <button
@@ -148,21 +140,19 @@ export function AiPanelForm({
                   onClick={() => void onApplySingle(item.fieldId)}
                   disabled={disabled || stale || applying || !canFillForms}
                   style={{ fontSize: '9px', padding: '2px 6px' }}
-                >
-                  Apply Field
-                </button>
+                >{t("Apply Field")}</button>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '2px' }}>
                 <div style={{ background: '#ebe8e1', padding: '4px 6px', borderRadius: '2px' }}>
-                  <div style={{ fontSize: '9px', color: '#777' }}>Before:</div>
+                  <div style={{ fontSize: '9px', color: '#777' }}>{t("Before:")}</div>
                   <div style={{ wordBreak: 'break-word', color: '#555' }}>
                     {formatDisplayValue(item.currentValue)}
                   </div>
                 </div>
 
                 <div style={{ background: '#e3efaa', padding: '4px 6px', borderRadius: '2px' }}>
-                  <div style={{ fontSize: '9px', color: '#445b0a', fontWeight: 600 }}>Suggested:</div>
+                  <div style={{ fontSize: '9px', color: '#445b0a', fontWeight: 600 }}>{t("Suggested:")}</div>
                   <div style={{ wordBreak: 'break-word', fontWeight: 600, color: '#20231f' }}>
                     {formatDisplayValue(item.suggestedValue)}
                   </div>
@@ -180,7 +170,7 @@ export function AiPanelForm({
         disabled={!canApplyAny}
         style={{ width: '100%', minHeight: '34px', marginTop: '4px' }}
       >
-        {applying ? 'Applying form values to PDF…' : `Apply Selected (${selectedCount} fields)`}
+        {applying ? t("Applying form values to PDF…") : `Apply Selected (${selectedCount} fields)`}
       </button>
     </div>
   );

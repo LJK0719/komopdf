@@ -1,3 +1,4 @@
+import { translate as t, useI18n } from './i18n.js';
 import React from 'react';
 
 export type DiffOp = {
@@ -94,6 +95,7 @@ export type AiPanelDiffProps = {
 };
 
 export function AiPanelDiff({ original, suggested, showStats = true }: AiPanelDiffProps) {
+  useI18n();
   const ops = computeTextDiff(original, suggested);
   const origLen = Array.from(original).length;
   const suggLen = Array.from(suggested).length;
@@ -143,10 +145,9 @@ export function AiPanelDiff({ original, suggested, showStats = true }: AiPanelDi
       </div>
       {showStats && (
         <div className="ai-diff-stats" style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
-          <span>Original {origLen} chars → Suggested {suggLen} chars </span>
+          <span>{t("Original")} {origLen} {t("chars → Suggested")} {suggLen} {t("chars")} </span>
           <span style={{ fontWeight: 600, color: diffChars < 0 ? '#445b0a' : diffChars > 0 ? '#b3260a' : '#666' }}>
-            ({diffChars > 0 ? `+${diffChars}` : diffChars} chars
-            {origLen > 0 ? `, ${((diffChars / origLen) * 100).toFixed(1)}%` : ''})
+            ({diffChars > 0 ? `+${diffChars}` : diffChars} {t("chars")}{origLen > 0 ? `, ${((diffChars / origLen) * 100).toFixed(1)}%` : ''})
           </span>
         </div>
       )}

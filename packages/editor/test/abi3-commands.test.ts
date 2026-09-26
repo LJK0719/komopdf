@@ -41,6 +41,12 @@ function packed(commands: EditCommand[]) {
 }
 
 describe('ABI 3 command encoding', () => {
+  it('encodes paragraph formatting without colliding with range or underline flags', () => {
+    const { record } = packed([{ type: 'text.style', pageId: 'p', blockIds: ['b'], range: [0, 4],
+      style: { characterSpacing: 2, underline: true, lineHeight: 1.6, alignment: 'justify' } }]);
+    expect(record(0).fields[10]).toBe(8 | 16 | 32 | 64 | 128);
+    expect(record(0).values.slice(4, 8)).toEqual([2, 1, 1.6, 3]);
+  });
   it('encodes native alignment axes without changing the ABI3 record', () => {
     const { bytes, record } = packed((['left', 'center', 'right', 'top', 'middle', 'bottom'] as const)
       .map(axis => ({ type: 'objects.align', pageId: 'page-1', objectIds: ['path-a', 'path-b'], axis })));

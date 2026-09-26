@@ -9,7 +9,22 @@ export type EditorFont = {
   weight?: number;
   italic?: boolean;
   editableEmbedding?: boolean;
+  url?: string;
 };
+const browserFaces = new Map<string, Promise<string>>();
+
+export function loadFontPreview(font: EditorFont): Promise<string> {
+  if (!font.url || typeof FontFace === 'undefined') return Promise.resolve(font.family);
+  let loaded = browserFaces.get(font.id);
+  if (!loaded) {
+    const family = `komopdf-${font.id}`;
+    const face = new FontFace(family, `url(${JSON.stringify(font.url)})`, { weight: String(font.weight ?? 400), style: font.italic ? 'italic' : 'normal' });
+    loaded = face.load().then(ready => { document.fonts.add(ready); return family; });
+    browserFaces.set(font.id, loaded);
+  }
+  return loaded;
+}
+
 const importedFonts = new WeakMap<EngineAdapter, EditorFont[]>();
 const listeners = new WeakMap<EngineAdapter, Set<() => void>>();
 
@@ -33,6 +48,14 @@ export type WebFontResource = {
 };
 
 let fontResourcesPromise: Promise<WebFontResource[]> | null = null;
+let fontResourceBase: string | null = null;
+
+/** Desktop serves the same on-disk fonts used by its native engine. */
+export function setFontResourceBaseUrl(base: string): void {
+  fontResourceBase = base.endsWith('/') ? base : base + '/';
+  fontResourcesPromise = null;
+  browserFaces.clear();
+}
 
 export function loadFontResources(): Promise<WebFontResource[]> {
   fontResourcesPromise ??= fetchFontResources();
@@ -66,8 +89,8 @@ export function useFontResources(engine?: EngineAdapter): { fonts: EditorFont[];
 }
 
 async function fetchFontResources(): Promise<WebFontResource[]> {
-  const manifestUrl = new URL('/fonts/font-resources.json', globalThis.location.href);
-  if (manifestUrl.origin !== globalThis.location.origin) throw new Error('Font manifest must use the application origin');
+  const base = fontResourceBase ?? new URL('/fonts/', globalThis.location.href).href;
+  const manifestUrl = new URL('font-resources.json', base);
   const response = await fetch(manifestUrl, { credentials: 'same-origin' });
   if (!response.ok) throw new Error(`Font list unavailable (HTTP ${response.status})`);
   const value: unknown = await response.json();
@@ -79,7 +102,10 @@ async function fetchFontResources(): Promise<WebFontResource[]> {
     if (ids.has(item.id)) throw new Error('Font manifest contains duplicate IDs');
     ids.add(item.id);
   }
-  return value;
+  return fontResourceBase ? value.map(item => ({ ...item,
+    url: new URL(item.url.split('/').at(-1)!, base).href,
+    ...(item.licenseUrl ? { licenseUrl: new URL(item.licenseUrl.split('/').at(-1)!, base).href } : {}),
+  })) : value;
 }
 
 function isFontResource(value: unknown): value is WebFontResource {

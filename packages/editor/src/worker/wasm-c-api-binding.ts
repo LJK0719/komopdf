@@ -886,7 +886,7 @@ class WorkerFontRegistry {
       if (!result) throw readCoreError(this.module, 'Unable to import font');
       const face: unknown = JSON.parse(readCString(this.module, result));
       if (!isFontFaceInfo(face) || !('id' in face) || face.id !== request.id
-          || !('faceIndex' in face) || face.faceIndex !== request.faceIndex || !face.editableEmbedding) {
+          || !('faceIndex' in face) || face.faceIndex !== request.faceIndex) {
         throw new EngineError('CORE_UNAVAILABLE', 'Registered font does not match the selected face');
       }
       this.registrations.set(request.id, Promise.resolve());
@@ -917,8 +917,7 @@ class WorkerFontRegistry {
     if (actualHash !== entry.sha256) {
       throw new EngineError('CORE_UNAVAILABLE', `Font resource ${fontId} failed SHA-256 verification`);
     }
-    // The core checks the selected face's format and OS/2 embedding flags.
-    // Keep the standalone TrueType validation for older ABI 2/3 runtimes.
+    // Keep structural TrueType validation for older runtimes; font rights remain metadata.
     if (!this.module._pde_register_font) assertEmbeddableTrueTypeFont(bytes, fontId);
 
     const allocations = new WasmAllocations(this.module);
@@ -929,7 +928,7 @@ class WorkerFontRegistry {
         const pointer = this.module._pde_register_font(fontIdPointer, bytesPointer, bytes.byteLength, faceIndex);
         if (!pointer) throw readCoreError(this.module, `Unable to register font resource ${fontId}`);
         const face: unknown = JSON.parse(readCString(this.module, pointer));
-        if (!isRecord(face) || face.id !== fontId || face.faceIndex !== faceIndex || face.format !== entry.format || face.editableEmbedding !== true) {
+        if (!isRecord(face) || face.id !== fontId || face.faceIndex !== faceIndex || face.format !== entry.format) {
           throw new EngineError('CORE_UNAVAILABLE', `Registered font ${fontId} does not match its manifest face`);
         }
       } else if (this.abi2.registerTrueTypeFont(fontIdPointer, bytesPointer, bytes.byteLength) === 0) {
@@ -1224,8 +1223,7 @@ function isRegisteredFontInfo(value: unknown): value is RegisteredFontInfo {
   const { id, faceIndex } = value;
   if (!isFontFaceInfo(value)) return false;
   return typeof id === 'string' && id.length > 0
-    && isNonNegativeInteger(faceIndex) && faceIndex === value.index
-    && value.editableEmbedding;
+    && isNonNegativeInteger(faceIndex) && faceIndex === value.index;
 }
 
 function isResourceInfo(value: unknown): value is ResourceInfo {
@@ -1416,14 +1414,6 @@ function assertEmbeddableTrueTypeFont(bytes: ArrayBuffer, fontId: string): void 
     const length = view.getUint32(entry + 12);
     if (length < 10 || offset > bytes.byteLength - length) {
       throw new EngineError('INVALID_REQUEST', `Font resource ${fontId} has an invalid OS/2 table`);
-    }
-    const os2Version = view.getUint16(offset);
-    const fsType = view.getUint16(offset + 8);
-    const permission = fsType & 0x000e;
-    const flagsKnown = os2Version <= 5 && (fsType & ~0x030e) === 0;
-    const permissionKnown = permission === 0 || permission === 2 || permission === 4 || permission === 8;
-    if (!flagsKnown || !permissionKnown || permission === 2 || permission === 4 || (fsType & 0x0200) !== 0) {
-      throw new EngineError('INVALID_REQUEST', `Font resource ${fontId} does not permit editable embedding`);
     }
     return;
   }

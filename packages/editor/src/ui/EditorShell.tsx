@@ -14,10 +14,15 @@ import {
   type RenderResult,
   type SaveConfirmation,
 } from '@pdf-editor/contracts';
-import { AiPanel } from './AiPanel.js';
-import { TextEditPanel } from './TextEditPanel.js';
-import { ParagraphPanel } from './ParagraphPanel.js';
+import { DirectTextEditor, type TextEditorHandle } from './DirectTextEditor.js';
+import { DocumentViewport, type PageView, type PointerTool } from './DocumentViewport.js';
+import { EditorRibbon, type RibbonTab, type RibbonAction } from './EditorRibbon.js';
+import { ImageCropOverlay } from './ImageCropOverlay.js';
+import { ContextMenu } from '@base-ui/react/context-menu';
+import { Bookmark, Search, MessageSquare, PenLine, LayoutGrid } from 'lucide-react';
 import { FontPanel } from './FontPanel.js';
+import { ParagraphPanel } from './ParagraphPanel.js';
+import { SaveChangesDialog, type SaveChoice, type SavePrompt } from './SaveChangesDialog.js';
 import { PasswordDialog, type PasswordPrompt } from './PasswordDialog.js';
 import { ExportPanel, type ExportSettings } from './ExportPanel.js';
 import { PrintPanel } from './PrintPanel.js';
@@ -27,10 +32,13 @@ import { SignaturePanel } from './SignaturePanel.js';
 import { OcrPanel } from './OcrPanel.js';
 import { PdfSearchPanel } from './PdfSearchPanel.js';
 import { PageThumbnail } from './PageThumbnail.js';
-import { drawRender, mountVisiblePageTiles, renderPage } from './draw-render.js';
+import { PageOrganizer, PageContextMenu, usePageTools, type PageAction } from './PageOrganizer.js';
+import type { TextSelectionTarget } from './PdfTextLayer.js';
+import { renderPage } from './draw-render.js';
 import { ObjectSelectionLayer as SelectionLayer } from './ObjectSelectionLayer.js';
+import { pickObject, selectionScope } from './object-selection.js';
 import { PdfLinkLayer } from './PdfLinkLayer.js';
-import { addImportedFont } from './font-resources.js';
+import { addImportedFont, useFontResources } from './font-resources.js';
 import {
   checkRecoverableSessions,
   persistRecoverySnapshot,
@@ -38,6 +46,8 @@ import {
   restoreRecoveryRecord,
   type RecoverySessionMeta,
 } from '../recovery/index.js';
+import { EditorTopbar, ViewControls, IconButton, Tooltip, PanelRightClose, FilePlus2, toolNames, type EditorTool } from './EditorChrome.js';
+import { useI18n, translate as t } from './i18n.js';
 import './editor.css';
 
 const RENDER_SCALE = 1.25;
@@ -53,6 +63,7 @@ type EditorShellProps = {
   onDocumentChange?: (state: { document: DocumentInfo | null; busy: boolean; draftDirty: boolean }) => void;
   closeDocumentRef?: { current: (() => Promise<boolean>) | null };
   externalBusy?: boolean;
+  headerActions?: ReactNode;
   onActivityChange?: (busy: boolean) => void;
 };
 
@@ -83,19 +94,39 @@ type Activity = 'idle' | 'opening' | 'rendering' | 'saving' | 'editing';
 type WebDocumentSession = { loaded: LoadedDocument; history: { canUndo: boolean; canRedo: boolean }; zoom: number; selectedIds: string[] };
 
 export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, renderAiPanel,
-  source: externalSource, onSourceConsumed, onDocumentChange, closeDocumentRef, externalBusy = false, onActivityChange }: EditorShellProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const tileLayerRef = useRef<HTMLDivElement>(null);
-  const pageWrapRef = useRef<HTMLDivElement>(null);
+  source: externalSource, onSourceConsumed, onDocumentChange, closeDocumentRef, externalBusy = false, onActivityChange, headerActions }: EditorShellProps) {
+  useI18n();
+  const [activeTool, setActiveTool] = useState<EditorTool | null>(null);
+  const [railOpen, setRailOpen] = useState(true);
+  const [railTab, setRailTab] = useState<'pages' | 'bookmarks'>('pages');
+  const [tab, setTab] = useState<RibbonTab>('home');
+  const [pointer, setPointer] = useState<PointerTool>('select');
+  const [view, setView] = useState<PageView>('single');
+  const [continuous, setContinuous] = useState(true);
+  const [overviewWidth, setOverviewWidth] = useState(230);
+  const [overviewColumns, setOverviewColumns] = useState(3);
+  const [inlineRange, setInlineRange] = useState<[number, number] | null>(null);
+  const [pagePanelSection, setPagePanelSection] = useState<'number' | 'watermark' | 'header' | null>(null);
+  const objectContextPoint = useRef({ x: 36, y: 36 });
+  const [pageHost, setPageHost] = useState<HTMLDivElement | null>(null);
+  const [cropImage, setCropImage] = useState(false);
+  const [cropPage, setCropPage] = useState(false);
+  const [placement, setPlacement] = useState<{ kind: 'text' } | { kind: 'image'; resourceId: string; width: number; height: number } | null>(null);
+  const [presenting, setPresenting] = useState(false);
+  const beforePresentation = useRef({ view, continuous, pointer });
+  const textEditor = useRef<TextEditorHandle | null>(null);
+  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const { fonts } = useFontResources(engine);
+  const hasAi = Boolean(renderAiPanel || aiPanel);
+  const [dragOver, setDragOver] = useState(false);
   const stageRef = useRef<HTMLElement>(null);
   const documentRef = useRef<LoadedDocument | null>(null);
   const inactiveWebDocuments = useRef(new Map<string, WebDocumentSession>());
   const [webTabs, setWebTabs] = useState<{ id: string; name: string }[]>([]);
   const [document, setDocument] = useState<LoadedDocument | null>(null);
   const [activity, setActivity] = useState<Activity>('idle');
-  const [notice, setNotice] = useState('PDF processed only on this device');
+  const [notice, setNotice] = useState('Ready');
   const [error, setError] = useState<string | null>(null);
-  const [tileViewportLimited, setTileViewportLimited] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inlineTextId, setInlineTextId] = useState<string | null>(null);
   const [searchSelection, setSearchSelection] = useState<{ docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null>(null);
@@ -109,11 +140,18 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [paragraphDraftDirty, setParagraphDraftDirty] = useState(false);
   const isDraftDirty = textDraftDirty || paragraphDraftDirty;
   const [zoom, setZoom] = useState(RENDER_SCALE);
+  const [savePrompt, setSavePrompt] = useState<SavePrompt | null>(null);
+  const saveResolver = useRef<((choice: SaveChoice) => void) | null>(null);
+  const askSaveChanges = (name: string) => new Promise<SaveChoice>(resolve => {
+    saveResolver.current?.('cancel');
+    const answer = (choice: SaveChoice) => { saveResolver.current = null; setSavePrompt(null); resolve(choice); };
+    saveResolver.current = answer; setSavePrompt({ name, resolve: answer });
+  });
   const [passwordPrompt, setPasswordPrompt] = useState<PasswordPrompt | null>(null);
   const [pendingRecovery, setPendingRecovery] = useState<RecoverySessionMeta | null>(null);
   const passwordResolver = useRef<((value: string | null) => void) | null>(null);
   const openSequence = useRef(0);
-  useEffect(() => () => { openSequence.current++; passwordResolver.current?.(null); }, []);
+  useEffect(() => () => { openSequence.current++; passwordResolver.current?.(null); saveResolver.current?.('cancel'); }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -140,20 +178,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   useEffect(() => {
     documentRef.current = document;
   }, [document]);
-  useEffect(() => { setInlineTextId(null); }, [document?.info.id, document?.info.revision, document?.page.id]);
-
+  useEffect(() => { setInlineTextId(id => document?.page.objects.some(object => object.id === id) ? id : null); }, [document?.info.id, document?.page.id]);
   useEffect(() => {
-    setTileViewportLimited(false);
-    if (!document) return;
-    if (document.render.pixels.byteLength) {
-      drawRender(canvasRef.current, document.render);
-      return;
-    }
-    if (!tileLayerRef.current || !stageRef.current) return;
-    return mountVisiblePageTiles(tileLayerRef.current, stageRef.current, engine,
-      document.info.id, document.page, zoom, document.render,
-      caught => setError(formatError(caught)), setTileViewportLimited);
-  }, [engine, document?.info.id, document?.page, document?.render, zoom]);
+    stageRef.current?.parentElement?.querySelector('.page-chip-active')?.scrollIntoView({ block: 'nearest' });
+  }, [document?.page.id]);
+
 
   useEffect(() => {
     const info = document?.info;
@@ -242,7 +271,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         setParagraphDraftDirty(false);
         setHistory({ canUndo: info.revision > 0, canRedo: false });
         setZoom(RENDER_SCALE);
-        setNotice(`Restored ${loaded.name} · Rev ${loaded.info.revision}`);
+        setNotice('Ready');
         setPendingRecovery(null);
         triggerAutoRecovery(loaded.info, loaded.name);
         break;
@@ -289,12 +318,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       return null;
     }
     if (!web && previous && previous.info.revision !== previous.info.savedRevision) {
-      const saveFirst = window.confirm('Current document has unsaved changes.\n\nOK: Save first, then open new file\nCancel: Choose whether to discard changes');
-      if (saveFirst) {
+      const choice = await askSaveChanges(previous.name);
+      if (choice === 'cancel') return null;
+      if (choice === 'save') {
         const saved = await saveCurrentDocument(previous, engine, host, updateSavedRevision, setError, setNotice, setActivity);
         if (!saved) return null;
-      } else if (!window.confirm('Discard unsaved changes and open new file?')) {
-        return null;
       }
     }
 
@@ -339,13 +367,14 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       }
       documentRef.current = loaded;
       setDocument(loaded);
+      setActiveTool(null); setTab('home'); setPointer('select'); setPlacement(null);
       setSelectedIds([]);
       setSearchSelection(null);
       setTextDraftDirty(false);
       setParagraphDraftDirty(false);
       setHistory({ canUndo: false, canRedo: false });
       setZoom(RENDER_SCALE);
-      setNotice(`${loaded.info.pageOrder.length} pages · Rev ${loaded.info.revision}`);
+      setNotice('Ready');
       setPendingRecovery(null);
       if (previous && !web) {
         try {
@@ -369,16 +398,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   };
 
   const switchPage = async (pageId: string, targetTopPt?: number): Promise<void> => {
-    if (isDraftDirty) { setError('Apply or discard the current text draft before changing pages'); return; }
+    if (isDraftDirty && !await textEditor.current?.finish()) return;
     if (!document) return;
-    if (document.page.id === pageId) {
-      if (targetTopPt !== undefined && stageRef.current) {
-        const scaleY = document.render.height / document.page.heightPt;
-        const targetScrollTop = targetTopPt * scaleY;
-        stageRef.current.scrollTo({ top: Math.max(0, targetScrollTop - 20), behavior: 'smooth' });
-      }
-      return;
-    }
+    if (document.page.id === pageId) { requestAnimationFrame(() => scrollToPage(pageId, targetTopPt)); return; }
     setActivity('rendering');
     setError(null);
     try {
@@ -390,12 +412,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       setDocument(refreshed);
       setSelectedIds([]);
       setSearchSelection(null);
-      setNotice(`Page ${latest.info.pageOrder.indexOf(pageId) + 1} · Rev ${latest.info.revision}`);
-      if (targetTopPt !== undefined && stageRef.current) {
-        const scaleY = refreshed.render.height / refreshed.page.heightPt;
-        const targetScrollTop = targetTopPt * scaleY;
-        stageRef.current.scrollTo({ top: Math.max(0, targetScrollTop - 20), behavior: 'smooth' });
-      }
+      setNotice('Ready');
+      requestAnimationFrame(() => scrollToPage(pageId, targetTopPt));
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -404,7 +422,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   };
 
   const saveDocument = async (): Promise<SaveConfirmation | null> => {
-    if (isDraftDirty) { setError('Apply or discard the current text draft before saving'); return null; }
+    if (isDraftDirty && !await textEditor.current?.finish()) return null;
     const current = documentRef.current;
     if (!current) return null;
     return saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity);
@@ -439,8 +457,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     documentRef.current = committed;
     setDocument(committed);
     setHistory({ canUndo: result.canUndo, canRedo: result.canRedo });
-    setNotice(`${action} rev ${result.revision}`);
-    triggerAutoRecovery(committed.info, committed.name);
+    setNotice(action === 'Undid to' ? 'Undone' : action === 'Redid to' ? 'Redone' : 'Changes applied');
 
     const pageId = result.pageOrder.includes(current.page.id) ? current.page.id : result.pageOrder[0];
     if (!pageId) {
@@ -471,6 +488,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       setError(`Changes committed, but page refresh failed: ${formatError(caught)}`);
     } finally {
       setActivity('idle');
+      requestAnimationFrame(() => triggerAutoRecovery(info, current.name));
     }
   };
 
@@ -514,6 +532,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         const target = loaded.page.objects.find((object) => object.textBlock?.id === blockId);
         setInlineTextId(null);
         setSelectedIds(target ? [target.id] : []);
+        requestAnimationFrame(() => scrollToPage(pageId));
         setSearchSelection(target && range ? { docId: latest.info.id, revision: latest.info.revision,
           pageId, blockId, start: range.start, end: range.end, key: ++searchLocationSequence.current } : null);
         setNotice(target ? `Located page ${current.info.pageOrder.indexOf(pageId) + 1}` : 'Referenced text block is currently not visible');
@@ -526,9 +545,10 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   };
 
   const selectObject = (objectId: string, additive: boolean): void => {
-    if (isDraftDirty) { setError('Apply or discard the current text draft before changing selection'); return; }
+    if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) { setSelectedIds([objectId]); setInlineTextId(null); } }); return; }
     setInlineTextId(null);
     setSearchSelection(null);
+    setCropImage(false); setCropPage(false);
     setSelectedIds((current) => {
       if (!additive) return [objectId];
       return current.includes(objectId)
@@ -564,7 +584,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     setSelectedIds(next.selectedIds);
     setSearchSelection(null);
     setError(null);
-    setNotice(`Switched to ${next.loaded.name} · Rev ${next.loaded.info.revision}`);
+    setNotice('Ready');
   };
 
   const closeDocument = async (): Promise<boolean> => {
@@ -661,7 +681,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       }
       return true;
     }
-    if (window.confirm('This PDF has unsaved changes.\n\nOK: Save before closing\nCancel: Choose whether to discard changes')) {
+    const choice = await askSaveChanges(current.name);
+    if (choice === 'cancel') return false;
+    if (choice === 'save') {
       const saved = Boolean(await saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity));
       if (saved) {
         try {
@@ -674,8 +696,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       }
       return false;
     }
-    const discard = window.confirm('Close without saving the current PDF changes?');
-    if (discard) {
+    if (choice === 'discard') {
       try {
         await discardRecoveryRecord(host, current.info.id);
         return true;
@@ -728,45 +749,250 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     void openDocument(externalSource).then(opened => onSourceConsumed?.(opened !== null), () => onSourceConsumed?.(false));
   }, [externalSource]);
 
+  const chooseTool = (tool: EditorTool) => {
+    if (tool === 'edit') { chooseTab('edit'); return; }
+    if (tool === 'ai' && !hasAi) return;
+    if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) setActiveTool(tool); }); return; }
+    setActiveTool(tool);
+  };
+  const chooseTab = (next: RibbonTab) => {
+    if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) chooseTabAfterSave(next); }); return; }
+    chooseTabAfterSave(next);
+  };
+  const chooseTabAfterSave = (next: RibbonTab) => {
+    if (next === 'pages' && tab !== 'pages' && document) pageTools.select(document.page.id);
+    setTab(next); setActiveTool(null); setCropImage(false); setCropPage(false); setPlacement(null);
+    setPointer(next === 'edit' ? 'edit' : 'select');
+    if (next !== 'edit') { setInlineTextId(null); setSelectedIds([]); }
+  };
+  const scrollToPage = (pageId: string, top = 0) => {
+    const node = [...(stageRef.current?.querySelectorAll<HTMLElement>('[data-document-page]') ?? [])].find(item => item.dataset.documentPage === pageId);
+    if (node && stageRef.current) {
+      const root = stageRef.current;
+      root.scrollTop += node.getBoundingClientRect().top - root.getBoundingClientRect().top - 24 + top * zoom;
+    }
+  };
+  const activateVisiblePage = (loaded: LoadedDocument) => {
+    if (isBusy || loaded.info.id !== documentRef.current?.info.id || loaded.info.revision !== documentRef.current.info.revision) return;
+    const updated = { ...loaded, info: documentRef.current.info };
+    documentRef.current = updated; setDocument(updated);
+    setSelectedIds([]); setInlineTextId(null); setSearchSelection(null); setCropImage(false); setCropPage(false);
+  };
+  const fitPage = () => {
+    if (!document || !stageRef.current || isBusy) return;
+    const { clientWidth, clientHeight } = stageRef.current;
+    void changeZoom(Math.min(4, Math.max(0.25, Math.min((clientWidth - 64) / (document.page.widthPt * (view === 'double' ? 2 : 1)), (clientHeight - 64) / document.page.heightPt))));
+  };
+  const executeCommands = async (commands: import('@pdf-editor/contracts').EditCommand[], resourceIds = new Set<string>()): Promise<boolean> => {
+    const current = documentRef.current;
+    if (!current || operationBusy || isDraftDirty) return false;
+    setActivity('editing'); setError(null);
+    try {
+      const transaction = { id: crypto.randomUUID(), docId: current.info.id, baseRevision: current.info.revision, source: 'manual' as const, commands };
+      await engine.previewTransaction(transaction);
+      const result = await new CommandRegistry(engine).execute(transaction, { document: current.info, pages: new Map([[current.page.id, current.page]]),
+        fontIds: new Set(fonts.map(font => font.id)), resourceIds,
+        ...(host.capabilities.platform === 'web' ? { pageLimit: WEB_LIMITS.pagesPerDocument } : {}) });
+      await handleCommitted(result); return true;
+    } catch (caught) { setError(formatError(caught)); return false; }
+    finally { setActivity('idle'); }
+  };
+  const pageTools = usePageTools({ document, engine, host, disabled: isBusy, execute: executeCommands,
+    onBusy: setEditPending, onError: setError, onNotice: setNotice });
+  const openOverviewPage = (id: string) => { chooseTab('home'); void switchPage(id); };
+  const changeOverviewZoom = (scale: number) => {
+    setOverviewColumns(0); setOverviewWidth(Math.max(100, Math.min(900, scale * 230)));
+  };
+  const wheelState = useRef({ tab, isBusy, zoom, overviewWidth, overviewColumns, changeZoom });
+  wheelState.current = { tab, isBusy, zoom, overviewWidth, overviewColumns, changeZoom };
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    let timer: ReturnType<typeof setTimeout>;
+    let requested: number | null = null;
+    const wheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const current = wheelState.current;
+      if (current.isBusy) return;
+      const factor = Math.exp(-Math.max(-120, Math.min(120, event.deltaY)) * 0.002);
+      if (current.tab === 'pages') {
+        const width = current.overviewColumns ? stage.querySelector('.organizer-page')?.getBoundingClientRect().width ?? current.overviewWidth : current.overviewWidth;
+        setOverviewColumns(0); setOverviewWidth(Math.max(100, Math.min(900, width * factor)));
+      } else {
+        requested = Math.max(0.25, Math.min(4, (requested ?? current.zoom) * factor));
+        clearTimeout(timer);
+        timer = setTimeout(() => { const scale = requested; requested = null; if (scale !== null) void wheelState.current.changeZoom(scale); }, 100);
+      }
+    };
+    stage.addEventListener('wheel', wheel, { passive: false });
+    return () => { stage.removeEventListener('wheel', wheel); clearTimeout(timer); };
+  }, []);
+  const runRibbonAction = async (action: RibbonAction): Promise<void> => {
+    const current = documentRef.current;
+    if (!current || isBusy) return;
+    const pageId = current.page.id;
+    if (tab === 'pages' && ['blankPage', 'importPages', 'duplicatePage', 'deletePage', 'rotatePageLeft', 'rotatePageRight', 'copyPages', 'pastePages', 'extractPages'].includes(action)) {
+      await pageTools.run(action as PageAction); return;
+    }
+    if (action === 'cropPage') { setCropPage(true); setCropImage(false); setPlacement(null); setSelectedIds([]); return; }
+    if (action === 'pageNumbers' || action === 'watermark' || action === 'headerFooter') {
+      setPagePanelSection(action === 'pageNumbers' ? 'number' : action === 'headerFooter' ? 'header' : 'watermark');
+      chooseTool('pages'); return;
+    }
+    if (action === 'flipHorizontal' || action === 'flipVertical') {
+      const object = selectedObjects[0];
+      if (object) await transformObjects(selectedIds, action === 'flipHorizontal' ? [-1, 0, 0, 1, object.bounds.x * 2 + object.bounds.width, 0] : [1, 0, 0, -1, 0, object.bounds.y * 2 + object.bounds.height]);
+      return;
+    }
+    if (action === 'fit') { if (tab === 'pages') setOverviewColumns(3); else fitPage(); return; }
+    if (action === 'present') {
+      try {
+        beforePresentation.current = { view, continuous, pointer };
+        await stageRef.current?.closest('main')?.requestFullscreen();
+        setPresenting(true); setView('single'); setContinuous(false); setPointer('hand'); setActiveTool(null);
+      } catch { setError(t('Full screen is not available in this browser.')); }
+      return;
+    }
+    if (action === 'insertText') { setTab('edit'); setPointer('edit'); setSelectedIds([]); setPlacement({ kind: 'text' }); return; }
+    if (action === 'cropImage') { setCropImage(true); return; }
+    if (['insertImage', 'replaceImage', 'importPages'].includes(action)) {
+      setEditPending(true); setError(null);
+      try {
+        const kind = action === 'importPages' ? 'pdf' : 'image';
+        const source = await host.pickResource?.(kind);
+        if (!source) return;
+        const resource = await engine.registerResource({ docId: current.info.id, resourceId: crypto.randomUUID(), source });
+        if (action === 'insertImage') {
+          setTab('edit'); setPointer('edit'); setSelectedIds([]);
+          setPlacement({ kind: 'image', resourceId: resource.id, width: resource.width ?? 200, height: resource.height ?? 150 });
+        } else if (action === 'replaceImage') {
+          await executeCommands([{ type: 'image.replace', pageId, objectId: selectedIds[0]!, resourceId: resource.id }], new Set([resource.id]));
+        } else {
+          const indices = Array.from({ length: resource.pageCount ?? 0 }, (_, index) => index);
+          if (indices.length) await executeCommands([{ type: 'pages.import', resourceId: resource.id, pageIndices: indices, newPageIds: indices.map(() => crypto.randomUUID()), afterPageId: pageId }], new Set([resource.id]));
+        }
+      } catch (caught) { setError(formatError(caught)); }
+      finally { setEditPending(false); }
+      return;
+    }
+    if (action === 'blankPage') await executeCommands([{ type: 'pages.insert', pageId: crypto.randomUUID(), afterPageId: pageId, widthPt: current.page.widthPt, heightPt: current.page.heightPt }]);
+    if (action === 'duplicatePage') await executeCommands([{ type: 'pages.duplicate', pageIds: [pageId], newPageIds: [crypto.randomUUID()], afterPageId: pageId }]);
+    if (action === 'deletePage' && current.info.pageOrder.length > 1) await executeCommands([{ type: 'pages.delete', pageIds: [pageId] }]);
+    if (action === 'rotatePageLeft' || action === 'rotatePageRight') await executeCommands([{ type: 'pages.rotate', pageIds: [pageId], degrees: action === 'rotatePageLeft' ? 270 : 90 }]);
+    if (action === 'delete' && selectedIds.length) await executeCommands([{ type: 'objects.delete', pageId, objectIds: selectedIds }]);
+    if (action === 'duplicate' && selectedIds.length) await executeCommands([{ type: 'objects.copy', pageId, objectIds: selectedIds, newObjectIds: selectedIds.map(() => crypto.randomUUID()), offset: { x: 12, y: 12 } }]);
+    if ((action === 'rotateLeft' || action === 'rotateRight') && selectedObjects.length) {
+      const left = Math.min(...selectedObjects.map(item => item.bounds.x)), top = Math.min(...selectedObjects.map(item => item.bounds.y));
+      const right = Math.max(...selectedObjects.map(item => item.bounds.x + item.bounds.width)), bottom = Math.max(...selectedObjects.map(item => item.bounds.y + item.bounds.height));
+      const cx = (left + right) / 2, cy = (top + bottom) / 2, sign = action === 'rotateRight' ? 1 : -1;
+      await transformObjects(selectedIds, [0, sign, -sign, 0, cx + sign * cy, cy - sign * cx]);
+    }
+  };
+  const editTextAt = (loaded: LoadedDocument, id: string, range: [number, number]) => {
+    if (isBusy || loaded.info.revision !== documentRef.current?.info.revision) return;
+    activateVisiblePage(loaded); setTab('edit'); setPointer('edit'); setSelectedIds([id]); setInlineRange(range); setInlineTextId(id);
+  };
+  const annotateSelection = async (loaded: LoadedDocument, targets: TextSelectionTarget[], action: 'highlight' | 'underline') => {
+    if (isBusy || loaded.info.revision !== documentRef.current?.info.revision) return;
+    activateVisiblePage(loaded);
+    const commands: import('@pdf-editor/contracts').EditCommand[] = targets.flatMap<import('@pdf-editor/contracts').EditCommand>(target => {
+      if (target.range[0] === target.range[1]) return [];
+      if (action === 'underline') return [{ type: 'text.style', pageId: loaded.page.id, blockIds: [target.blockId], range: target.range, style: { underline: true } }];
+      return target.rects.map(bounds => ({ type: 'annotation.add', pageId: loaded.page.id, annotationId: crypto.randomUUID(), subtype: 'highlight', bounds, color: [1, 0.85, 0.1], opacity: 0.4 }));
+    });
+    if (commands.length && await executeCommands(commands)) window.getSelection()?.removeAllRanges();
+  };
+  const insertTextAt = (loaded: LoadedDocument, point: { x: number; y: number }) => {
+    if (isBusy || loaded.info.revision !== documentRef.current?.info.revision) return;
+    activateVisiblePage(loaded); setTab('edit'); setPointer('edit');
+    void placeObject(point.x, point.y, { kind: 'text' });
+  };
+  const placeObject = async (x: number, y: number, placementOverride = placement) => {
+    const current = documentRef.current;
+    const placement = placementOverride;
+    if (!current || !placement || isBusy) return;
+    x = Math.max(0, Math.min(x, current.page.widthPt - 40));
+    y = Math.max(0, Math.min(y, current.page.heightPt - 28));
+    const id = crypto.randomUUID();
+    let command: import('@pdf-editor/contracts').EditCommand;
+    let resources = new Set<string>();
+    if (placement.kind === 'text') {
+      const font = fonts[0];
+      if (!font) { setError(t('No font is available. Import a font first.')); chooseTool('fonts'); return; }
+      command = { type: 'text.insert', pageId: current.page.id, objectId: id,
+        bounds: { x, y, width: Math.min(240, current.page.widthPt - x), height: Math.min(48, current.page.heightPt - y) }, text: t('New text'), style: { fontId: font.id, fontSize: 14, color: [0, 0, 0] } };
+    } else {
+      const scale = Math.min(1, 240 / placement.width, (current.page.widthPt - x) / placement.width, (current.page.heightPt - y) / placement.height);
+      command = { type: 'image.insert', pageId: current.page.id, objectId: id, resourceId: placement.resourceId,
+        bounds: { x, y, width: placement.width * scale, height: placement.height * scale } };
+      resources = new Set([placement.resourceId]);
+    }
+    if (await executeCommands([command], resources)) {
+      setPlacement(null);
+      const inserted = documentRef.current?.page.objects.find(item => item.id === id || item.textBlock?.sourceObjectIds.includes(id));
+      if (inserted) { setSelectedIds([inserted.id]); if (inserted.textBlock) setInlineTextId(inserted.id); }
+    }
+  };
+  useEffect(() => {
+    const change = () => {
+      if (!globalThis.document.fullscreenElement && presenting) {
+        setPresenting(false); setView(beforePresentation.current.view); setContinuous(beforePresentation.current.continuous); setPointer(beforePresentation.current.pointer);
+      }
+    };
+    globalThis.document.addEventListener('fullscreenchange', change);
+    return () => globalThis.document.removeEventListener('fullscreenchange', change);
+  }, [presenting]);
+  useEffect(() => { if (presenting) fitPage(); }, [presenting]);
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      const typing = event.target instanceof HTMLElement && (event.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName));
+      if (!typing && event.key === 'Escape') { setPlacement(null); setCropImage(false); setCropPage(false); setSelectedIds([]); }
+      const pageScope = tab === 'pages' || (event.target instanceof Element && Boolean(event.target.closest('.page-list')));
+      const inMenu = event.target instanceof Element && Boolean(event.target.closest('[role="menu"]'));
+      if (!typing && pageScope && !inMenu && !isBusy) {
+        const modifier = event.ctrlKey || event.metaKey;
+        const key = event.key.toLowerCase();
+        if (modifier && key === 'a') { event.preventDefault(); pageTools.selectAll(); return; }
+        if (modifier && (key === 'c' || key === 'v')) { event.preventDefault(); void pageTools.run(key === 'c' ? 'copyPages' : 'pastePages'); return; }
+        if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); void pageTools.run('deletePage'); return; }
+      }
+      if (!typing && !inMenu && !isBusy && pointer === 'edit' && ['Enter', 'F2'].includes(event.key) && selectedObjects.length === 1 && selectedObjects[0]?.textBlock) {
+        event.preventDefault(); setInlineRange(null); setInlineTextId(selectedIds[0]!); return;
+      }
+      if (!typing && !inMenu && pointer === 'edit' && (event.key === 'Delete' || event.key === 'Backspace') && selectedIds.length) { event.preventDefault(); void runRibbonAction('delete'); return; }
+      if (!typing && !inMenu && tab !== 'pages' && (presenting || !continuous) && ['ArrowLeft', 'ArrowRight', 'PageDown', 'PageUp', ' '].includes(event.key)) {
+        event.preventDefault(); const step = ['ArrowLeft', 'PageUp'].includes(event.key) ? -1 : 1;
+        const id = document?.info.pageOrder[currentPageIndex + step * (view === 'double' ? 2 : 1)]; if (id) void switchPage(id); return;
+      }
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      const input = event.target instanceof HTMLElement && (event.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName));
+      if (!['o', 's', 'f', 'p', 'z', 'y'].includes(key) || (input && ['z', 'y'].includes(key))) return;
+      event.preventDefault();
+      if (key === 'f' && document) { chooseTool('search'); return; }
+      if (key === 'p' && document) { chooseTool('print'); return; }
+      if (key === 's' && !operationBusy) { void saveDocument(); return; }
+      if (isBusy) return;
+      if (key === 'o') void openDocument();
+      if (key === 'z' && (event.shiftKey ? history.canRedo : history.canUndo)) void moveHistory(event.shiftKey ? 'redo' : 'undo');
+      if (key === 'y' && history.canRedo) void moveHistory('redo');
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  });
+
   return (
-    <main className={webTabs.length ? 'editor-shell editor-shell-with-tabs' : 'editor-shell'}>
+    <Tooltip.Provider delay={350}>
+    <main className={`editor-shell ${webTabs.length ? 'editor-shell-with-tabs' : ''} ${presenting ? 'is-presenting' : ''}`}>
+      {savePrompt && <SaveChangesDialog prompt={savePrompt} />}
       {passwordPrompt && <PasswordDialog prompt={passwordPrompt} />}
-      <header className="editor-topbar">
-        <div className="brand-lockup" aria-label={productName}>
-          <span className="brand-mark" aria-hidden="true">K</span>
-          <span>
-            <strong>{productName}</strong>
-            <small>{host.capabilities.platform === 'web' ? 'LOCAL WEB' : 'NATIVE DESK'}</small>
-          </span>
-        </div>
+      <EditorTopbar productName={productName} name={document?.name} dirty={Boolean(document && document.info.revision !== document.info.savedRevision)}
+        showAi={hasAi} busy={operationBusy} canUndo={history.canUndo} canRedo={history.canRedo} saving={activity === 'saving'} tool={activeTool}
+        onTool={chooseTool} onOpen={() => void openDocument()} onClose={() => void closeDocument()}
+        onSave={() => void saveDocument()} onUndo={() => void moveHistory('undo')} onRedo={() => void moveHistory('redo')} extra={headerActions} />
 
-        {(host.capabilities.platform !== 'web' || !document) && <div className="document-title">
-          <span className="eyebrow">Current Document</span>
-          <strong>{document?.name ?? 'No PDF open'}</strong>
-        </div>}
-
-        <div className="topbar-actions">
-          <button className="button button-quiet" type="button" disabled={!document || isBusy || zoom <= 0.25}
-            onClick={() => void changeZoom(Math.max(0.25, zoom / 1.25))}>Zoom out</button>
-          <button className="button button-quiet" type="button" disabled={!document || isBusy || zoom >= 4}
-            onClick={() => void changeZoom(Math.min(4, zoom * 1.25))}>Zoom in</button>
-          <button className="button button-quiet" type="button" onClick={() => void openDocument()} disabled={isBusy}>
-            Open PDF
-          </button>
-          <button className="button button-quiet" type="button" onClick={() => void closeDocument()} disabled={!document || isBusy}>Close PDF</button>
-          <button className="button button-quiet" type="button" onClick={() => void moveHistory('undo')} disabled={!document || !history.canUndo || isBusy}>
-            Undo
-          </button>
-          <button className="button button-quiet" type="button" onClick={() => void moveHistory('redo')} disabled={!document || !history.canRedo || isBusy}>
-            Redo
-          </button>
-          <button className="button button-primary" type="button" onClick={() => void saveDocument()} disabled={!document || isBusy}>
-            {activity === 'saving' ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </header>
-
-      {webTabs.length > 0 && <nav className="editor-document-tabs" aria-label="Open PDFs">
+      {webTabs.length > 0 && <nav className="editor-document-tabs" aria-label={t("Open PDFs")}>
         {webTabs.map(tab => {
           const active = document?.info.id === tab.id;
           const info = active ? document.info : inactiveWebDocuments.current.get(tab.id)?.loaded.info;
@@ -778,70 +1004,90 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         })}
       </nav>}
 
-      <section className="editor-commandbar" aria-label="Current editing capabilities">
-        <div>
-          <span className="command-index">01</span>
-          <span>Reading Canvas</span>
-        </div>
-        <div>
-          <span className="command-index">02</span>
-          <span>Object Selection</span>
-        </div>
-        <div className={document?.info.capabilities.includes('text.replace') ? '' : 'command-muted'}>
-          <span className="command-index">03</span>
-          <span>{document?.info.capabilities.includes('content.insert') ? 'Native PDF Editing' : document?.info.capabilities.includes('text.replace') ? 'TextBlock Editing' : 'Read-only Document'}</span>
-        </div>
-        <span className="local-badge">{host.capabilities.ocr ? 'Local OCR' : 'No PDF Uploaded'}</span>
-      </section>
+      <EditorRibbon tab={tab} onTab={chooseTab} pointer={pointer} onPointer={next => {
+        if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) setPointer(next); }); return; }
+        if (tab === 'pages') chooseTabAfterSave('home');
+        setPointer(next); setInlineTextId(null); setSelectedIds([]); setCropImage(false); setCropPage(false); setPlacement(null);
+      }} pageTools={pageTools} overviewColumns={overviewColumns} onOverviewColumns={setOverviewColumns} onTool={chooseTool} onAction={action => void runRibbonAction(action)} view={view} continuous={continuous}
+        onView={next => { if (!isBusy) { setView(next); requestAnimationFrame(() => scrollToPage(document?.page.id ?? '')); } }}
+        onContinuous={() => { if (!isBusy) { setContinuous(value => !value); requestAnimationFrame(() => scrollToPage(document?.page.id ?? '')); } }}
+        hasDocument={Boolean(document)} busy={operationBusy} ocr={host.capabilities.ocr} railOpen={railOpen} onToggleRail={() => setRailOpen(value => !value)}
+        selection={selectedObjects.length === 1 ? selectedObjects[0]?.textBlock ? 'text' : selectedObjects[0]?.type === 'image' ? 'image' : 'objects' : selectedObjects.length ? 'objects' : null}>
+        {document && <DirectTextEditor document={document.info} page={document.page} selectedIds={selectedIds} inlineId={inlineTextId}
+          host={pageHost} render={document.render} engine={engine} disabled={operationBusy} handle={textEditor} initialRange={inlineRange}
+          onClose={() => { setInlineTextId(null); setInlineRange(null); }} onEdit={() => { setInlineRange(null); setInlineTextId(selectedIds[0] ?? null); }} onManageFonts={() => chooseTool('fonts')}
+          onParagraph={id => { setSelectedIds([id]); setInlineRange(null); setInlineTextId(id); }}
+          onDraftChange={setTextDraftDirty} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
+      </EditorRibbon>
 
-      <div className="editor-workspace">
-        <aside className="page-rail" aria-label="Pages">
+      <div className="editor-workspace" data-rail={railOpen && Boolean(document)} data-panel={Boolean(activeTool)} data-empty={!document}>
+        <nav className="navigation-tools" aria-label={t('Document navigation')}>
+          <IconButton label="Pages" aria-pressed={railOpen && railTab === 'pages'} onClick={() => { setRailTab('pages'); setRailOpen(!railOpen || railTab !== 'pages'); }}><LayoutGrid size={18} /></IconButton>
+          <IconButton label="Bookmarks" aria-pressed={railOpen && railTab === 'bookmarks'} onClick={() => { setRailTab('bookmarks'); setRailOpen(!railOpen || railTab !== 'bookmarks'); }}><Bookmark size={18} /></IconButton>
+          <IconButton label="Comment" disabled={!document} onClick={() => chooseTool('comment')}><MessageSquare size={18} /></IconButton>
+          <IconButton label="Sign" disabled={!document} onClick={() => chooseTool('sign')}><PenLine size={18} /></IconButton>
+        </nav>
+        <aside className="page-rail"
+ aria-label={t("Pages")} hidden={!railOpen || !document}>
           <div className="rail-heading">
-            <span>Pages</span>
+            <span>{t(railTab === 'pages' ? "Pages" : "Bookmarks")}</span>
             <small>{document?.info.pageOrder.length ?? 0}</small>
           </div>
-          <div className="page-list">
+          <div className="page-list" hidden={railTab !== 'pages'}>
             {document ? document.info.pageOrder.map((pageId, index) => (
-              <button
-                type="button"
-                className={pageId === document.page.id ? 'page-chip page-chip-active' : 'page-chip'}
-                key={pageId}
-                data-page-id={pageId}
-                onClick={() => void switchPage(pageId)}
-                disabled={isBusy}
-                aria-label={`Open page ${index + 1}`}
-              >
-                <span>{String(index + 1).padStart(2, '0')}</span>
-                <PageThumbnail engine={engine} docId={document.info.id} pageId={pageId} revision={document.info.revision} />
-              </button>
+              <PageContextMenu key={pageId} tools={pageTools} onOpen={() => openOverviewPage(pageId)}>
+                <ContextMenu.Trigger render={<button type="button" disabled={isBusy} />} className={`page-chip ${pageId === document.page.id ? 'page-chip-active' : ''} ${pageTools.ids.includes(pageId) ? 'page-chip-selected' : ''}`}
+                  data-page-id={pageId} aria-pressed={pageTools.ids.includes(pageId)}
+                  onClick={event => { pageTools.select(pageId, event); if (tab !== 'pages' && !event.ctrlKey && !event.metaKey && !event.shiftKey) void switchPage(pageId); }}
+                  onContextMenu={() => pageTools.select(pageId, {}, true)}
+                  aria-label={t('Open page {page}', { page: index + 1 })}>
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <PageThumbnail engine={engine} docId={document.info.id} pageId={pageId} revision={document.info.revision} />
+                </ContextMenu.Trigger>
+              </PageContextMenu>
             )) : (
               <div className="rail-empty">—</div>
             )}
           </div>
-          {(outline.length > 0 || outlineError) && <nav className="bookmark-list" aria-label="PDF bookmarks">
-            <strong>Bookmarks</strong>
-            {outlineError ? <span role="status">Bookmarks could not be read</span> : outline.map((entry, index) =>
+          <nav hidden={railTab !== 'bookmarks'} className="bookmark-list" aria-label={t("PDF bookmarks")}>
+            <strong>{t("Bookmarks")}</strong>
+            {outlineError ? <span role="status">{t("Bookmarks could not be read")}</span> : outline.map((entry, index) =>
               <button type="button" key={`${index}-${entry.title}`} disabled={!entry.pageId || isBusy}
                 style={{ paddingLeft: `${6 + Math.min(entry.level, 5) * 8}px` }}
-                aria-label={`Go to bookmark ${entry.title || 'Untitled'}`}
-                title={entry.title || 'Untitled'}
+                aria-label={`Go to bookmark ${entry.title || t("Untitled")}`}
+                title={entry.title || t("Untitled")}
                 onClick={() => { if (entry.pageId) void switchPage(entry.pageId); }}>
-                {entry.title || 'Untitled'}
+                {entry.title || t("Untitled")}
               </button>)}
-          </nav>}
+            {!outline.length && !outlineError && <span>{t("No bookmarks in this document.")}</span>}
+          </nav>
         </aside>
 
-        <section ref={stageRef} className="canvas-stage" aria-label="PDF Canvas">
-          {tileViewportLimited && document && !document.render.pixels.byteLength &&
-            <div className="tile-limit-warning" role="alert"><span>
-              This viewport exceeds the web bitmap budget. Some page edges are not rendered; zoom out or reduce the window size to see the full visible page.
-            </span></div>}
+        <section ref={stageRef} className={`canvas-stage ${dragOver ? 'is-dragging' : ''} ${pointer === 'hand' ? 'hand-tool' : ''}`}
+          onPointerDown={event => {
+            if (pointer !== 'hand' || event.button !== 0 || (event.target as HTMLElement).closest('button, input, textarea')) return;
+            pan.current = { x: event.clientX, y: event.clientY, left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop };
+            event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault();
+          }}
+          onPointerMove={event => { if (pan.current) { event.currentTarget.scrollLeft = pan.current.left + pan.current.x - event.clientX; event.currentTarget.scrollTop = pan.current.top + pan.current.y - event.clientY; } }}
+          onPointerUp={() => { pan.current = null; }} onPointerCancel={() => { pan.current = null; }} aria-label={t('PDF canvas')}
+          onDragOver={event => { if (host.capabilities.platform === 'web' && event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragOver(true); } }}
+          onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragOver(false); }}
+          onDrop={event => {
+            event.preventDefault(); setDragOver(false);
+            if (host.capabilities.platform !== 'web' || isBusy) return;
+            const file = event.dataTransfer.files[0];
+            if (!file) return;
+            if (!file.name.toLowerCase().endsWith('.pdf')) { setError(t('Choose a PDF file.')); return; }
+            if (file.size > WEB_LIMITS.inputBytes) { setError(t('This file is too large for the web editor. Use the desktop app.')); return; }
+            void file.arrayBuffer().then(bytes => openDocument({ kind: 'bytes', sourceId: crypto.randomUUID(), name: file.name, bytes })).catch(() => setError(t('Unable to open this file.')));
+          }}>
           {pendingRecovery && !document ? (
-            <aside className="recovery-banner" role="alert" aria-label="Recoverable session notice">
+            <aside className="recovery-banner" role="alert" aria-label={t("Recoverable session notice")}>
               <div className="recovery-info">
-                <strong>Recover Unsaved Document</strong>
+                <strong>{t("Recover Unsaved Document")}</strong>
                 <span>
-                  "{pendingRecovery.name}" (Rev {pendingRecovery.revision}, {pendingRecovery.revision - pendingRecovery.savedRevision} unsaved change{pendingRecovery.revision - pendingRecovery.savedRevision === 1 ? '' : 's'})
+                  {pendingRecovery.name}
                 </span>
               </div>
               <div className="recovery-actions">
@@ -850,175 +1096,154 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                   type="button"
                   onClick={() => void restorePendingRecovery()}
                   disabled={isBusy}
-                >
-                  Restore
-                </button>
+                >{t("Restore")}</button>
                 <button
                   className="button button-quiet"
                   type="button"
                   onClick={() => void discardPendingRecovery()}
                   disabled={isBusy}
-                >
-                  Discard
-                </button>
+                >{t("Discard")}</button>
               </div>
             </aside>
           ) : null}
           {!document ? (
             <EmptyCanvas busy={activity === 'opening'} isWeb={host.capabilities.platform === 'web'} onOpen={() => void openDocument()} />
+          ) : tab === 'pages' ? (
+            <PageOrganizer document={document} engine={engine} tools={pageTools} disabled={isBusy} width={overviewWidth} columns={overviewColumns} onOpen={openOverviewPage} />
           ) : (
-            <div ref={pageWrapRef} className={document.render.pixels.byteLength ? 'page-wrap' : 'page-wrap page-wrap-tiled'}
-              style={{ width: document.render.width, height: document.render.height }}
-              onClick={() => {
-                if (isDraftDirty) setError('Apply or discard the current text draft before changing selection');
-                else { setSelectedIds([]); setSearchSelection(null); setInlineTextId(null); }
-              }}>
-              {document.render.pixels.byteLength
-                ? <canvas ref={canvasRef} className="pdf-canvas" aria-label={`Page ${currentPageIndex + 1}`} />
-                : <div ref={tileLayerRef} className="pdf-tile-layer" role="img" aria-label={`Page ${currentPageIndex + 1}`} />}
-              <SelectionLayer
-                page={document.page}
-                render={document.render}
-                selectedIds={selectedIds}
-                onSelect={selectObject}
-                onBoxSelect={ids => { setSelectedIds(ids); setSearchSelection(null); setInlineTextId(null); }}
-                onEditText={id => {
-                  const object = document.page.objects.find(item => item.id === id);
-                  if (isBusy || !object?.textBlock || object.textBlock.editability === 'geometry-only' ||
-                    !document.info.permissions.modify || !document.info.capabilities.includes('text.replace')) return;
-                  setSelectedIds([id]); setSearchSelection(null); setInlineTextId(id);
-                }}
-                disabled={isBusy}
-                canTransform={document.info.capabilities.includes('objects.transform')}
-                onMove={moveObjects}
-                onTransform={transformObjects}
-              />
-              <PdfLinkLayer
-                annotations={pageAnnotations}
-                page={document.page}
-                render={document.render}
-                pageOrder={document.info.pageOrder}
-                disabled={isBusy || isDraftDirty}
-                onNavigate={(targetPageId, targetTopPt) => void switchPage(targetPageId, targetTopPt)}
-              />
-            </div>
+            <DocumentViewport key={document.info.id} engine={engine} document={document} zoom={zoom} view={view} continuous={continuous}
+              root={stageRef} locked={isBusy || cropImage || cropPage} pointer={pointer} onActive={activateVisiblePage} onHost={setPageHost}
+              onEditText={editTextAt} onInsertText={insertTextAt} onAnnotate={annotateSelection} onError={setError}>
+              {(shown) => <>
+                {searchSelection?.pageId === shown.page.id && (() => {
+                  const match = shown.page.objects.find(item => item.textBlock?.id === searchSelection.blockId);
+                  return match && <div className="search-match-highlight" style={{ position: 'absolute', pointerEvents: 'none', zIndex: 2, background: '#ffda5044', outline: '2px solid #dca91b',
+                    left: match.bounds.x * zoom, top: match.bounds.y * zoom, width: match.bounds.width * zoom, height: match.bounds.height * zoom }} />;
+                })()}
+                {pointer === 'edit' && !placement && !cropImage && !cropPage && <ContextMenu.Root>
+                  <ContextMenu.Trigger className="page-object-tools" onContextMenu={event => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    objectContextPoint.current = { x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom };
+                    const point = objectContextPoint.current;
+                    const id = pickObject(selectionScope(shown.page, selectedIds), point.x, point.y, 3 / zoom)?.id;
+                    if (id && !selectedIds.includes(id)) selectObject(id, false);
+                    if (!id && !(event.target as HTMLElement).closest('.selection-bounds')) setSelectedIds([]);
+                  }}>
+                    <SelectionLayer page={shown.page} render={shown.render} selectedIds={selectedIds} onSelect={selectObject}
+                      onBoxSelect={ids => {
+                        const select = () => { setSelectedIds(ids); setSearchSelection(null); setInlineTextId(null); };
+                        if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) select(); }); } else select();
+                      }}
+                      onEditText={id => { if (!isBusy) { setTab('edit'); setSelectedIds([id]); setInlineTextId(id); } }}
+                      disabled={operationBusy} canTransform={shown.info.permissions.modify && shown.info.capabilities.includes('objects.transform')}
+                      onMove={moveObjects} onTransform={transformObjects} />
+                  </ContextMenu.Trigger>
+                  <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu">
+                    {selectedObjects.length === 1 && selectedObjects[0]?.textBlock && <>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => { setInlineRange(null); setInlineTextId(selectedIds[0]!); }}>{t('Edit text')}<kbd>Enter</kbd></ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={!shown.info.permissions.copy} onClick={() => void navigator.clipboard.writeText(selectedObjects[0]!.textBlock!.runs.map(run => run.text).join('')).catch(() => setError(t('Clipboard access was denied. Use Ctrl/Cmd+C to copy selected text.')))}>{t('Copy text')}</ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.annotate} onClick={() => void annotateSelection(shown, selectedObjects.map(object => ({ objectId: object.id, blockId: object.textBlock!.id, range: [0, object.textBlock!.runs.reduce((length, run) => length + run.text.length, 0)], text: '', rects: [object.bounds] })), 'highlight')}>{t('Highlight text')}</ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void executeCommands([{ type: 'text.style', pageId: shown.page.id, blockIds: [selectedObjects[0]!.textBlock!.id], style: { underline: true } }])}>{t('Underline text')}</ContextMenu.Item>
+                    </>}
+                    {selectedObjects.length === 1 && selectedObjects[0]?.type === 'image' && <>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('replaceImage')}>{t('Replace image')}</ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('cropImage')}>{t('Crop image')}</ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('flipHorizontal')}>{t('Flip horizontally')}</ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('flipVertical')}>{t('Flip vertically')}</ContextMenu.Item>
+                    </>}
+                    {selectedIds.length > 0 && <>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('rotateLeft')}>{t('Rotate left')}</ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('rotateRight')}>{t('Rotate right')}</ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify || !shown.info.permissions.copy} onClick={() => void runRibbonAction('duplicate')}>{t('Duplicate')}</ContextMenu.Item>
+                      {selectedIds.length > 1 && <ContextMenu.Item className="ui-menu-item" onClick={() => chooseTool('arrange')}>{t('Align & distribute')}</ContextMenu.Item>}
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('delete')}>{t('Delete')}<kbd>Del</kbd></ContextMenu.Item>
+                      <ContextMenu.Separator className="ui-menu-separator" />
+                    </>}
+                    <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => insertTextAt(shown, objectContextPoint.current)}>{t('Add text here')}</ContextMenu.Item>
+                    <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('insertImage')}>{t('Add image')}</ContextMenu.Item>
+                    <ContextMenu.Item className="ui-menu-item" disabled={isBusy} onClick={() => chooseTab('pages')}>{t('Organize pages')}</ContextMenu.Item>
+                  </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal>
+                </ContextMenu.Root>}
+                {pointer === 'select' && <PdfLinkLayer annotations={pageAnnotations} page={shown.page} render={shown.render}
+                  pageOrder={shown.info.pageOrder} disabled={isBusy} onNavigate={(id, top) => void switchPage(id, top)} />}
+                {placement && <div className="placement-layer" onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); void placeObject((event.clientX - rect.left) / zoom, (event.clientY - rect.top) / zoom); }}><span>{t('Click on the page to place it. Press Esc to cancel.')}</span></div>}
+                {cropPage && <ImageCropOverlay page bounds={{ x: 0, y: 0, width: shown.page.widthPt, height: shown.page.heightPt }} scale={zoom} disabled={isBusy}
+                  onCancel={() => setCropPage(false)} onCrop={bounds => void executeCommands([{ type: 'pages.crop', pageIds: [shown.page.id], bounds }]).then(ok => { if (ok) setCropPage(false); })} />}
+                {cropImage && selectedObjects[0]?.type === 'image' && <ImageCropOverlay bounds={selectedObjects[0].bounds} scale={zoom} disabled={isBusy}
+                  onCancel={() => setCropImage(false)} onCrop={bounds => void executeCommands([{ type: 'image.crop', pageId: shown.page.id, objectId: selectedIds[0]!, bounds }]).then(ok => { if (ok) setCropImage(false); setCropPage(false); })} />}
+              </>}
+            </DocumentViewport>
           )}
-          {activity === 'rendering' ? <div className="stage-progress">Rendering page…</div> : null}
+          {activity === 'rendering' ? <div className="stage-progress">{t("Rendering page…")}</div> : null}
         </section>
 
-        <aside className="inspector-panel" aria-label="Text editing, AI, and selection panel">
-          <div className="panel-heading">
-            <span>Edit & AI</span>
-            <small>{document ? `REV ${document.info.revision}` : 'NO DOCUMENT'}</small>
+        <aside className="inspector-panel" hidden={!activeTool} aria-label={t(activeTool ? toolNames[activeTool] : "Tools")}>
+          <div className="panel-heading"><strong>{t(activeTool ? toolNames[activeTool] : "Tools")}</strong>
+            <IconButton label={t('Close panel')} disabled={isDraftDirty} onClick={() => setActiveTool(null)}><PanelRightClose size={17} /></IconButton>
+          </div>
+          <div className="panel-content">
+          {!document && activeTool !== 'ai' && <div className="panel-empty"><FilePlus2 size={28} /><p>{t('Open a PDF to get started.')}</p></div>}
+          <div hidden={activeTool !== 'search'}>
+          <PdfSearchPanel document={document?.info ?? null} engine={engine} disabled={isBusy} onLocate={locateTextBlock} onCommitted={handleCommitted} onBusyChange={setEditPending} />
           </div>
 
-          <div className="selection-summary">
-            <span className="eyebrow">Local Context</span>
-            <strong>{selectedObjects.length > 0 ? `${selectedObjects.length} object${selectedObjects.length === 1 ? '' : 's'} selected` : 'No objects selected'}</strong>
-            <p>{selectionDescription(selectedObjects)}</p>
-          </div>
-
-          <PdfSearchPanel document={document?.info ?? null} engine={engine} disabled={isBusy} onLocate={locateTextBlock} />
-
-          {document && <ObjectEditPanel document={document.info} page={document.page} selectedIds={selectedIds}
+          {document && <div hidden={activeTool !== 'arrange' && activeTool !== 'pages'}><ObjectEditPanel mode={activeTool === 'pages' ? 'pages' : 'arrange'} section={pagePanelSection} pageSelection={tab === 'pages' ? pageTools.ids : null} document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} host={host} disabled={isBusy} onBusyChange={setEditPending}
-            onSelectionChange={ids => { setSelectedIds(ids); setSearchSelection(null); }} onCommitted={handleCommitted} />}
+            onSelectionChange={ids => { setSelectedIds(ids); setSearchSelection(null); }} onCommitted={handleCommitted} /></div>}
 
-          {document && <DocumentToolsPanel document={document.info} page={document.page} selectedIds={selectedIds}
-            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
-          {document && <SignaturePanel document={document.info} page={document.page}
-            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
+          {document && <div hidden={activeTool !== 'arrange'}><ParagraphPanel document={document.info} page={document.page} selectedIds={selectedIds}
+            engine={engine} disabled={operationBusy || textDraftDirty} onBusyChange={setEditPending} onDraftChange={setParagraphDraftDirty} onCommitted={handleCommitted} /></div>}
+          {document && <div hidden={activeTool !== 'comment' && activeTool !== 'forms'}><DocumentToolsPanel mode={activeTool === 'forms' ? 'forms' : 'comment'} document={document.info} page={document.page} selectedIds={selectedIds}
+            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
+          {document && <div hidden={activeTool !== 'sign'}><SignaturePanel document={document.info} page={document.page}
+            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
 
-          {host.capabilities.ocr && document && <OcrPanel document={document.info} page={document.page} selectedIds={selectedIds}
-            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
+          {host.capabilities.ocr && document && <div hidden={activeTool !== 'ocr'}><OcrPanel document={document.info} page={document.page} selectedIds={selectedIds}
+            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
 
-          <FontPanel engine={engine} host={host} disabled={operationBusy} onBusyChange={setEditPending} />
-          {document && <ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} onExport={exportDocument} />}
+          <div hidden={activeTool !== 'fonts'}><FontPanel engine={engine} host={host} disabled={operationBusy} onBusyChange={setEditPending} /></div>
+          {document && <div hidden={activeTool !== 'export'}><ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} onExport={exportDocument} /></div>}
           {document && (host.capabilities.platform === 'web' || host.printDocument) &&
-            <PrintPanel disabled={isBusy} docId={document.info.id} pageIds={document.info.pageOrder}
+            <div hidden={activeTool !== 'print'}><PrintPanel disabled={isBusy} docId={document.info.id} pageIds={document.info.pageOrder}
               encrypted={document.info.permissions.encrypted} canPrint={document.info.permissions.print === true}
-              engine={engine} host={host} onBusyChange={setEditPending} />}
+              engine={engine} host={host} onBusyChange={setEditPending} /></div>}
 
-          {document && (
-            <ParagraphPanel
-              document={document.info}
-              page={document.page}
-              selectedIds={selectedIds}
-              engine={engine}
-              disabled={operationBusy || textDraftDirty}
-              onBusyChange={setEditPending}
-              onDraftChange={setParagraphDraftDirty}
-              onCommitted={handleCommitted}
-            />
-          )}
-
-          <TextEditPanel
-            document={document?.info ?? null}
-            page={document?.page ?? null}
-            selectedIds={selectedIds}
-            searchSelection={searchSelection}
-            inlineTextId={inlineTextId}
-            inlineHost={inlineTextId ? pageWrapRef.current : null}
-            render={document?.render ?? null}
-            onInlineClose={() => setInlineTextId(null)}
-            engine={engine}
-            disabled={operationBusy || paragraphDraftDirty}
-            onBusyChange={setEditPending}
-            onDraftChange={setTextDraftDirty}
-            onCommitted={handleCommitted}
-          />
-
-          {renderAiPanel ? renderAiPanel({ document: document?.info ?? null, page: document?.page ?? null,
-            name: document?.name ?? null, selectedIds, engine, disabled: isBusy, onCommitted: handleCommitted,
-            openDocument: source => openDocument(source), saveDocument }) : aiPanel ?? (
-            <AiPanel
-              key={document?.info.id ?? 'no-document'}
-              document={document?.info ?? null}
-              page={document?.page ?? null}
-              selectedIds={selectedIds}
-              engine={engine}
-              disabled={isBusy}
-              onBusyChange={setEditPending}
-              onCommitted={handleCommitted}
-              onLocate={locateTextBlock}
-            />
-          )}
-
-          <div className="boundary-note">
-            <span>Execution Boundary</span>
-            <p>Manual and AI changes use the same command path; ABI 1 cores remain read-only and never return simulated edit success.</p>
+          {hasAi && <div hidden={activeTool !== 'ai'}>
+            {renderAiPanel ? renderAiPanel({ document: document?.info ?? null, page: document?.page ?? null,
+              name: document?.name ?? null, selectedIds, engine, disabled: isBusy, onCommitted: handleCommitted,
+              openDocument: source => openDocument(source), saveDocument }) : aiPanel}
+          </div>}
           </div>
         </aside>
+        <nav className="utility-tools" aria-label={t('Quick tools')}>
+          <IconButton label="Find & replace" disabled={!document} aria-pressed={activeTool === 'search'} onClick={() => chooseTool('search')}><Search size={18} /></IconButton>
+        </nav>
       </div>
 
       <footer className="editor-statusbar">
         <span className={error ? 'status-dot status-dot-error' : 'status-dot'} aria-hidden="true" />
-        <span>{error ?? notice}</span>
+        <span className="status-message" role={error ? 'alert' : 'status'}>{t(error ?? notice)}</span>
         <span className="status-spacer" />
-        <span>{document ? `${currentPageIndex + 1} / ${document.info.pageOrder.length}` : '0 / 0'}</span>
-        <span>{document ? `${Math.round(zoom * 100)}%` : '—'}</span>
+        <ViewControls page={tab === 'pages' && document ? Math.max(0, document.info.pageOrder.indexOf(pageTools.focus)) + 1 : currentPageIndex + 1} pages={document?.info.pageOrder.length ?? 0} zoom={tab === 'pages' ? overviewWidth / 230 : zoom} busy={isBusy}
+          onPage={page => { const id = document?.info.pageOrder[page - 1]; if (id) { if (tab === 'pages') { pageTools.select(id); stageRef.current?.querySelector<HTMLElement>(`[data-organizer-page="${id}"]`)?.scrollIntoView({ block: 'nearest' }); } else void switchPage(id); } }}
+          onZoom={scale => { if (tab === 'pages') changeOverviewZoom(scale); else void changeZoom(scale); }} onFit={() => { if (tab === 'pages') setOverviewColumns(3); else fitPage(); }} />
       </footer>
     </main>
+    </Tooltip.Provider>
   );
 }
 
 function EmptyCanvas({ busy, isWeb, onOpen }: { busy: boolean; isWeb: boolean; onOpen(): void }) {
-  return (
-    <div className="empty-canvas">
-      <div className="empty-sheet" aria-hidden="true">
-        <span>PDF</span>
-        <i />
-        <i />
-        <i />
-      </div>
-      <span className="eyebrow">KOMOPDF · LOCAL PDF WORKSPACE</span>
-      <h1>Edit your PDF<br />on your device.</h1>
-      <p>{isWeb ? 'Open a PDF up to 50 MiB. Rendering, editing, and saving run in your browser.' : 'Open a local PDF without app-imposed file-size or page-count limits. Desktop editing and OCR run on your device.'}</p>
-      <button className="button button-primary button-large" type="button" onClick={onOpen} disabled={busy}>
-        {busy ? 'Opening…' : 'Choose Local PDF'}
-      </button>
-    </div>
-  );
+  useI18n();
+  return <div className="empty-canvas">
+    <div className="empty-sheet" aria-hidden="true"><span>PDF</span><i /><i /><i /></div>
+    <span className="welcome-kicker">{t('A little less paperwork.')}</span>
+    <h1>{t('Make your PDF')}<br /><em>{t('work for you.')}</em></h1>
+    <p>{t('Edit, organize and bring your ideas to the page.')}<br />{t('One workspace. Everything you need.')}</p>
+    <button className="button button-primary button-large" type="button" onClick={onOpen} disabled={busy}><FilePlus2 size={19} />{t(busy ? "Opening…" : "Open PDF")}</button>
+    <span className="drop-hint">{t(isWeb ? "or drop a PDF here" : "Choose a file from your computer")}</span>
+    <div className="welcome-features"><span>{t('Edit text & images')}</span><span>{t('Organize pages')}</span><span>{t('Read continuously')}</span></div>
+  </div>;
 }
 
 export async function replaceLoadedDocument(
@@ -1070,17 +1295,17 @@ async function saveCurrentDocument(
 ): Promise<SaveConfirmation | null> {
   setActivity('saving');
   setError(null);
-  setNotice('Generating file from PDF core…');
+  setNotice('Saving…');
   try {
     const result = await engine.save({ docId: current.info.id, protection: 'preserve' });
     const outcome = await host.saveDocument(result, current.name);
     if (outcome?.status === 'download-started') {
-      setNotice(`Download started for rev ${result.savedRevision}; verify the downloaded file before closing`);
+      setNotice('Download started');
       return null;
     }
     const confirmed = await engine.confirmSave({ docId: result.docId, savedRevision: result.savedRevision });
     updateSavedRevision(result.docId, confirmed.savedRevision);
-    setNotice(`Saved rev ${confirmed.savedRevision}`);
+    setNotice('Saved');
     return { docId: result.docId, savedRevision: result.savedRevision };
   } catch (caught) {
     setError(formatError(caught));
@@ -1092,7 +1317,7 @@ async function saveCurrentDocument(
 }
 
 function formatError(error: unknown): string {
-  if (error instanceof EngineError) return `${error.code} · ${error.message}`;
+  if (error instanceof EngineError) return error.message;
   return error instanceof Error ? error.message : 'Operation failed';
 }
 

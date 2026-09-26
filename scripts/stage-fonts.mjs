@@ -9,18 +9,18 @@ export async function stageFonts(coreRoot, destination) {
     if (error.code === 'ENOENT') throw new Error('Fonts are not prepared. Run python scripts/prepare-fonts.py in the public core checkout.');
     throw error;
   });
-  if (records.length !== 18) throw new Error('The complete font runtime requires all 18 pinned faces.');
+  if (!records.length) throw new Error('The prepared font library is empty.');
   await mkdir(destination, { recursive: true });
   const resources = [];
   for (const record of records) {
     const input = path.join(coreRoot, record.path);
     const bytes = await readFile(input);
-    if (!record.editableEmbedding || bytes.length !== record.bytes || createHash('sha256').update(bytes).digest('hex') !== record.sha256) {
+    if (bytes.length !== record.bytes || createHash('sha256').update(bytes).digest('hex') !== record.sha256) {
       throw new Error(`Prepared font does not match its manifest: ${record.id}`);
     }
     const sourceName = path.parse(record.path);
     const filename = `${sourceName.name}.${record.sha256.slice(0, 16)}${sourceName.ext}`;
-    const licenseName = record.licenseOwner === 'lxgw-wenkai' ? 'LXGW-WenKai-OFL.txt' : `${record.licenseOwner}-OFL.txt`;
+    const licenseName = record.licenseOwner === 'lxgw-wenkai' ? 'LXGW-WenKai-OFL.txt' : `${record.licenseOwner}-${path.basename(record.licensePath)}`;
     await writeFile(path.join(destination, filename), bytes);
     await copyFile(path.join(coreRoot, record.licensePath), path.join(destination, licenseName));
     const { id, family, style, weight, italic, format, sha256 } = record;

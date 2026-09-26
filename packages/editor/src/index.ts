@@ -1,5 +1,9 @@
 export { EditorShell, type EditorAiContext } from './ui/EditorShell.js';
 export { AiPanel } from './ui/AiPanel.js';
+export { useI18n, translate, setUiLocale, type UiLocale } from './ui/i18n.js';
+export { LanguageSelect } from './ui/EditorChrome.js';
+export { AppDialog } from './ui/AppDialog.js';
+export { setFontResourceBaseUrl } from './ui/font-resources.js';
 export { WebHostAdapter } from './host/web-host-adapter.js';
 export { WorkerRpcClient } from './rpc/client.js';
 export { WasmEngineAdapter } from './rpc/wasm-engine-adapter.js';

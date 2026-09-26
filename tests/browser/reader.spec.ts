@@ -582,7 +582,11 @@ test('internal PDF link click navigates to target page and ignores unsupported e
   await expect(internalLink).toBeVisible();
   await expect(page.locator('.pdf-link-annotation')).toHaveCount(1);
 
-  // Click internal link and verify navigation to page 2
+  await internalLink.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Go to page 2', exact: true }).click();
+  await expect(page.locator('.page-chip-active')).toHaveAttribute('aria-label', 'Open page 2');
+  await page.getByRole('button', { name: 'Open page 1', exact: true }).click();
+  // The ordinary link click remains available alongside its context menu.
   await internalLink.click();
   await expect(page.locator('.page-chip-active')).toHaveAttribute('aria-label', 'Open page 2');
   await expect(page.locator('.pdf-link-annotation')).toHaveCount(0);

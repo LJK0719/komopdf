@@ -32,6 +32,8 @@ const mockFonts: EditorFont[] = [
   { id: 'liberation-sans-italic', family: 'Liberation Sans', style: 'Italic', weight: 400, italic: true, format: 'ttf' },
   { id: 'liberation-sans-bold-italic', family: 'Liberation Sans', style: 'Bold Italic', weight: 700, italic: true, format: 'ttf' },
   { id: 'restricted-font-bold', family: 'Restricted Font', style: 'Bold', weight: 700, italic: false, format: 'ttf', editableEmbedding: false },
+  { id: 'noto-sans-cjk-sc-regular-oblique', family: 'Noto Sans CJK SC', style: 'Oblique', weight: 400, italic: true, format: 'otf' },
+  { id: 'noto-sans-cjk-sc-bold-oblique', family: 'Noto Sans CJK SC', style: 'Bold Oblique', weight: 700, italic: true, format: 'otf' },
 ];
 
 const registeredBlock: TextBlock = {
@@ -117,8 +119,8 @@ describe('TextEditPanel - Real Font Face Selection', () => {
       [[7, 14], 'liberation-sans-bold-italic'],
       [[14, 16], 'noto-sans-cjk-sc-bold'],
     ]);
-    expect(() => resolveSelectionFormatRuns({ block, range: [0, 16], fonts: mockFonts, formatItalic: 'on' }))
-      .toThrow('No exact weight 400 italic face');
+    expect(resolveSelectionFormatRuns({ block, range: [0, 16], fonts: mockFonts, formatItalic: 'on' }).at(-1)?.style.fontId)
+      .toBe('noto-sans-cjk-sc-regular-oblique');
   });
 
   beforeEach(() => {
@@ -220,39 +222,19 @@ describe('TextEditPanel - Real Font Face Selection', () => {
     expect(allocator.buffers.get(ptr)?.byteLength).toBe(EDIT_COMMAND_STRIDE);
   });
 
-  it('rejects clearly and preserves layout when no exact face matches requested weight/italic', () => {
-    expect(() =>
-      resolveSelectionFormatStyle({
-        block: registeredBlock,
-        range: [0, 10],
-        fonts: mockFonts,
-        formatFontId: 'noto-sans-cjk-sc-regular',
-        formatWeight: 700,
-        formatItalic: 'on', // Noto Sans CJK SC has no italic face
-      })
-    ).toThrow(/No exact weight 700 italic face registered for "Noto Sans CJK SC".*Synthetic bold\/italic is not supported; original typesetting preserved/);
+  it('uses an actual oblique outline face for Chinese bold italic', () => {
+    expect(resolveSelectionFormatStyle({ block: registeredBlock, range: [0, 10], fonts: mockFonts,
+      formatFontId: 'noto-sans-cjk-sc-regular', formatWeight: 700, formatItalic: 'on' }).style.fontId)
+      .toBe('noto-sans-cjk-sc-bold-oblique');
   });
 
-  it('rejects clearly when applying weight/italic to an unregistered PDF font without choosing a registered family', () => {
-    expect(() =>
-      resolveSelectionFormatStyle({
-        block: unregisteredBlock,
-        range: [0, 12],
-        fonts: mockFonts,
-        formatFontId: '',
-        formatWeight: 700,
-      })
-    ).toThrow(/Cannot apply weight or italic without selecting a registered font/);
+  it('automatically substitutes an available face for an unregistered PDF font', () => {
+    expect(resolveSelectionFormatStyle({ block: unregisteredBlock, range: [0, 12], fonts: mockFonts, formatWeight: 700 }).style.fontId)
+      .toBe('liberation-sans-bold');
   });
 
-  it('rejects clearly when target font face forbids editable embedding', () => {
-    expect(() =>
-      resolveSelectionFormatStyle({
-        block: registeredBlock,
-        range: [0, 10],
-        fonts: mockFonts,
-        formatFontId: 'restricted-font-bold',
-      })
-    ).toThrow(/restricted from editable embedding/);
+  it('does not block a selected font based on embedding metadata', () => {
+    expect(resolveSelectionFormatStyle({ block: registeredBlock, range: [0, 10], fonts: mockFonts,
+      formatFontId: 'restricted-font-bold' }).style.fontId).toBe('restricted-font-bold');
   });
 });
