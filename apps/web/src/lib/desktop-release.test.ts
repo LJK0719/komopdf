@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import stableJson from '../../public/releases/stable.json';
 import {
   getStableRelease,
   getArtifactForTarget,
@@ -10,8 +11,13 @@ import {
 } from './desktop-release';
 
 describe('desktop-release lib', () => {
-  it('loads and validates the default unreleased stable.json', () => {
-    const manifest = getStableRelease();
+  it('loads and validates the checked-in stable.json', () => {
+    expect(getStableRelease()).toEqual(parseReleaseManifest(stableJson));
+  });
+
+  it('represents an unpublished release without guessed downloads', () => {
+    const manifest = getStableRelease({ schemaVersion: 1, product: 'komopdf', channel: 'stable',
+      version: null, publishedAt: null, releaseUrl: null, artifacts: [] });
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.product).toBe('komopdf');
     expect(manifest.channel).toBe('stable');
