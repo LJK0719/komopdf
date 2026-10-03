@@ -3,6 +3,7 @@ import React from 'react';
 import { renderToString } from 'react-dom/server';
 import type { PageModel, RenderResult } from '@pdf-editor/contracts';
 import { ObjectSelectionLayer } from '../src/ui/ObjectSelectionLayer.js';
+import { pickObject } from '../src/ui/object-selection.js';
 
 const dummyPage: PageModel = {
   id: 'page-1',
@@ -39,6 +40,12 @@ const dummyRender: RenderResult = {
 };
 
 describe('ObjectSelectionLayer', () => {
+  it('prefers nested text over a Form with identical bounds', () => {
+    const form = { ...dummyPage.objects[0]!, type: 'form' as const };
+    const text = { ...form, id: 'nested-text', type: 'text' as const,
+      locator: { pageId: 'page-1', containerPath: [0], objectIndex: 0 } };
+    expect(pickObject([form, text], 60, 60, 0)?.id).toBe('nested-text');
+  });
   it('exposes direct group children when editing their container without selecting ancestors twice', () => {
     const page: PageModel = { ...dummyPage, objects: [
       { ...dummyPage.objects[0]!, id: 'outer', type: 'group' },

@@ -178,7 +178,6 @@ export function ParagraphPanel({
   const fontEmbeddable = !chosenFont || isFontEmbeddable(chosenFont);
   const canReflow =
     isPreviewCurrent &&
-    !preview.overflow &&
     selectedTextObjects.length > 0 &&
     canModify &&
     validBounds &&
@@ -188,7 +187,6 @@ export function ParagraphPanel({
 
   const canInsert =
     isPreviewCurrent &&
-    !preview.overflow &&
     text.trim().length > 0 &&
     canModify &&
     validBounds &&
@@ -621,8 +619,8 @@ export function ParagraphPanel({
       </div>
 
       {preview ? (
-        <div className={preview.overflow ? 'layout-result layout-result-overflow' : 'layout-result'}>
-          <strong>{preview.overflow ? t("Overflow detected (does not fit bounds)") : t("Fits paragraph bounds")}</strong>
+        <div className="layout-result">
+          <strong>{preview.overflow ? t('Text will grow and continue on a new page when needed') : t("Fits paragraph bounds")}</strong>
           <span>{t("Lines:")} {preview.lines.length} {t("· Box:")} {formatNumber(preview.bounds.width)} × {formatNumber(preview.bounds.height)} pt
           </span>
           {preview.replacementFontId ? <span>{t("Core font:")} {preview.replacementFontId}</span> : null}
@@ -639,8 +637,6 @@ export function ParagraphPanel({
               ? 'Select one or more text objects to reflow'
               : !isPreviewCurrent
               ? t("Preview paragraph first")
-              : preview?.overflow
-              ? t("Fix overflow before reflowing")
               : t("Reflow selected text objects into one paragraph")
           }
         >
@@ -653,8 +649,6 @@ export function ParagraphPanel({
           title={
             !isPreviewCurrent
               ? t("Preview paragraph first")
-              : preview?.overflow
-              ? t("Fix overflow before inserting")
               : t("Insert as a new paragraph")
           }
         >

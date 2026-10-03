@@ -64,7 +64,7 @@
   .bookmark-list button:hover { background: var(--acid); }
   .canvas-stage { position: relative; min-width: 0; min-height: 0; overflow: auto; background: var(--canvas); }
   .canvas-stage.is-dragging { outline: 3px dashed var(--accent); outline-offset: -12px; background: #e4f2ea; }
-  .page-wrap { position: relative; width: max-content; margin: 32px auto 48px; background: white; box-shadow: 0 4px 24px #243f331a, 0 0 0 1px #243f3310; }
+  .page-wrap { position: relative; isolation: isolate; width: max-content; margin: 32px auto 48px; background: white; box-shadow: 0 4px 24px #243f331a, 0 0 0 1px #243f3310; }
   .inspector-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: white; }
   .panel-heading { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 0 18px; font-size: 13px; border-bottom: 1px solid var(--line); }
   .panel-heading strong { font-weight: 600; }
@@ -97,6 +97,7 @@
   .page-number-input { display: flex; align-items: center; gap: 6px; }
   .page-number-input input { width: 37px; border-color: var(--line); appearance: textfield; }
   .page-number-input input::-webkit-inner-spin-button { appearance: none; }
+  .app-dialog-layer { position: fixed; inset: 0; z-index: 200; isolation: isolate; }
   .app-dialog-backdrop { position: fixed; inset: 0; background: #173b3155; backdrop-filter: blur(4px); }
   .app-dialog { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(600px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; background: white; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 80px #12382933; }
   .app-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 18px 24px; border-bottom: 1px solid var(--line); }

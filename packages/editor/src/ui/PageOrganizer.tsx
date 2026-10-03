@@ -5,6 +5,7 @@ import type { LoadedDocument } from './EditorShell.js';
 import { PageThumbnail } from './PageThumbnail.js';
 import { movePages, selectPages, type SelectionModifiers } from './page-selection.js';
 import { useI18n } from './i18n.js';
+import { usePageImport } from './page-import.js';
 
 export type PageAction = 'copyPages' | 'pastePages' | 'extractPages' | 'duplicatePage' | 'deletePage' | 'rotatePageLeft' | 'rotatePageRight' | 'blankPage' | 'blankPageBefore' | 'importPages' | 'movePagesStart' | 'movePagesEnd';
 type Options = {
@@ -19,6 +20,8 @@ export function usePageTools({ document, engine, host, disabled, execute, onBusy
   const [focus, setFocus] = useState('');
   const anchor = useRef('');
   const [clipboard, setClipboard] = useState<{ docId: string; resourceId: string; count: number } | null>(null);
+  const pageImport = usePageImport({ document: document?.info ?? null, engine, host, disabled,
+    execute, onBusy, onError, onImported: setSelected });
   const order = document?.info.pageOrder ?? [];
   const ids = order.filter(id => selected.includes(id));
   useEffect(() => {
@@ -49,7 +52,7 @@ export function usePageTools({ document, engine, host, disabled, execute, onBusy
     if (action === 'duplicatePage') return ids.length > 0 && permissions.copy && capabilities.includes('pages.duplicate');
     if (action === 'rotatePageLeft' || action === 'rotatePageRight') return ids.length > 0 && capabilities.includes('pages.rotate');
     if (action === 'movePagesStart' || action === 'movePagesEnd') return ids.length > 0 && ids.length < order.length && capabilities.includes('pages.reorder');
-    if (action === 'importPages') return Boolean(host.pickResource && capabilities.includes('pages.import'));
+    if (action === 'importPages') return capabilities.includes('pages.import');
     return capabilities.includes('pages.insert');
   };
   const run = async (action: PageAction) => {
@@ -80,24 +83,17 @@ export function usePageTools({ document, engine, host, disabled, execute, onBusy
       if (await execute([{ type: 'pages.import', resourceId: clipboard.resourceId, pageIndices: newPageIds.map((_, i) => i), newPageIds, afterPageId }], new Set([clipboard.resourceId]))) setSelected(newPageIds);
       return;
     }
+    if (action === 'importPages') { await pageImport.openImport(afterPageId); return; }
     onBusy(true);
     try {
-      if (action === 'importPages') {
-        const source = await host.pickResource?.('pdf');
-        if (!source) return;
-        const resource = await engine.registerResource({ docId: info.id, resourceId: crypto.randomUUID(), source });
-        const newPageIds = Array.from({ length: resource.pageCount ?? 0 }, () => crypto.randomUUID());
-        if (newPageIds.length && await execute([{ type: 'pages.import', resourceId: resource.id, pageIndices: newPageIds.map((_, i) => i), newPageIds, afterPageId }], new Set([resource.id]))) setSelected(newPageIds);
+      const result = await engine.extractPages!({ docId: info.id, pageIds: ids });
+      if (action === 'extractPages') {
+        const outcome = await host.saveDocument({ ...result, savedRevision: result.sourceRevision }, document.name.replace(/\.pdf$/i, '') + '-pages.pdf');
+        onNotice(t(outcome?.status === 'download-started' ? 'Selected pages download started.' : 'Selected pages exported.'));
       } else {
-        const result = await engine.extractPages!({ docId: info.id, pageIds: ids });
-        if (action === 'extractPages') {
-          const outcome = await host.saveDocument({ ...result, savedRevision: result.sourceRevision }, document.name.replace(/\.pdf$/i, '') + '-pages.pdf');
-          onNotice(t(outcome?.status === 'download-started' ? 'Selected pages download started.' : 'Selected pages exported.'));
-        } else {
-          const resource = await engine.registerResource({ docId: info.id, resourceId: crypto.randomUUID(), source: result.kind === 'bytes' ? { kind: 'pdf', bytes: result.bytes } : { kind: 'native-file', handle: result.handle } });
-          setClipboard({ docId: info.id, resourceId: resource.id, count: ids.length });
-          onNotice(t('Pages copied. Paste them anywhere in this PDF.'));
-        }
+        const resource = await engine.registerResource({ docId: info.id, resourceId: crypto.randomUUID(), source: result.kind === 'bytes' ? { kind: 'pdf', bytes: result.bytes } : { kind: 'native-file', handle: result.handle } });
+        setClipboard({ docId: info.id, resourceId: resource.id, count: ids.length });
+        onNotice(t('Pages copied. Paste them anywhere in this PDF.'));
       }
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { onBusy(false); }
@@ -107,7 +103,7 @@ export function usePageTools({ document, engine, host, disabled, execute, onBusy
     const next = movePages(order, moving, target, after);
     if (next.some((id, index) => id !== order[index])) await execute([{ type: 'pages.reorder', pageIds: next }]);
   };
-  return { ids, focus, select, selectAll: () => setSelected([...order]), can, run, reorder };
+  return { ids, focus, select, selectAll: () => setSelected([...order]), can, run, reorder, ...pageImport };
 }
 export type PageTools = ReturnType<typeof usePageTools>;
 
@@ -139,7 +135,8 @@ export function PageOrganizer({ document, engine, tools, disabled, width, column
   const [drop, setDrop] = useState<{ id: string; after: boolean } | null>(null);
   return <div className="page-organizer">
     <div className="organizer-heading"><strong>{t('Organize pages')}</strong><span>{t('{count} pages selected', { count: tools.ids.length })}</span>
-      <small>{t('Ctrl/Cmd: select multiple · Shift: select range · Drag to reorder')}</small></div>
+      <small>{t('Ctrl/Cmd: select multiple · Shift: select range · Drag to reorder')}</small>
+      <button type="button" disabled={!tools.can('importPages')} onClick={() => void tools.run('importPages')}>{t('Insert from PDF')}</button></div>
     <div ref={grid} role="listbox" aria-label={t('Page overview')} aria-multiselectable="true" className="page-overview"
       style={{ '--page-tile-width': `${width}px`, gridTemplateColumns: columns ? `repeat(${columns}, minmax(0, 1fr))` : undefined } as CSSProperties}
       onKeyDown={event => {

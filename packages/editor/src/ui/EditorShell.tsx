@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
   EngineError,
@@ -13,9 +13,17 @@ import {
   type PageModel,
   type RenderResult,
   type SaveConfirmation,
+  type TextStyle,
 } from '@pdf-editor/contracts';
 import { DirectTextEditor, type TextEditorHandle } from './DirectTextEditor.js';
-import { DocumentViewport, type PageView, type PointerTool } from './DocumentViewport.js';
+import { DocumentViewport, type PageView, type PointerTool, type ViewportSize } from './DocumentViewport.js';
+import { useViewZoom } from './use-view-zoom.js';
+import { captureReadingZoomAnchor, readingZoomScrollDelta, type ReadingZoomAnchor } from './view-zoom.js';
+import { AnnotationDrawingLayer } from './AnnotationDrawingLayer.js';
+import type { AnnotationDrawingOptions } from './annotation-drawing.js';
+import { SignaturePlacementLayer } from './SignaturePlacementLayer.js';
+import type { SignatureDraft } from './signature-placement.js';
+import { ImportPagesDialog } from './ImportPagesDialog.js';
 import { EditorRibbon, type RibbonTab, type RibbonAction } from './EditorRibbon.js';
 import { ImageCropOverlay } from './ImageCropOverlay.js';
 import { ContextMenu } from '@base-ui/react/context-menu';
@@ -34,6 +42,8 @@ import { PdfSearchPanel } from './PdfSearchPanel.js';
 import { PageThumbnail } from './PageThumbnail.js';
 import { PageOrganizer, PageContextMenu, usePageTools, type PageAction } from './PageOrganizer.js';
 import type { TextSelectionTarget } from './PdfTextLayer.js';
+import { mergeTextRects } from './text-geometry.js';
+import { readingRegions } from './reading-order.js';
 import { renderPage } from './draw-render.js';
 import { ObjectSelectionLayer as SelectionLayer } from './ObjectSelectionLayer.js';
 import { pickObject, selectionScope } from './object-selection.js';
@@ -63,6 +73,7 @@ type EditorShellProps = {
   onDocumentChange?: (state: { document: DocumentInfo | null; busy: boolean; draftDirty: boolean }) => void;
   closeDocumentRef?: { current: (() => Promise<boolean>) | null };
   externalBusy?: boolean;
+  allowReadOnlyNavigation?: boolean;
   headerActions?: ReactNode;
   onActivityChange?: (busy: boolean) => void;
 };
@@ -77,6 +88,10 @@ export type EditorAiContext = {
   onCommitted(result: CommitResult): Promise<void>;
   openDocument(source: DocumentSource): Promise<DocumentInfo | null>;
   saveDocument(): Promise<SaveConfirmation | null>;
+  navigationDisabled?: boolean;
+  showAiPanel?(): void;
+  navigatePage?(pageId: string): Promise<void>;
+  locateText?(pageId: string, blockId: string, range?: { start: number; end: number }): void;
 };
 
 export type LoadedDocument = {
@@ -94,7 +109,7 @@ type Activity = 'idle' | 'opening' | 'rendering' | 'saving' | 'editing';
 type WebDocumentSession = { loaded: LoadedDocument; history: { canUndo: boolean; canRedo: boolean }; zoom: number; selectedIds: string[] };
 
 export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, renderAiPanel,
-  source: externalSource, onSourceConsumed, onDocumentChange, closeDocumentRef, externalBusy = false, onActivityChange, headerActions }: EditorShellProps) {
+  source: externalSource, onSourceConsumed, onDocumentChange, closeDocumentRef, externalBusy = false, allowReadOnlyNavigation = false, onActivityChange, headerActions }: EditorShellProps) {
   useI18n();
   const [activeTool, setActiveTool] = useState<EditorTool | null>(null);
   const [railOpen, setRailOpen] = useState(true);
@@ -112,6 +127,12 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [cropImage, setCropImage] = useState(false);
   const [cropPage, setCropPage] = useState(false);
   const [placement, setPlacement] = useState<{ kind: 'text' } | { kind: 'image'; resourceId: string; width: number; height: number } | null>(null);
+  const [annotationDrawing, setAnnotationDrawing] = useState<AnnotationDrawingOptions | null>(null);
+  const [selectedAnnotation, setSelectedAnnotation] = useState<import('@pdf-editor/contracts').PdfAnnotationInfo | null>(null);
+  const [reusableSignature, setReusableSignature] = useState<SignatureDraft | null>(null);
+  const [pendingSignature, setPendingSignature] = useState<SignatureDraft | null>(null);
+  const [viewSize, setViewSize] = useState<ViewportSize | null>(null);
+  const zoomAnchor = useRef<{ pageId: string; position: ReadingZoomAnchor; scale: number } | null>(null);
   const [presenting, setPresenting] = useState(false);
   const beforePresentation = useRef({ view, continuous, pointer });
   const textEditor = useRef<TextEditorHandle | null>(null);
@@ -129,6 +150,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inlineTextId, setInlineTextId] = useState<string | null>(null);
+  const [copiedTextFormat, setCopiedTextFormat] = useState<TextStyle | null>(null);
   const [searchSelection, setSearchSelection] = useState<{ docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null>(null);
   const searchLocationSequence = useRef(0);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
@@ -179,6 +201,23 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     documentRef.current = document;
   }, [document]);
   useEffect(() => { setInlineTextId(id => document?.page.objects.some(object => object.id === id) ? id : null); }, [document?.info.id, document?.page.id]);
+  useEffect(() => { setAnnotationDrawing(null); setPendingSignature(null); setSelectedAnnotation(null); }, [document?.info.id]);
+  useEffect(() => { setPendingSignature(null); }, [document?.page.id, document?.info.revision]);
+  useEffect(() => {
+    if (activeTool !== 'comment') setAnnotationDrawing(null);
+    if (activeTool !== 'sign') setPendingSignature(null);
+  }, [activeTool]);
+  useEffect(() => { setSelectedAnnotation(null); }, [document?.info.revision]);
+  useLayoutEffect(() => {
+    const anchor = zoomAnchor.current, root = stageRef.current;
+    if (!anchor || !root || anchor.scale !== zoom) return;
+    zoomAnchor.current = null;
+    const page = [...root.querySelectorAll<HTMLElement>('[data-document-page]')].find(node => node.dataset.documentPage === anchor.pageId);
+    if (!page) return;
+    const delta = readingZoomScrollDelta(anchor.position, page.getBoundingClientRect(), root.getBoundingClientRect(), zoom);
+    root.scrollTop += delta.top;
+    root.scrollLeft += delta.left;
+  }, [zoom]);
   useEffect(() => {
     stageRef.current?.parentElement?.querySelector('.page-chip-active')?.scrollIntoView({ block: 'nearest' });
   }, [document?.page.id]);
@@ -225,10 +264,10 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     });
   };
 
-  const updateSavedRevision = (docId: string, savedRevision: number): void => {
+  const updateSavedRevision = (docId: string, savedRevision: number, name?: string): void => {
     const latest = documentRef.current;
     if (!latest || latest.info.id !== docId) return;
-    const updated = mergeSavedRevision(latest, savedRevision);
+    const updated = { ...mergeSavedRevision(latest, savedRevision), name: name ?? latest.name };
     documentRef.current = updated;
     setDocument(updated);
     triggerAutoRecovery(updated.info, updated.name);
@@ -398,6 +437,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   };
 
   const switchPage = async (pageId: string, targetTopPt?: number): Promise<void> => {
+    if (navigationBusy) return;
     if (isDraftDirty && !await textEditor.current?.finish()) return;
     if (!document) return;
     if (document.page.id === pageId) { requestAnimationFrame(() => scrollToPage(pageId, targetTopPt)); return; }
@@ -421,27 +461,54 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
   };
 
-  const saveDocument = async (): Promise<SaveConfirmation | null> => {
+  const saveDocument = async (saveAs = false): Promise<SaveConfirmation | null> => {
     if (isDraftDirty && !await textEditor.current?.finish()) return null;
     const current = documentRef.current;
     if (!current) return null;
-    return saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity);
+    return saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, saveAs);
   };
 
-  const exportDocument = async (options: ExportSettings): Promise<void> => {
+  const exportDocument = async (options: ExportSettings, signal: AbortSignal,
+    progress: (value: import('@pdf-editor/contracts').ConversionProgress) => void): Promise<string[]> => {
+    if (isDraftDirty && !await textEditor.current?.finish()) throw new Error('Apply or discard the text draft before exporting');
     const current = documentRef.current;
-    if (!current || isDraftDirty) throw new Error('Apply or discard the text draft before exporting');
-    setActivity('saving'); setError(null); setNotice('Exporting a local PDF copy…');
+    if (!current) throw new Error('Open a PDF first');
+    signal.throwIfAborted();
+    setActivity('saving'); setError(null); setNotice('Exporting a local copy…');
     try {
-      const result = await engine.save({ docId: current.info.id, ...options });
-      const suffix = options.protection === 'set' ? 'protected' : options.protection === 'remove' ? 'unprotected' : options.optimize ? 'optimized' : 'copy';
-      const name = `${current.name.replace(/\.pdf$/i, '')}-${suffix}.pdf`;
-      const outcome = await host.saveDocument(result, name);
-      setNotice(outcome?.status === 'download-started' ? 'Export download started; active document unchanged' : 'Exported PDF copy; active document unchanged');
-      // A copy export deliberately does not confirm the active document as saved.
+      if (options.format === 'pdf') {
+        const { format: _format, ...settings } = options;
+        const result = await engine.save({ docId: current.info.id, ...settings });
+        signal.throwIfAborted();
+        const suffix = options.protection === 'set' ? 'protected' : options.protection === 'remove' ? 'unprotected' : options.optimize ? 'optimized' : 'copy';
+        const name = `${current.name.replace(/\.pdf$/i, '')}-${suffix}.pdf`;
+        const outcome = host.saveExport ? await host.saveExport({ ...result, jobId: crypto.randomUUID(),
+          extension: 'pdf', mimeType: 'application/pdf', warnings: [], pageIndices: current.info.pageOrder.map((_, index) => index) }, name)
+          : await host.saveDocument(result, name);
+        if (outcome?.status === 'cancelled') { setNotice('Export cancelled'); return []; }
+        setNotice(outcome?.status === 'download-started' ? 'Export download started; active document unchanged' : 'Exported PDF copy; active document unchanged');
+        return [];
+      }
+      if (!current.info.permissions.copy) throw new EngineError('UNSUPPORTED_CAPABILITY', 'This PDF does not allow copying its content');
+      if (!host.saveExport) throw new EngineError('UNSUPPORTED_CAPABILITY', 'This host does not support format conversion');
+      const { conversionPages, convertInBrowser, BROWSER_EXPORT_LIMITS } = await import('./document-conversion.js');
+      const request = { jobId: crypto.randomUUID(), format: options.format,
+        pageIndices: conversionPages(options.pages, current.info.pageOrder.length, current.info.pageOrder.indexOf(current.page.id),
+          host.convertDocument ? Infinity : BROWSER_EXPORT_LIMITS.pageInstances),
+        dpi: options.dpi, quality: options.quality };
+      const result = host.convertDocument
+        ? await host.convertDocument(await engine.save({ docId: current.info.id, protection: 'remove' }), request, progress, signal)
+        : await convertInBrowser(engine, current.info, current.name, request, progress, signal);
+      try {
+        signal.throwIfAborted();
+        const outcome = await host.saveExport(result, `${current.name.replace(/\.pdf$/i, '')}.${result.extension}`);
+        if (outcome?.status === 'cancelled') { setNotice('Export cancelled'); return []; }
+        setNotice(outcome?.status === 'download-started' ? 'Export download started; active document unchanged' : 'Exported local copy; active document unchanged');
+        return result.warnings.map(warning => `${warning.message}${warning.pageIndices.length ? ` (${warning.pageIndices.map(index => index + 1).join(', ')})` : ''}`);
+      } finally { await host.releaseExport?.(result); }
+      // Export never confirms the active document as saved.
     } catch (caught) {
-      setNotice('Export not completed');
-      throw caught;
+      setNotice(signal.aborted ? 'Conversion cancelled' : 'Export not completed'); throw caught;
     } finally { setActivity('idle'); }
   };
 
@@ -510,6 +577,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   };
 
   const locateTextBlock = (pageId: string, blockId: string, range?: { start: number; end: number }): void => {
+    if (navigationBusy) return;
     if (isDraftDirty) { setError('Apply or discard the current text draft before changing selection'); return; }
     void (async () => {
       const current = documentRef.current;
@@ -532,7 +600,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         const target = loaded.page.objects.find((object) => object.textBlock?.id === blockId);
         setInlineTextId(null);
         setSelectedIds(target ? [target.id] : []);
-        requestAnimationFrame(() => scrollToPage(pageId));
+        requestAnimationFrame(() => scrollToPage(pageId, target?.bounds.y ?? 0));
         setSearchSelection(target && range ? { docId: latest.info.id, revision: latest.info.revision,
           pageId, blockId, start: range.start, end: range.end, key: ++searchLocationSequence.current } : null);
         setNotice(target ? `Located page ${current.info.pageOrder.indexOf(pageId) + 1}` : 'Referenced text block is currently not visible');
@@ -559,12 +627,18 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
   const changeZoom = async (scale: number): Promise<void> => {
     const current = documentRef.current;
-    if (!current || isDraftDirty || activity !== 'idle' || editPending || externalBusy) return;
+    if (!current || navigationBusy) return;
     setActivity('rendering'); setError(null);
     try {
       const render = await renderPage(engine, current.info.id, current.page, scale, current.info.revision);
       const latest = documentRef.current;
       if (!latest || latest.info.id !== current.info.id || latest.page.id !== current.page.id || latest.info.revision !== current.info.revision) return;
+      const root = stageRef.current;
+      const page = [...(root?.querySelectorAll<HTMLElement>('[data-document-page]') ?? [])].find(node => node.dataset.documentPage === current.page.id);
+      if (root && page) {
+        zoomAnchor.current = { pageId: current.page.id, scale,
+          position: captureReadingZoomAnchor(page.getBoundingClientRect(), root.getBoundingClientRect(), zoom) };
+      }
       const updated = { ...latest, render };
       documentRef.current = updated; setDocument(updated); setZoom(scale);
     } catch (caught) { setError(formatError(caught)); }
@@ -660,8 +734,10 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const selectedObjects = document
     ? document.page.objects.filter((object) => selectedIds.includes(object.id))
     : [];
-  const operationBusy = activity !== 'idle' || editPending || externalBusy;
+  const modalOpen = Boolean(savePrompt || passwordPrompt);
+  const operationBusy = activity !== 'idle' || editPending || externalBusy || modalOpen;
   const isBusy = operationBusy || isDraftDirty;
+  const navigationBusy = activity !== 'idle' || editPending || modalOpen || isDraftDirty || (externalBusy && !allowReadOnlyNavigation);
   useEffect(() => { onActivityChange?.(activity !== 'idle' || editPending || isDraftDirty); }, [activity, editPending, isDraftDirty, onActivityChange]);
   useEffect(() => { onDocumentChange?.({ document: document?.info ?? null, busy: operationBusy, draftDirty: isDraftDirty }); },
     [document?.info, operationBusy, isDraftDirty, onDocumentChange]);
@@ -773,15 +849,27 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
   };
   const activateVisiblePage = (loaded: LoadedDocument) => {
-    if (isBusy || loaded.info.id !== documentRef.current?.info.id || loaded.info.revision !== documentRef.current.info.revision) return;
+    if (navigationBusy || loaded.info.id !== documentRef.current?.info.id || loaded.info.revision !== documentRef.current.info.revision) return;
     const updated = { ...loaded, info: documentRef.current.info };
     documentRef.current = updated; setDocument(updated);
     setSelectedIds([]); setInlineTextId(null); setSearchSelection(null); setCropImage(false); setCropPage(false);
   };
-  const fitPage = () => {
-    if (!document || !stageRef.current || isBusy) return;
-    const { clientWidth, clientHeight } = stageRef.current;
-    void changeZoom(Math.min(4, Math.max(0.25, Math.min((clientWidth - 64) / (document.page.widthPt * (view === 'double' ? 2 : 1)), (clientHeight - 64) / document.page.heightPt))));
+  const fittedSize = document && viewSize?.docId === document.info.id && viewSize.pageId === document.page.id && viewSize.view === view
+    ? viewSize : document && view === 'single' ? { widthPt: document.page.widthPt, heightPt: document.page.heightPt, columns: 1 as const } : null;
+  const viewZoom = useViewZoom({ root: stageRef, documentKey: document?.info.id, pageKey: document?.page.id,
+    size: fittedSize, zoom, busy: navigationBusy, enabled: tab !== 'pages', onZoom: changeZoom });
+  const fitPage = viewZoom.fitPage;
+  const startAnnotation = (next: AnnotationDrawingOptions | null) => {
+    if (isBusy) return;
+    setAnnotationDrawing(next); setPendingSignature(null); setPlacement(null); setCropImage(false); setCropPage(false);
+    setInlineTextId(null); setSelectedIds([]); setSelectedAnnotation(null);
+    if (next) { setPointer('select'); setActiveTool('comment'); window.getSelection()?.removeAllRanges(); }
+  };
+  const startSignature = (draft: SignatureDraft | null) => {
+    if (isBusy) return;
+    setPendingSignature(draft); setAnnotationDrawing(null); setPlacement(null); setCropImage(false); setCropPage(false);
+    setInlineTextId(null); setSelectedIds([]);
+    if (draft) { setPointer('select'); window.getSelection()?.removeAllRanges(); }
   };
   const executeCommands = async (commands: import('@pdf-editor/contracts').EditCommand[], resourceIds = new Set<string>()): Promise<boolean> => {
     const current = documentRef.current;
@@ -803,8 +891,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const changeOverviewZoom = (scale: number) => {
     setOverviewColumns(0); setOverviewWidth(Math.max(100, Math.min(900, scale * 230)));
   };
-  const wheelState = useRef({ tab, isBusy, zoom, overviewWidth, overviewColumns, changeZoom });
-  wheelState.current = { tab, isBusy, zoom, overviewWidth, overviewColumns, changeZoom };
+  const wheelState = useRef({ tab, isBusy: navigationBusy, zoom, overviewWidth, overviewColumns, changeZoom: viewZoom.manualZoom, exitFitMode: viewZoom.exitFitMode });
+  wheelState.current = { tab, isBusy: navigationBusy, zoom, overviewWidth, overviewColumns, changeZoom: viewZoom.manualZoom, exitFitMode: viewZoom.exitFitMode };
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -820,6 +908,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         const width = current.overviewColumns ? stage.querySelector('.organizer-page')?.getBoundingClientRect().width ?? current.overviewWidth : current.overviewWidth;
         setOverviewColumns(0); setOverviewWidth(Math.max(100, Math.min(900, width * factor)));
       } else {
+        current.exitFitMode();
         requested = Math.max(0.25, Math.min(4, (requested ?? current.zoom) * factor));
         clearTimeout(timer);
         timer = setTimeout(() => { const scale = requested; requested = null; if (scale !== null) void wheelState.current.changeZoom(scale); }, 100);
@@ -830,8 +919,21 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   }, []);
   const runRibbonAction = async (action: RibbonAction): Promise<void> => {
     const current = documentRef.current;
-    if (!current || isBusy) return;
+    if (!current) return;
+    if (action === 'fit' || action === 'fitWidth') {
+      if (navigationBusy) return;
+      if (tab === 'pages') setOverviewColumns(3);
+      else if (action === 'fitWidth') viewZoom.fitWidth(); else fitPage();
+      return;
+    }
+    if (isBusy) return;
     const pageId = current.page.id;
+    if (action === 'note' || action === 'rectangle' || action === 'ink') {
+      if (!current.info.permissions.annotate || !current.info.capabilities.includes('annotation.add')) return;
+      startAnnotation({ tool: action === 'note' ? 'text' : action, color: action === 'note' ? '#fff176' : '#226044', opacity: 1, strokeWidth: 2, text: '' });
+      return;
+    }
+    setAnnotationDrawing(null); setPendingSignature(null);
     if (tab === 'pages' && ['blankPage', 'importPages', 'duplicatePage', 'deletePage', 'rotatePageLeft', 'rotatePageRight', 'copyPages', 'pastePages', 'extractPages'].includes(action)) {
       await pageTools.run(action as PageAction); return;
     }
@@ -845,7 +947,6 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       if (object) await transformObjects(selectedIds, action === 'flipHorizontal' ? [-1, 0, 0, 1, object.bounds.x * 2 + object.bounds.width, 0] : [1, 0, 0, -1, 0, object.bounds.y * 2 + object.bounds.height]);
       return;
     }
-    if (action === 'fit') { if (tab === 'pages') setOverviewColumns(3); else fitPage(); return; }
     if (action === 'present') {
       try {
         beforePresentation.current = { view, continuous, pointer };
@@ -856,11 +957,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
     if (action === 'insertText') { setTab('edit'); setPointer('edit'); setSelectedIds([]); setPlacement({ kind: 'text' }); return; }
     if (action === 'cropImage') { setCropImage(true); return; }
-    if (['insertImage', 'replaceImage', 'importPages'].includes(action)) {
+    if (action === 'importPages') { await pageTools.openImport(pageId); return; }
+    if (['insertImage', 'replaceImage'].includes(action)) {
       setEditPending(true); setError(null);
       try {
-        const kind = action === 'importPages' ? 'pdf' : 'image';
-        const source = await host.pickResource?.(kind);
+        const source = await host.pickResource?.('image');
         if (!source) return;
         const resource = await engine.registerResource({ docId: current.info.id, resourceId: crypto.randomUUID(), source });
         if (action === 'insertImage') {
@@ -868,9 +969,6 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           setPlacement({ kind: 'image', resourceId: resource.id, width: resource.width ?? 200, height: resource.height ?? 150 });
         } else if (action === 'replaceImage') {
           await executeCommands([{ type: 'image.replace', pageId, objectId: selectedIds[0]!, resourceId: resource.id }], new Set([resource.id]));
-        } else {
-          const indices = Array.from({ length: resource.pageCount ?? 0 }, (_, index) => index);
-          if (indices.length) await executeCommands([{ type: 'pages.import', resourceId: resource.id, pageIndices: indices, newPageIds: indices.map(() => crypto.randomUUID()), afterPageId: pageId }], new Set([resource.id]));
         }
       } catch (caught) { setError(formatError(caught)); }
       finally { setEditPending(false); }
@@ -889,18 +987,52 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       await transformObjects(selectedIds, [0, sign, -sign, 0, cx + sign * cy, cy - sign * cx]);
     }
   };
-  const editTextAt = (loaded: LoadedDocument, id: string, range: [number, number]) => {
+  const editTextAt = (loaded: LoadedDocument, id: string, range: [number, number] | null = null) => {
     if (isBusy || loaded.info.revision !== documentRef.current?.info.revision) return;
-    activateVisiblePage(loaded); setTab('edit'); setPointer('edit'); setSelectedIds([id]); setInlineRange(range); setInlineTextId(id);
+    const flow = loaded.page.objects.find(object => object.id === id)?.textBlock?.flow;
+    const activate = (target: LoadedDocument, objectId: string, selection: [number, number] | null) => {
+      activateVisiblePage(target); setTab('edit'); setPointer('edit'); setSelectedIds([objectId]); setInlineRange(selection); setInlineTextId(objectId);
+    };
+    if (!flow || flow.start === 0) { activate(loaded, id, range); return; }
+    setActivity('rendering'); setError(null);
+    void (async () => {
+      try {
+        const position = loaded.info.pageOrder.indexOf(loaded.page.id);
+        const candidates = [...loaded.info.pageOrder.slice(0, position).reverse(), ...loaded.info.pageOrder.slice(position + 1)];
+        for (const pageId of candidates) {
+          const page = await engine.describePage(loaded.info.id, pageId);
+          const first = page.objects.find(object => object.textBlock?.flow?.id === flow.id && object.textBlock.flow.start === 0);
+          if (!first) continue;
+          const target = await loadPage(engine, loaded.info, loaded.name, pageId, zoom);
+          if (documentRef.current?.info.id !== loaded.info.id || documentRef.current.info.revision !== loaded.info.revision) return;
+          activate(target, first.id, range ? [range[0] + flow.start, range[1] + flow.start] : null);
+          requestAnimationFrame(() => scrollToPage(pageId, first.bounds.y));
+          return;
+        }
+        throw new Error('The first frame of this linked paragraph is no longer available');
+      } catch (caught) { setError(formatError(caught)); }
+      finally { setActivity('idle'); }
+    })();
   };
   const annotateSelection = async (loaded: LoadedDocument, targets: TextSelectionTarget[], action: 'highlight' | 'underline') => {
     if (isBusy || loaded.info.revision !== documentRef.current?.info.revision) return;
     activateVisiblePage(loaded);
-    const commands: import('@pdf-editor/contracts').EditCommand[] = targets.flatMap<import('@pdf-editor/contracts').EditCommand>(target => {
-      if (target.range[0] === target.range[1]) return [];
-      if (action === 'underline') return [{ type: 'text.style', pageId: loaded.page.id, blockIds: [target.blockId], range: target.range, style: { underline: true } }];
-      return target.rects.map(bounds => ({ type: 'annotation.add', pageId: loaded.page.id, annotationId: crypto.randomUUID(), subtype: 'highlight', bounds, color: [1, 0.85, 0.1], opacity: 0.4 }));
-    });
+    const selected = targets.filter(target => target.range[0] !== target.range[1]);
+    let commands: import('@pdf-editor/contracts').EditCommand[];
+    if (action === 'underline') commands = selected.map(target => ({ type: 'text.style', pageId: loaded.page.id,
+      blockIds: [target.blockId], range: target.range, style: { underline: true } }));
+    else {
+      const regionIds = new Map(readingRegions(loaded.page).flatMap((region, index) => region.objects.map(object => [object.id, index] as const)));
+      const groups = new Map<number | string, import('@pdf-editor/contracts').Rect[]>();
+      for (const target of selected) {
+        const key = regionIds.get(target.objectId) ?? target.objectId;
+        const rects = groups.get(key);
+        if (rects) rects.push(...target.rects); else groups.set(key, [...target.rects]);
+      }
+      commands = [...groups.values()].flatMap(rects => mergeTextRects(rects, loaded.page.rotation % 180 !== 0))
+        .map<import('@pdf-editor/contracts').EditCommand>(bounds => ({ type: 'annotation.add', pageId: loaded.page.id,
+          annotationId: crypto.randomUUID(), subtype: 'highlight', bounds, color: [1, 0.85, 0.1], opacity: 0.4 }));
+    }
     if (commands.length && await executeCommands(commands)) window.getSelection()?.removeAllRanges();
   };
   const insertTextAt = (loaded: LoadedDocument, point: { x: number; y: number }) => {
@@ -918,10 +1050,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     let command: import('@pdf-editor/contracts').EditCommand;
     let resources = new Set<string>();
     if (placement.kind === 'text') {
-      const font = fonts[0];
+      const font = fonts.find(item => item.id === copiedTextFormat?.fontId) ?? fonts[0];
       if (!font) { setError(t('No font is available. Import a font first.')); chooseTool('fonts'); return; }
-      command = { type: 'text.insert', pageId: current.page.id, objectId: id,
-        bounds: { x, y, width: Math.min(240, current.page.widthPt - x), height: Math.min(48, current.page.heightPt - y) }, text: t('New text'), style: { fontId: font.id, fontSize: 14, color: [0, 0, 0] } };
+      command = { type: 'text.insert', pageId: current.page.id, objectId: id, paragraph: true,
+        bounds: { x, y, width: Math.min(240, current.page.widthPt - x), height: Math.min(48, current.page.heightPt - y) },
+        text: t('New text'), style: { fontSize: 14, color: [0, 0, 0], lineHeight: 1.2, ...copiedTextFormat, fontId: font.id } };
     } else {
       const scale = Math.min(1, 240 / placement.width, (current.page.widthPt - x) / placement.width, (current.page.heightPt - y) / placement.height);
       command = { type: 'image.insert', pageId: current.page.id, objectId: id, resourceId: placement.resourceId,
@@ -930,7 +1063,24 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
     if (await executeCommands([command], resources)) {
       setPlacement(null);
-      const inserted = documentRef.current?.page.objects.find(item => item.id === id || item.textBlock?.sourceObjectIds.includes(id));
+      const active = documentRef.current;
+      let inserted = active?.page.objects.find(item => item.id === id || item.textBlock?.sourceObjectIds.includes(id));
+      if (!inserted && active && command.type === 'text.insert') {
+        setActivity('rendering');
+        try {
+          for (const pageId of active.info.pageOrder) {
+            if (pageId === active.page.id) continue;
+            const page = await engine.describePage(active.info.id, pageId);
+            inserted = page.objects.find(item => item.id === id);
+            if (!inserted) continue;
+            const target = await loadPage(engine, active.info, active.name, pageId, zoom);
+            activateVisiblePage(target);
+            requestAnimationFrame(() => scrollToPage(pageId, inserted?.bounds.y));
+            break;
+          }
+        } catch (caught) { setError(formatError(caught)); }
+        finally { setActivity('idle'); }
+      }
       if (inserted) { setSelectedIds([inserted.id]); if (inserted.textBlock) setInlineTextId(inserted.id); }
     }
   };
@@ -946,6 +1096,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   useEffect(() => { if (presenting) fitPage(); }, [presenting]);
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || modalOpen || globalThis.document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       const typing = event.target instanceof HTMLElement && (event.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName));
       if (!typing && event.key === 'Escape') { setPlacement(null); setCropImage(false); setCropPage(false); setSelectedIds([]); }
       const pageScope = tab === 'pages' || (event.target instanceof Element && Boolean(event.target.closest('.page-list')));
@@ -958,7 +1109,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); void pageTools.run('deletePage'); return; }
       }
       if (!typing && !inMenu && !isBusy && pointer === 'edit' && ['Enter', 'F2'].includes(event.key) && selectedObjects.length === 1 && selectedObjects[0]?.textBlock) {
-        event.preventDefault(); setInlineRange(null); setInlineTextId(selectedIds[0]!); return;
+        event.preventDefault(); if (document) editTextAt(document, selectedIds[0]!); return;
       }
       if (!typing && !inMenu && pointer === 'edit' && (event.key === 'Delete' || event.key === 'Backspace') && selectedIds.length) { event.preventDefault(); void runRibbonAction('delete'); return; }
       if (!typing && !inMenu && tab !== 'pages' && (presenting || !continuous) && ['ArrowLeft', 'ArrowRight', 'PageDown', 'PageUp', ' '].includes(event.key)) {
@@ -972,7 +1123,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       event.preventDefault();
       if (key === 'f' && document) { chooseTool('search'); return; }
       if (key === 'p' && document) { chooseTool('print'); return; }
-      if (key === 's' && !operationBusy) { void saveDocument(); return; }
+      if (key === 's' && !operationBusy) { void saveDocument(event.shiftKey); return; }
       if (isBusy) return;
       if (key === 'o') void openDocument();
       if (key === 'z' && (event.shiftKey ? history.canRedo : history.canUndo)) void moveHistory(event.shiftKey ? 'redo' : 'undo');
@@ -987,10 +1138,12 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     <main className={`editor-shell ${webTabs.length ? 'editor-shell-with-tabs' : ''} ${presenting ? 'is-presenting' : ''}`}>
       {savePrompt && <SaveChangesDialog prompt={savePrompt} />}
       {passwordPrompt && <PasswordDialog prompt={passwordPrompt} />}
+      <ImportPagesDialog {...pageTools.importDialogProps} />
       <EditorTopbar productName={productName} name={document?.name} dirty={Boolean(document && document.info.revision !== document.info.savedRevision)}
         showAi={hasAi} busy={operationBusy} canUndo={history.canUndo} canRedo={history.canRedo} saving={activity === 'saving'} tool={activeTool}
         onTool={chooseTool} onOpen={() => void openDocument()} onClose={() => void closeDocument()}
-        onSave={() => void saveDocument()} onUndo={() => void moveHistory('undo')} onRedo={() => void moveHistory('redo')} extra={headerActions} />
+        onSave={() => void saveDocument()} {...(host.capabilities.nativeFiles ? { onSaveAs: () => void saveDocument(true) } : {})}
+        onUndo={() => void moveHistory('undo')} onRedo={() => void moveHistory('redo')} extra={headerActions} />
 
       {webTabs.length > 0 && <nav className="editor-document-tabs" aria-label={t("Open PDFs")}>
         {webTabs.map(tab => {
@@ -1007,16 +1160,18 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       <EditorRibbon tab={tab} onTab={chooseTab} pointer={pointer} onPointer={next => {
         if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) setPointer(next); }); return; }
         if (tab === 'pages') chooseTabAfterSave('home');
-        setPointer(next); setInlineTextId(null); setSelectedIds([]); setCropImage(false); setCropPage(false); setPlacement(null);
-      }} pageTools={pageTools} overviewColumns={overviewColumns} onOverviewColumns={setOverviewColumns} onTool={chooseTool} onAction={action => void runRibbonAction(action)} view={view} continuous={continuous}
+        setPointer(next); setInlineTextId(null); setSelectedIds([]); setCropImage(false); setCropPage(false); setPlacement(null); setAnnotationDrawing(null); setPendingSignature(null);
+      }} annotationTool={annotationDrawing?.tool ?? null} canAnnotate={Boolean(document?.info.permissions.annotate && document.info.capabilities.includes('annotation.add'))}
+        zoomMode={viewZoom.mode} pageTools={pageTools} overviewColumns={overviewColumns} onOverviewColumns={setOverviewColumns} onTool={chooseTool} onAction={action => void runRibbonAction(action)} view={view} continuous={continuous}
         onView={next => { if (!isBusy) { setView(next); requestAnimationFrame(() => scrollToPage(document?.page.id ?? '')); } }}
         onContinuous={() => { if (!isBusy) { setContinuous(value => !value); requestAnimationFrame(() => scrollToPage(document?.page.id ?? '')); } }}
         hasDocument={Boolean(document)} busy={operationBusy} ocr={host.capabilities.ocr} railOpen={railOpen} onToggleRail={() => setRailOpen(value => !value)}
         selection={selectedObjects.length === 1 ? selectedObjects[0]?.textBlock ? 'text' : selectedObjects[0]?.type === 'image' ? 'image' : 'objects' : selectedObjects.length ? 'objects' : null}>
         {document && <DirectTextEditor document={document.info} page={document.page} selectedIds={selectedIds} inlineId={inlineTextId}
           host={pageHost} render={document.render} engine={engine} disabled={operationBusy} handle={textEditor} initialRange={inlineRange}
-          onClose={() => { setInlineTextId(null); setInlineRange(null); }} onEdit={() => { setInlineRange(null); setInlineTextId(selectedIds[0] ?? null); }} onManageFonts={() => chooseTool('fonts')}
+          onClose={() => { setInlineTextId(null); setInlineRange(null); }} onEdit={() => { if (selectedIds[0]) editTextAt(document, selectedIds[0]); }} onManageFonts={() => chooseTool('fonts')}
           onParagraph={id => { setSelectedIds([id]); setInlineRange(null); setInlineTextId(id); }}
+          copiedFormat={copiedTextFormat} onCopyFormat={setCopiedTextFormat}
           onDraftChange={setTextDraftDirty} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
       </EditorRibbon>
 
@@ -1036,7 +1191,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           <div className="page-list" hidden={railTab !== 'pages'}>
             {document ? document.info.pageOrder.map((pageId, index) => (
               <PageContextMenu key={pageId} tools={pageTools} onOpen={() => openOverviewPage(pageId)}>
-                <ContextMenu.Trigger render={<button type="button" disabled={isBusy} />} className={`page-chip ${pageId === document.page.id ? 'page-chip-active' : ''} ${pageTools.ids.includes(pageId) ? 'page-chip-selected' : ''}`}
+                <ContextMenu.Trigger render={<button type="button" disabled={navigationBusy} />} className={`page-chip ${pageId === document.page.id ? 'page-chip-active' : ''} ${pageTools.ids.includes(pageId) ? 'page-chip-selected' : ''}`}
                   data-page-id={pageId} aria-pressed={pageTools.ids.includes(pageId)}
                   onClick={event => { pageTools.select(pageId, event); if (tab !== 'pages' && !event.ctrlKey && !event.metaKey && !event.shiftKey) void switchPage(pageId); }}
                   onContextMenu={() => pageTools.select(pageId, {}, true)}
@@ -1052,7 +1207,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           <nav hidden={railTab !== 'bookmarks'} className="bookmark-list" aria-label={t("PDF bookmarks")}>
             <strong>{t("Bookmarks")}</strong>
             {outlineError ? <span role="status">{t("Bookmarks could not be read")}</span> : outline.map((entry, index) =>
-              <button type="button" key={`${index}-${entry.title}`} disabled={!entry.pageId || isBusy}
+              <button type="button" key={`${index}-${entry.title}`} disabled={!entry.pageId || navigationBusy}
                 style={{ paddingLeft: `${6 + Math.min(entry.level, 5) * 8}px` }}
                 aria-label={`Go to bookmark ${entry.title || t("Untitled")}`}
                 title={entry.title || t("Untitled")}
@@ -1112,7 +1267,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
             <PageOrganizer document={document} engine={engine} tools={pageTools} disabled={isBusy} width={overviewWidth} columns={overviewColumns} onOpen={openOverviewPage} />
           ) : (
             <DocumentViewport key={document.info.id} engine={engine} document={document} zoom={zoom} view={view} continuous={continuous}
-              root={stageRef} locked={isBusy || cropImage || cropPage} pointer={pointer} onActive={activateVisiblePage} onHost={setPageHost}
+              root={stageRef} locked={navigationBusy || cropImage || cropPage || Boolean(pendingSignature)} pointer={pointer} onActive={activateVisiblePage} onHost={setPageHost}
+              onViewSize={setViewSize} drawing={Boolean(annotationDrawing || pendingSignature)}
+              renderOverlay={shown => annotationDrawing && <AnnotationDrawingLayer document={shown.info} page={shown.page} engine={engine}
+                options={annotationDrawing} disabled={isBusy} onBusyChange={setEditPending}
+                onCommitted={handleCommitted} onCancel={() => setAnnotationDrawing(null)} />}
               onEditText={editTextAt} onInsertText={insertTextAt} onAnnotate={annotateSelection} onError={setError}>
               {(shown) => <>
                 {searchSelection?.pageId === shown.page.id && (() => {
@@ -1120,7 +1279,13 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                   return match && <div className="search-match-highlight" style={{ position: 'absolute', pointerEvents: 'none', zIndex: 2, background: '#ffda5044', outline: '2px solid #dca91b',
                     left: match.bounds.x * zoom, top: match.bounds.y * zoom, width: match.bounds.width * zoom, height: match.bounds.height * zoom }} />;
                 })()}
-                {pointer === 'edit' && !placement && !cropImage && !cropPage && <ContextMenu.Root>
+                {selectedAnnotation?.pageId === shown.page.id && <div className="search-match-highlight" style={{ position: 'absolute', pointerEvents: 'none', zIndex: 3,
+                  outline: '2px solid #226044', background: '#22604418', left: selectedAnnotation.bounds.x * zoom, top: selectedAnnotation.bounds.y * zoom,
+                  width: selectedAnnotation.bounds.width * zoom, height: selectedAnnotation.bounds.height * zoom }} />}
+                {pendingSignature && <SignaturePlacementLayer key={`${shown.info.id}:${shown.page.id}:${shown.info.revision}`} document={shown.info} page={shown.page}
+                  draft={pendingSignature} engine={engine} disabled={isBusy} onBusyChange={setEditPending}
+                  onCommitted={handleCommitted} onCancel={() => setPendingSignature(null)} />}
+                {pointer === 'edit' && !annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && <ContextMenu.Root>
                   <ContextMenu.Trigger className="page-object-tools" onContextMenu={event => {
                     const rect = event.currentTarget.getBoundingClientRect();
                     objectContextPoint.current = { x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom };
@@ -1134,13 +1299,13 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                         const select = () => { setSelectedIds(ids); setSearchSelection(null); setInlineTextId(null); };
                         if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) select(); }); } else select();
                       }}
-                      onEditText={id => { if (!isBusy) { setTab('edit'); setSelectedIds([id]); setInlineTextId(id); } }}
+                      onEditText={id => editTextAt(shown, id)}
                       disabled={operationBusy} canTransform={shown.info.permissions.modify && shown.info.capabilities.includes('objects.transform')}
                       onMove={moveObjects} onTransform={transformObjects} />
                   </ContextMenu.Trigger>
                   <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu">
                     {selectedObjects.length === 1 && selectedObjects[0]?.textBlock && <>
-                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => { setInlineRange(null); setInlineTextId(selectedIds[0]!); }}>{t('Edit text')}<kbd>Enter</kbd></ContextMenu.Item>
+                      <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => editTextAt(shown, selectedIds[0]!)}>{t('Edit text')}<kbd>Enter</kbd></ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={!shown.info.permissions.copy} onClick={() => void navigator.clipboard.writeText(selectedObjects[0]!.textBlock!.runs.map(run => run.text).join('')).catch(() => setError(t('Clipboard access was denied. Use Ctrl/Cmd+C to copy selected text.')))}>{t('Copy text')}</ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.annotate} onClick={() => void annotateSelection(shown, selectedObjects.map(object => ({ objectId: object.id, blockId: object.textBlock!.id, range: [0, object.textBlock!.runs.reduce((length, run) => length + run.text.length, 0)], text: '', rects: [object.bounds] })), 'highlight')}>{t('Highlight text')}</ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void executeCommands([{ type: 'text.style', pageId: shown.page.id, blockIds: [selectedObjects[0]!.textBlock!.id], style: { underline: true } }])}>{t('Underline text')}</ContextMenu.Item>
@@ -1164,7 +1329,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                     <ContextMenu.Item className="ui-menu-item" disabled={isBusy} onClick={() => chooseTab('pages')}>{t('Organize pages')}</ContextMenu.Item>
                   </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal>
                 </ContextMenu.Root>}
-                {pointer === 'select' && <PdfLinkLayer annotations={pageAnnotations} page={shown.page} render={shown.render}
+                {pointer === 'select' && !annotationDrawing && !pendingSignature && <PdfLinkLayer annotations={pageAnnotations} page={shown.page} render={shown.render}
                   pageOrder={shown.info.pageOrder} disabled={isBusy} onNavigate={(id, top) => void switchPage(id, top)} />}
                 {placement && <div className="placement-layer" onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); void placeObject((event.clientX - rect.left) / zoom, (event.clientY - rect.top) / zoom); }}><span>{t('Click on the page to place it. Press Esc to cancel.')}</span></div>}
                 {cropPage && <ImageCropOverlay page bounds={{ x: 0, y: 0, width: shown.page.widthPt, height: shown.page.heightPt }} scale={zoom} disabled={isBusy}
@@ -1189,29 +1354,33 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
           {document && <div hidden={activeTool !== 'arrange' && activeTool !== 'pages'}><ObjectEditPanel mode={activeTool === 'pages' ? 'pages' : 'arrange'} section={pagePanelSection} pageSelection={tab === 'pages' ? pageTools.ids : null} document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} host={host} disabled={isBusy} onBusyChange={setEditPending}
+            onImportPages={() => void pageTools.openImport(document.page.id)}
             onSelectionChange={ids => { setSelectedIds(ids); setSearchSelection(null); }} onCommitted={handleCommitted} /></div>}
 
           {document && <div hidden={activeTool !== 'arrange'}><ParagraphPanel document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} disabled={operationBusy || textDraftDirty} onBusyChange={setEditPending} onDraftChange={setParagraphDraftDirty} onCommitted={handleCommitted} /></div>}
           {document && <div hidden={activeTool !== 'comment' && activeTool !== 'forms'}><DocumentToolsPanel mode={activeTool === 'forms' ? 'forms' : 'comment'} document={document.info} page={document.page} selectedIds={selectedIds}
-            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
-          {document && <div hidden={activeTool !== 'sign'}><SignaturePanel document={document.info} page={document.page}
-            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
+            active={activeTool === 'comment' || activeTool === 'forms'} drawing={annotationDrawing} onDrawingChange={startAnnotation} onNavigate={annotation => {
+              setAnnotationDrawing(null); setSelectedAnnotation(annotation); void switchPage(annotation.pageId, annotation.bounds.y);
+            }} engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
+          {document && <div hidden={activeTool !== 'sign'}><SignaturePanel document={document.info} disabled={isBusy}
+            draft={reusableSignature} onDraftChange={setReusableSignature} placing={Boolean(pendingSignature)} onPlacementRequest={startSignature} /></div>}
 
           {host.capabilities.ocr && document && <div hidden={activeTool !== 'ocr'}><OcrPanel document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
 
           <div hidden={activeTool !== 'fonts'}><FontPanel engine={engine} host={host} disabled={operationBusy} onBusyChange={setEditPending} /></div>
-          {document && <div hidden={activeTool !== 'export'}><ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} onExport={exportDocument} /></div>}
+          {document && <div hidden={activeTool !== 'export'}><ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} wordAvailable={Boolean(host.convertDocument)} onExport={exportDocument} /></div>}
           {document && (host.capabilities.platform === 'web' || host.printDocument) &&
-            <div hidden={activeTool !== 'print'}><PrintPanel disabled={isBusy} docId={document.info.id} pageIds={document.info.pageOrder}
+            <div hidden={activeTool !== 'print'}><PrintPanel disabled={isBusy} docId={document.info.id} pageIds={document.info.pageOrder} currentPageId={document.page.id}
               encrypted={document.info.permissions.encrypted} canPrint={document.info.permissions.print === true}
               engine={engine} host={host} onBusyChange={setEditPending} /></div>}
 
           {hasAi && <div hidden={activeTool !== 'ai'}>
             {renderAiPanel ? renderAiPanel({ document: document?.info ?? null, page: document?.page ?? null,
               name: document?.name ?? null, selectedIds, engine, disabled: isBusy, onCommitted: handleCommitted,
-              openDocument: source => openDocument(source), saveDocument }) : aiPanel}
+              openDocument: source => openDocument(source), saveDocument, navigationDisabled: navigationBusy,
+              navigatePage: pageId => switchPage(pageId), locateText: locateTextBlock, showAiPanel: () => setActiveTool('ai') }) : aiPanel}
           </div>}
           </div>
         </aside>
@@ -1224,9 +1393,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         <span className={error ? 'status-dot status-dot-error' : 'status-dot'} aria-hidden="true" />
         <span className="status-message" role={error ? 'alert' : 'status'}>{t(error ?? notice)}</span>
         <span className="status-spacer" />
-        <ViewControls page={tab === 'pages' && document ? Math.max(0, document.info.pageOrder.indexOf(pageTools.focus)) + 1 : currentPageIndex + 1} pages={document?.info.pageOrder.length ?? 0} zoom={tab === 'pages' ? overviewWidth / 230 : zoom} busy={isBusy}
+        <ViewControls page={tab === 'pages' && document ? Math.max(0, document.info.pageOrder.indexOf(pageTools.focus)) + 1 : currentPageIndex + 1} pages={document?.info.pageOrder.length ?? 0} zoom={tab === 'pages' ? overviewWidth / 230 : zoom} busy={navigationBusy}
           onPage={page => { const id = document?.info.pageOrder[page - 1]; if (id) { if (tab === 'pages') { pageTools.select(id); stageRef.current?.querySelector<HTMLElement>(`[data-organizer-page="${id}"]`)?.scrollIntoView({ block: 'nearest' }); } else void switchPage(id); } }}
-          onZoom={scale => { if (tab === 'pages') changeOverviewZoom(scale); else void changeZoom(scale); }} onFit={() => { if (tab === 'pages') setOverviewColumns(3); else fitPage(); }} />
+          onZoom={scale => { if (tab === 'pages') changeOverviewZoom(scale); else void viewZoom.manualZoom(scale); }}
+          zoomMode={tab === 'pages' ? 'manual' : viewZoom.mode} {...(tab === 'pages' ? {} : { onFitWidth: viewZoom.fitWidth })}
+          onFit={() => { if (tab === 'pages') setOverviewColumns(3); else fitPage(); }} />
       </footer>
     </main>
     </Tooltip.Provider>
@@ -1288,23 +1459,25 @@ async function saveCurrentDocument(
   current: LoadedDocument,
   engine: EngineAdapter,
   host: HostAdapter,
-  updateSavedRevision: (docId: string, savedRevision: number) => void,
+  updateSavedRevision: (docId: string, savedRevision: number, name?: string) => void,
   setError: (message: string | null) => void,
   setNotice: (message: string) => void,
   setActivity: (activity: Activity) => void,
+  saveAs = false,
 ): Promise<SaveConfirmation | null> {
   setActivity('saving');
   setError(null);
   setNotice('Saving…');
   try {
     const result = await engine.save({ docId: current.info.id, protection: 'preserve' });
-    const outcome = await host.saveDocument(result, current.name);
+    const outcome = await host.saveDocument(result, current.name, { mode: saveAs ? 'save-as' : 'save' });
+    if (outcome?.status === 'cancelled') { setNotice('Save cancelled'); return null; }
     if (outcome?.status === 'download-started') {
       setNotice('Download started');
       return null;
     }
     const confirmed = await engine.confirmSave({ docId: result.docId, savedRevision: result.savedRevision });
-    updateSavedRevision(result.docId, confirmed.savedRevision);
+    updateSavedRevision(result.docId, confirmed.savedRevision, outcome?.name);
     setNotice('Saved');
     return { docId: result.docId, savedRevision: result.savedRevision };
   } catch (caught) {

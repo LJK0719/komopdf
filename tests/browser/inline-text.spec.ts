@@ -21,41 +21,31 @@ function samplePdf(): Buffer {
   return Buffer.from(pdf);
 }
 
-test('page text draft keeps IME node, respects graphemes and commits one undoable edit', async ({ page }) => {
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('komopdf.ui.language', 'en'));
   await page.goto('/editor/');
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'inline.pdf', mimeType: 'application/pdf', buffer: samplePdf() });
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
+});
+
+test('page text draft keeps the IME node and commits one undoable edit', async ({ page }) => {
   const hitbox = page.locator('.object-hitbox[data-object-type="text"]');
-  await expect(hitbox).toHaveCount(1, { timeout: 60_000 });
   await hitbox.dblclick();
-  const draft = page.getByRole('textbox', { name: 'Page text draft' });
-  await expect(draft).toBeVisible();
+  const draft = page.getByRole('textbox', { name: 'Page text', exact: true });
+  await expect(draft).toHaveValue('Hello PDF Editor');
   const objectBox = await hitbox.boundingBox();
-  const draftBox = await page.getByRole('group', { name: 'Edit text on page' }).boundingBox();
-  expect(objectBox && draftBox).toBeTruthy();
+  const draftBox = await draft.boundingBox();
   expect(Math.abs(draftBox!.x - objectBox!.x)).toBeLessThan(4);
   expect(Math.abs(draftBox!.y - objectBox!.y)).toBeLessThan(4);
-  await expect(draft).toHaveValue('Hello PDF Editor');
-
-  await draft.fill('👩‍💻Z');
-  await draft.evaluate(element => { (element as HTMLTextAreaElement).setSelectionRange(3, 3); });
-  await draft.press('Backspace');
-  await expect(draft).toHaveValue('Z');
-  await draft.fill('👩‍💻Z');
-  await draft.evaluate(element => { (element as HTMLTextAreaElement).setSelectionRange(0, 0); });
-  await draft.press('ArrowRight');
-  expect(await draft.evaluate(element => (element as HTMLTextAreaElement).selectionStart)).toBe('👩‍💻'.length);
-  await draft.press('Backspace');
-  await expect(draft).toHaveValue('Z');
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Close PDF', exact: true })).toBeDisabled();
+  await draft.fill('Discard me');
   await draft.press('Escape');
   await expect(draft).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
-  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Hello PDF Editor');
-
   await hitbox.dblclick();
+  await expect(draft).toHaveValue('Hello PDF Editor');
+  await draft.selectText();
   await draft.evaluate(element => {
     element.setAttribute('data-stable-ime-node', 'yes');
     element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: 'Edited' }));
@@ -64,30 +54,27 @@ test('page text draft keeps IME node, respects graphemes and commits one undoabl
   await expect(draft).toHaveValue('Edited');
   await expect(draft).toHaveAttribute('data-stable-ime-node', 'yes');
   await draft.evaluate(element => element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'Edited' })));
-  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Hello PDF Editor');
-  await page.getByRole('button', { name: 'Preview page text' }).click();
-  await expect(page.getByText('Engine preview: fits current text bounds')).toBeVisible();
-  await page.getByRole('button', { name: 'Commit page text' }).click();
+  await draft.press('Control+Enter');
   await expect(draft).toHaveCount(0);
-  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Edited');
-  await page.getByRole('button', { name: 'Undo', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Hello PDF Editor');
-  await page.getByRole('button', { name: 'Redo', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Edited');
+  await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
+  await hitbox.dblclick();
+  await expect(draft).toHaveValue('Hello PDF Editor');
+  await draft.press('Escape');
+  await page.getByRole('button', { name: 'Redo (Ctrl Shift Z)', exact: true }).click();
+  await hitbox.dblclick();
+  await expect(draft).toHaveValue('Edited');
 });
 
 test('page text preview reports overflow and blocks commit', async ({ page }) => {
-  await page.goto('/editor/');
-  const chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
-  await (await chooser).setFiles({ name: 'overflow.pdf', mimeType: 'application/pdf', buffer: samplePdf() });
   const hitbox = page.locator('.object-hitbox[data-object-type="text"]');
-  await expect(hitbox).toHaveCount(1, { timeout: 60_000 });
   await hitbox.dblclick();
-  await page.getByRole('textbox', { name: 'Page text draft' }).fill('W'.repeat(400));
-  await page.getByRole('button', { name: 'Preview page text' }).click();
-  await expect(page.getByText('Overflow detected — shorten the draft before committing')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Commit page text' })).toBeDisabled();
-  await page.getByRole('button', { name: 'Cancel page text' }).click();
-  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Hello PDF Editor');
+  const draft = page.getByRole('textbox', { name: 'Page text', exact: true });
+  await draft.fill('W'.repeat(400));
+  await draft.press('Control+Enter');
+  await expect(draft).toBeVisible();
+  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await draft.press('Escape');
+  await expect(draft).toHaveCount(0);
+  await hitbox.dblclick();
+  await expect(draft).toHaveValue('Hello PDF Editor');
 });

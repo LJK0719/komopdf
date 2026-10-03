@@ -29,7 +29,7 @@ test('page numbers remain available without the retired web AI workflow', async 
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'blank-pages.pdf', mimeType: 'application/pdf', buffer: blankTwoPagePdf() });
   await expect(page.locator('.page-chip')).toHaveCount(2, { timeout: 60_000 });
-  await expect(page.getByRole('button', { name: 'Ask komo', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Ask komo', exact: true })).toBeVisible();
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Pages', exact: true }).click();
   await page.getByRole('button', { name: 'More page tools', exact: true }).click();
   const tools = page.getByRole('region', { name: 'Page and object editing' });

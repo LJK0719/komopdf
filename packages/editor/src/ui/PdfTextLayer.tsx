@@ -1,8 +1,10 @@
-import { useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import type { Rect, TextRange } from '@pdf-editor/contracts';
 import type { LoadedDocument } from './EditorShell.js';
 import { useI18n } from './i18n.js';
+import { caretAt, domTextPoint, hitText, mergeTextRects, selectionRects, textClusters } from './text-geometry.js';
+import { readingRegions } from './reading-order.js';
 
 export type TextSelectionTarget = { objectId: string; blockId: string; range: TextRange; text: string; rects: Rect[] };
 export type ReadingAction = 'highlight' | 'underline';
@@ -13,97 +15,240 @@ type Props = {
   onAnnotate(document: LoadedDocument, targets: TextSelectionTarget[], action: ReadingAction): Promise<void>;
   onError(message: string): void;
 };
+type DomPoint = { node: Node; offset: number };
+const pageHitTests = new WeakMap<Element, (x: number, y: number) => DomPoint | null>();
 
 export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert, onAnnotate, onError }: Props) {
   const { t } = useI18n();
   const layer = useRef<HTMLDivElement>(null);
+  const anchor = useRef<DomPoint | null>(null);
+  const affinity = useRef<{ objectId: string; offset: number; bounds: Rect } | null>(null);
   const [targets, setTargets] = useState<TextSelectionTarget[]>([]);
-  const [caret, setCaret] = useState<{ x: number; y: number; height: number } | null>(null);
+  const [localSelection, setLocalSelection] = useState(true);
+  const contextText = useRef('');
+  const [caret, setCaret] = useState<Rect | null>(null);
   const [point, setPoint] = useState({ x: 36, y: 36 });
   const contextTargets = useRef<TextSelectionTarget[]>([]);
   const menuOpen = useRef(false);
-  const text = targets.map(target => target.text).join('\n');
   const canEdit = shown.info.permissions.modify && shown.info.capabilities.includes('text.replace');
+  const { objects, prefixes, byId } = useMemo(() => {
+    const regions = readingRegions(shown.page), prefixes = new Map<string, string>();
+    regions.forEach((region, index) => {
+      let end = 0;
+      region.objects.forEach((object, position) => {
+        const range = region.sourceRanges[object.id]!;
+        prefixes.set(object.id, (index > 0 && position === 0 ? '\n\n' : '') + region.text.slice(end, range[0]));
+        end = range[1];
+      });
+    });
+    const objects = regions.flatMap(region => region.objects);
+    return { objects, prefixes, byId: new Map(objects.map(object => [object.id, object])) };
+  }, [shown.page]);
+  const text = targets.map(target => target.text).join('\n');
+  const editTarget = (() => {
+    const first = targets[0];
+    if (!first || !localSelection) return null;
+    const region = readingRegions(shown.page).find(region => region.sourceRanges[first.objectId]);
+    if (!region) return null;
+    let start = Infinity, end = -Infinity;
+    for (const target of targets) {
+      const range = region.sourceRanges[target.objectId];
+      if (!range || byId.get(target.objectId)?.textBlock?.editability === 'geometry-only') return null;
+      start = Math.min(start, range[0] + target.range[0]); end = Math.max(end, range[0] + target.range[1]);
+    }
+    const origin = region.sourceRanges[first.objectId]![0];
+    return { objectId: first.objectId, range: [start - origin, end - origin] as TextRange };
+  })();
+
   const readSelection = (): TextSelectionTarget[] => {
     const selection = window.getSelection();
     if (!layer.current || !selection?.rangeCount) return [];
     const range = selection.getRangeAt(0);
-    if (!layer.current.contains(range.startContainer) || !layer.current.contains(range.endContainer)) return [];
-    const root = layer.current.getBoundingClientRect();
     const result: TextSelectionTarget[] = [];
     for (const span of layer.current.querySelectorAll<HTMLElement>('[data-text-object]')) {
       if (!range.intersectsNode(span)) continue;
-      const object = shown.page.objects.find(item => item.id === span.dataset.textObject);
+      const object = byId.get(span.dataset.textObject ?? '');
       if (!object?.textBlock) continue;
-      const value = object.textBlock.runs.map(run => run.text).join('');
+      const block = object.textBlock, value = block.runs.map(run => run.text).join('');
       const textOffset = (node: Node, offset: number) => {
         const prefix = window.document.createRange(); prefix.selectNodeContents(span); prefix.setEnd(node, offset);
         return prefix.toString().length;
       };
       const start = span.contains(range.startContainer) ? textOffset(range.startContainer, range.startOffset) : 0;
       const end = span.contains(range.endContainer) ? textOffset(range.endContainer, range.endOffset) : value.length;
-      const part = window.document.createRange();
-      part.selectNodeContents(span);
-      if (span.firstChild) { part.setStart(span.firstChild, Math.min(start, value.length)); part.setEnd(span.firstChild, Math.min(end, value.length)); }
-      const rects = [...part.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0).map(rect => ({
-        x: Math.max(0, (rect.left - root.left) / zoom), y: Math.max(0, (rect.top - root.top) / zoom),
-        width: Math.min(rect.width / zoom, shown.page.widthPt - (rect.left - root.left) / zoom), height: rect.height / zoom,
-      }));
-      result.push({ objectId: object.id, blockId: object.textBlock.id, range: [start, end], text: value.slice(start, end), rects });
+      const clusters = textClusters(block);
+      let rects = selectionRects(clusters, [start, end]);
+      if (!clusters.length && start !== end) {
+        const part = window.document.createRange(), a = domTextPoint(span, start), b = domTextPoint(span, end);
+        part.setStart(a.node, a.offset); part.setEnd(b.node, b.offset);
+        const root = layer.current.getBoundingClientRect();
+        rects = [...part.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0).map(rect => ({
+          x: (rect.left - root.left) / zoom, y: (rect.top - root.top) / zoom, width: rect.width / zoom, height: rect.height / zoom,
+        }));
+      }
+      result.push({ objectId: object.id, blockId: block.id, range: [start, end], text: value.slice(start, end), rects });
     }
     return result;
   };
   const showSelection = () => {
     const next = readSelection(); setTargets(next);
     const selection = window.getSelection();
-    if (selection?.isCollapsed && next.length && layer.current) {
-      const rect = selection.getRangeAt(0).getClientRects()[0];
-      const root = layer.current.getBoundingClientRect();
-      setCaret(rect ? { x: rect.left - root.left, y: rect.top - root.top, height: rect.height } : null);
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    setLocalSelection(Boolean(range && layer.current?.contains(range.startContainer) && layer.current.contains(range.endContainer)));
+    if (selection?.isCollapsed && next.length && layer.current && layer.current.contains(selection.focusNode)) {
+      const target = next[0]!, block = byId.get(target.objectId)?.textBlock;
+      const hit = block && caretAt(textClusters(block), target.range[0]);
+      if (affinity.current?.objectId === target.objectId && affinity.current.offset === target.range[0]) setCaret(affinity.current.bounds);
+      else if (hit) setCaret(hit.bounds);
+      else {
+        const rect = selection.getRangeAt(0).getClientRects()[0], root = layer.current.getBoundingClientRect();
+        setCaret(rect ? { x: (rect.left - root.left) / zoom, y: (rect.top - root.top) / zoom, width: 0, height: rect.height / zoom } : null);
+      }
     } else setCaret(null);
   };
+  const latest = useRef(showSelection); latest.current = showSelection;
+  useEffect(() => {
+    let frame = 0;
+    const change = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => latest.current()); };
+    window.document.addEventListener('selectionchange', change);
+    return () => { cancelAnimationFrame(frame); window.document.removeEventListener('selectionchange', change); };
+  }, []);
+  useLayoutEffect(() => {
+    const root = layer.current;
+    if (!root) return;
+    setCaret(null); setTargets([]); anchor.current = null; affinity.current = null;
+    pageHitTests.set(root, (clientX, clientY) => {
+      const rect = root.getBoundingClientRect(), x = (clientX - rect.left) / zoom, y = (clientY - rect.top) / zoom;
+      let best: { objectId: string; offset: number; bounds: Rect } | null = null, distance = Infinity;
+      for (const object of objects) {
+        const hit = hitText(textClusters(object.textBlock!), x, y);
+        if (!hit) continue;
+        const b = hit.bounds;
+        const dx = Math.max(b.x - x, 0, x - b.x - b.width), dy = Math.max(b.y - y, 0, y - b.y - b.height);
+        const score = dx * dx + dy * dy;
+        if (score < distance) { best = { objectId: object.id, offset: hit.offset, bounds: hit.bounds }; distance = score; }
+      }
+      const span = best && [...root.querySelectorAll<HTMLElement>('[data-text-object]')].find(node => node.dataset.textObject === best.objectId);
+      affinity.current = best;
+      return best && span ? domTextPoint(span, best.offset) : null;
+    });
+    return () => { pageHitTests.delete(root); };
+  }, [shown.page, shown.info.revision, zoom]);
   const copy = async () => {
-    try { await navigator.clipboard.writeText(text); }
+    try { if (shown.info.permissions.copy) await navigator.clipboard.writeText(contextText.current || text); }
     catch { onError(t('Clipboard access was denied. Use Ctrl/Cmd+C to copy selected text.')); }
   };
+
   return <ContextMenu.Root onOpenChange={open => { menuOpen.current = open; }}>
     <ContextMenu.Trigger render={<div />} ref={layer} className="pdf-text-layer" aria-label={t('Select text')} tabIndex={0}
-      onPointerUp={showSelection}
-      onKeyUp={event => { if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') showSelection(); }}
+      onPointerDown={event => {
+        if (event.button !== 0 || disabled || !layer.current) return;
+        const hit = pageHitTests.get(layer.current)?.(event.clientX, event.clientY);
+        if (!hit) return;
+        event.preventDefault(); layer.current.focus({ preventScroll: true });
+        const selection = window.getSelection();
+        const start = event.shiftKey && selection?.anchorNode ? { node: selection.anchorNode, offset: selection.anchorOffset } : hit;
+        anchor.current = start;
+        selection?.setBaseAndExtent(start.node, start.offset, hit.node, hit.offset);
+        event.currentTarget.setPointerCapture(event.pointerId);
+        showSelection();
+      }}
+      onPointerMove={event => {
+        if (!anchor.current || !(event.buttons & 1)) return;
+        const root = window.document.elementFromPoint(event.clientX, event.clientY)?.closest('.pdf-text-layer');
+        const hit = root && pageHitTests.get(root)?.(event.clientX, event.clientY);
+        if (hit) window.getSelection()?.setBaseAndExtent(anchor.current.node, anchor.current.offset, hit.node, hit.offset);
+      }}
+      onPointerUp={event => { anchor.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); showSelection(); }}
+      onPointerCancel={() => { anchor.current = null; setCaret(null); }}
+      onDoubleClick={() => {
+        const selection = window.getSelection();
+        if (!selection?.focusNode || !layer.current?.contains(selection.focusNode)) return;
+        const span = selection.focusNode.parentElement?.closest<HTMLElement>('[data-text-object]');
+        const target = readSelection()[0];
+        if (!span || !target) return;
+        const value = span.textContent ?? '';
+        const segment = [...new Intl.Segmenter(undefined, { granularity: 'word' }).segment(value)]
+          .find(part => part.index <= target.range[0] && part.index + part.segment.length > target.range[0]);
+        if (segment) {
+          const start = domTextPoint(span, segment.index), end = domTextPoint(span, segment.index + segment.segment.length);
+          selection.setBaseAndExtent(start.node, start.offset, end.node, end.offset); showSelection();
+        }
+      }}
       onBlur={event => { if (!menuOpen.current && !(event.relatedTarget instanceof Element && event.relatedTarget.closest('[role="menu"]'))) setCaret(null); }}
       onContextMenu={event => {
         const rect = event.currentTarget.getBoundingClientRect();
         setPoint({ x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom });
         const id = (event.target as HTMLElement).closest<HTMLElement>('[data-text-object]')?.dataset.textObject;
         let next = readSelection();
+        const selection = window.getSelection();
+        const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+        let copied = range?.toString() ?? '';
+        let local = Boolean(range && layer.current?.contains(range.startContainer) && layer.current.contains(range.endContainer));
         if (!next.length || (id && !next.some(target => target.objectId === id))) {
-          const object = shown.page.objects.find(item => item.id === id);
+          const object = byId.get(id ?? '');
           if (object?.textBlock) {
             const value = object.textBlock.runs.map(run => run.text).join('');
             next = [{ objectId: object.id, blockId: object.textBlock.id, range: [0, value.length], text: value, rects: [object.bounds] }];
           } else next = [];
+          copied = next.map(target => target.text).join('\n'); local = true;
         }
+        contextText.current = copied; setLocalSelection(local);
         contextTargets.current = next; setTargets(next);
       }}
+      onCopy={event => {
+        event.preventDefault();
+        if (shown.info.permissions.copy) {
+          const selection = window.getSelection();
+          event.clipboardData.setData('text/plain', selection?.rangeCount ? selection.getRangeAt(0).toString() : '');
+        }
+      }}
       onKeyDown={event => {
-        if (event.key === 'Enter' && targets.length === 1 && canEdit && !disabled) { event.preventDefault(); onEdit(shown, targets[0]!.objectId, targets[0]!.range); }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && layer.current) {
+          event.preventDefault(); window.getSelection()?.selectAllChildren(layer.current); showSelection(); return;
+        }
+        if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') affinity.current = null;
+        if (event.key === 'Enter' && editTarget && canEdit && !disabled) { event.preventDefault(); onEdit(shown, editTarget.objectId, editTarget.range); }
       }}>
-      {shown.page.objects.filter(item => item.textBlock).map(item => {
-        const block = item.textBlock!;
-        const style = block.runs[0]?.style;
-        return <span key={item.id} data-text-object={item.id} style={{ left: item.bounds.x * zoom, top: item.bounds.y * zoom,
-          width: item.bounds.width * zoom, height: item.bounds.height * zoom,
-          fontSize: (style?.fontSize ?? 12) * zoom }}>{block.runs.map(run => run.text).join('')}</span>;
+      {objects.map((item, objectIndex) => {
+        const block = item.textBlock!, clusters = textClusters(block), value = block.runs.map(run => run.text).join('');
+        const previous = objects[objectIndex - 1];
+        const preceding = previous ? textClusters(previous.textBlock!).at(-1)?.bounds ?? previous.bounds : item.bounds;
+        const first = clusters[0]?.bounds ?? item.bounds;
+        const prefix = prefixes.get(item.id) ?? '';
+        const sameLine = Math.abs(preceding.y - first.y) < Math.max(preceding.height, first.height) * 0.3;
+        let offset = 0;
+        return <Fragment key={item.id}>
+          {prefix && <span className="pdf-text-separator" style={{
+            left: Math.min(shown.page.widthPt - 1, preceding.x + preceding.width) * zoom, top: preceding.y * zoom,
+            width: Math.max(1, sameLine ? first.x - preceding.x - preceding.width : (block.runs[0]?.style.fontSize ?? 12) / 3) * zoom,
+            height: Math.max(2, preceding.height) * zoom, fontSize: prefix.includes('\n') ? 1 : (block.runs[0]?.style.fontSize ?? 12) * zoom,
+          }}>{prefix}</span>}
+          {!clusters.length ? <span data-text-object={item.id} className="pdf-text-fallback" style={{
+            left: item.bounds.x * zoom, top: item.bounds.y * zoom, width: item.bounds.width * zoom,
+            fontSize: (block.runs[0]?.style.fontSize ?? 12) * zoom, lineHeight: block.runs[0]?.style.lineHeight ?? 1.2,
+            letterSpacing: (block.runs[0]?.style.characterSpacing ?? 0) * zoom }}>{value}</span>
+          : <span data-text-object={item.id} className="pdf-text-object">{clusters.map((cluster, index) => {
+            const gap = value.slice(offset, cluster.range[0]); offset = cluster.range[1];
+            return <span key={index} className="pdf-character" style={{ left: cluster.bounds.x * zoom, top: cluster.bounds.y * zoom,
+              width: cluster.bounds.width * zoom, height: cluster.bounds.height * zoom, fontSize: cluster.bounds.height * zoom }}>
+              {gap}{cluster.text}{index === clusters.length - 1 ? value.slice(offset) : ''}
+            </span>;
+          })}</span>}
+        </Fragment>;
       })}
-      {caret && <i className="reading-caret" aria-hidden="true" style={{ left: caret.x, top: caret.y, height: caret.height }} />}
+      <div className="pdf-selection-paint" aria-hidden="true">{mergeTextRects(targets.flatMap(target => target.rects), shown.page.rotation % 180 !== 0).map((rect, index) =>
+        <i key={index} style={{ left: rect.x * zoom, top: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom }} />)}</div>
+      {caret && <i className="reading-caret" aria-hidden="true" style={{ left: caret.x * zoom, top: caret.y * zoom,
+        width: Math.max(1.5, caret.width * zoom), height: Math.max(1.5, caret.height * zoom) }} />}
     </ContextMenu.Trigger>
     <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu">
       {targets.length > 0 && <>
-        <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled} onClick={() => void copy()}>{t('Copy text')}<kbd>Ctrl/Cmd C</kbd></ContextMenu.Item>
-        {targets.length === 1 && <ContextMenu.Item className="ui-menu-item" disabled={!canEdit || disabled} onClick={() => onEdit(shown, targets[0]!.objectId, targets[0]!.range)}>{t(text ? 'Edit selected text' : 'Insert text at cursor')}</ContextMenu.Item>}
-        <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !shown.info.permissions.annotate || !shown.info.capabilities.includes('annotation.add')}
+        <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !shown.info.permissions.copy} onClick={() => void copy()}>{t('Copy text')}<kbd>Ctrl/Cmd C</kbd></ContextMenu.Item>
+        {editTarget && <ContextMenu.Item className="ui-menu-item" disabled={!canEdit || disabled} onClick={() => onEdit(shown, editTarget.objectId, editTarget.range)}>{t(text ? 'Edit selected text' : 'Insert text at cursor')}</ContextMenu.Item>}
+        <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !localSelection || !shown.info.permissions.annotate || !shown.info.capabilities.includes('annotation.add')}
           onClick={() => void onAnnotate(shown, contextTargets.current, 'highlight')}>{t('Highlight selection')}</ContextMenu.Item>
-        <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !canEdit || !shown.info.capabilities.includes('text.style')}
+        <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !localSelection || !canEdit || !shown.info.capabilities.includes('text.style')}
           onClick={() => void onAnnotate(shown, contextTargets.current, 'underline')}>{t('Underline text')}</ContextMenu.Item>
         <ContextMenu.Separator className="ui-menu-separator" />
       </>}

@@ -5,7 +5,7 @@
   .pdf-canvas { display: block; }
   .pdf-tile-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
   .pdf-tile { position: absolute; display: block; }
-  .selection-layer { position: absolute; inset: 0; }
+  .selection-layer { position: absolute; inset: 0; isolation: isolate; }
   .inline-text-editor {
     position: absolute;
     z-index: 3;

@@ -1,4 +1,5 @@
 import { aiResultSchema, type AiRequest, type AiResult, type ProposedCommand } from '@pdf-editor/contracts';
+import { identityReply, isIdentityQuestion } from './komo-identity.js';
 
 export class OutputValidationError extends Error {
   constructor(message: string) {
@@ -130,7 +131,12 @@ export function parseAndValidateResult(
   switch (result.kind) {
     case 'answer':
       for (const citation of result.citations) validateCitation(evidenceById, citation);
-      if (request.feature === 'document.ask') assert(result.citations.length > 0, 'Document Q&A missing evidence citation');
+      if (request.feature === 'document.ask' && result.citations.length === 0) {
+        if (isIdentityQuestion(request.instruction)) return identityReply(request);
+        return { kind: 'clarification', question: /\p{Script=Han}/u.test(request.instruction)
+          ? '这次回答未能找到可核对的原文依据。请选定相关页面或文字，补充具体问题后再试；我不会把缺少依据的内容当作文档结论。'
+          : 'I could not verify this answer against the supplied text. Select the relevant page or passage and make the question more specific; I will not present unsupported content as a document conclusion.' };
+      }
       break;
     case 'textProposal': {
       const seen = new Set<string>();

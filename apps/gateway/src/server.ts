@@ -14,8 +14,9 @@ import type { GatewayConfig } from './config.js';
 import { GeminiNativeAdapter, ProviderError } from './gemini.js';
 import { ImageValidationError, validateImages } from './images.js';
 import type { ProviderAdapter } from './provider-types.js';
-import { extractAnswerTextPrefix, finishSse, sendEvent, sendEventBestEffort, splitUtf8, startSse } from './sse.js';
+import { finishSse, sendEvent, sendEventBestEffort, splitUtf8, startSse } from './sse.js';
 import { prepareProviderInput } from './templates.js';
+import { protectKomoIdentity } from './komo-identity.js';
 import { OutputValidationError, parseAndValidateResult } from './validation.js';
 
 const ERROR_RESPONSE_SCHEMA = {
@@ -337,7 +338,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
     protocolVersion: PROTOCOL_VERSION,
     templateVersion: AI_TEMPLATE_VERSION,
     features: AI_FEATURES,
-    model: { id: options.config.provider.model, displayName: options.config.provider.displayName },
+    model: { id: 'komo', displayName: 'komo' },
     limits: publicLimits(options.config),
   }));
 
@@ -380,7 +381,8 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       await sendEvent(reply.raw, { type: 'accepted', requestId: request.requestId }, controller.signal);
       await sendEvent(reply.raw, { type: 'progress', message: 'Processing request' }, controller.signal);
       let rawResult = '';
-      let emittedText = '';
+      // Hold visible text until validation and identity filtering; a final-only
+      // filter cannot undo a model identifier already sent in an SSE delta.
       if (request.feature === 'document.ask') {
         let resultBytes = 0;
         for await (const event of provider.stream(prepared.input, controller.signal)) {
@@ -388,15 +390,6 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
             resultBytes += Buffer.byteLength(event.text, 'utf8');
             if (resultBytes > options.config.limits.visibleResultBytes) throw new OutputValidationError('Model visible result exceeds size limit');
             rawResult += event.text;
-            const visiblePrefix = extractAnswerTextPrefix(rawResult);
-            if (visiblePrefix !== null) {
-              if (!visiblePrefix.startsWith(emittedText)) throw new OutputValidationError('Streaming answer prefix mismatch');
-              const delta = visiblePrefix.slice(emittedText.length);
-              for (const chunk of splitUtf8(delta, OUTBOUND_DELTA_BYTES)) {
-                await sendEvent(reply.raw, { type: 'delta', text: chunk }, controller.signal);
-              }
-              emittedText = visiblePrefix;
-            }
           } else if (event.type === 'finish') finishReason = event.finishReason;
           else observedUsage = event.usage;
         }
@@ -408,16 +401,16 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       }
 
       if (finishReason !== 'STOP') throw new IncompleteOutputError();
-      const result = parseAndValidateResult(
+      let result = parseAndValidateResult(
         rawResult,
         request,
         prepared.expectedKind,
         prepared.allowedCommands,
         options.config.limits.visibleResultBytes,
       );
+      result = protectKomoIdentity(result, request, options.config.provider);
       if (request.feature === 'document.ask' && result.kind === 'answer') {
-        if (!result.text.startsWith(emittedText)) throw new OutputValidationError('Full answer does not match streaming answer');
-        for (const chunk of splitUtf8(result.text.slice(emittedText.length), OUTBOUND_DELTA_BYTES)) {
+        for (const chunk of splitUtf8(result.text, OUTBOUND_DELTA_BYTES)) {
           await sendEvent(reply.raw, { type: 'delta', text: chunk }, controller.signal);
         }
       }

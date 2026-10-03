@@ -20,6 +20,7 @@ export function selectionScope(page: PageModel, selectedIds: string[]): Editable
 export function pickObject(objects: EditableObject[], x: number, y: number, tolerance: number): EditableObject | undefined {
   return objects.filter(object => containsRect(object.bounds, { x, y, width: 0, height: 0 }, tolerance))
     .sort((a, b) => a.bounds.width * a.bounds.height - b.bounds.width * b.bounds.height ||
+      b.locator.containerPath.length - a.locator.containerPath.length ||
       b.locator.objectIndex - a.locator.objectIndex)[0];
 }
 

@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { EditorLoading } from './editor-loading';
-import { EditorShell, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient } from '@pdf-editor/editor';
+import { EditorShell, KomoChatPanel, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient } from '@pdf-editor/editor';
 
 export default function EditorClient() {
   const [instances, setInstances] = React.useState<{
@@ -37,5 +37,6 @@ export default function EditorClient() {
 
   if (!instances) return <EditorLoading />;
 
-  return <EditorShell engine={instances.engine} host={instances.host} />;
+  return <EditorShell engine={instances.engine} host={instances.host}
+    renderAiPanel={context => <KomoChatPanel context={context} />} />;
 }

@@ -15,10 +15,17 @@
   },
   "dependencies": {
     "@base-ui/react": "1.8.0",
+    "@lexical/react": "0.52.0",
+    "@lexical/selection": "0.52.0",
+    "@lexical/utils": "0.52.0",
     "@pdf-editor/ai-client": "workspace:*",
     "@pdf-editor/commands": "workspace:*",
     "@pdf-editor/contracts": "workspace:*",
-    "lucide-react": "1.47.0"
+    "fflate": "0.8.3",
+    "lexical": "0.52.0",
+    "lucide-react": "1.47.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "peerDependencies": {
     "react": "19.3.0",

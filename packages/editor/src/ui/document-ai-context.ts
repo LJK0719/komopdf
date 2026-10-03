@@ -191,7 +191,7 @@ export async function analyzeFullDocument(options: {
     docId: document.id, baseRevision: document.revision, sourceIds: document.sourceIds,
     taskType, scope: { createdAt, pagesScanned: document.pageOrder.length,
       pagesWithText: new Set(passages.map(passage => passage.pageId)).size, passagesScanned: passages.length },
-    contentFingerprint, model: 'gemini-3.8-flash-high', templateVersion: '1', protocolVersion: 1,
+    contentFingerprint, model: 'komo', templateVersion: '1', protocolVersion: 1,
     settings: { instruction: options.instruction, feature: options.feature },
     batches: [...sectionPassages.map((items, index) => ({
       id: `section-${index + 1}`, content: items.map(item => item.text).join('\n'),

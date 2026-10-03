@@ -2,6 +2,12 @@
 
 目标固定到 `../lock.json` 的 PDFium `80fccd7553e5cff9cea6549bc0db2ea93ea6cb2e`。这里锁定的是**候选输入**，不是通过四目标验证的发布组合。
 
+## 0010 · 内容流重生成时保留字体身份
+
+删除/移动对象会重写其所在内容流。字体不能仅按 BaseFont/Subtype 合并：同名字体可能有不同的 Encoding、嵌入子集、CIDToGIDMap 与 ToUnicode。该补丁按字体字典身份复用原资源名，并完整保留直接字体字典，不把它们简化为标准字体。Windows/WASM 由 `scripts/build-core-api.py` 应用，桌面 macOS overlay 同步携带。
+
+回归：`TestDeletePreservesFontIdentity` 覆盖同名字体不同编码、直接字典、共享页面资源、删除/撤销/重做/保存重开；真实用户样本只作本机验证，不进入仓库。
+
 ## 0001 · Form 实例隔离与独立流写回
 
 对应 `native/pdf-core/pdfium/form_edit.*`：

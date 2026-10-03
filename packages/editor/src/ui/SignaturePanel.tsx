@@ -1,5 +1,8 @@
-import { translate as t, useI18n } from './i18n.js';
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useI18n } from './i18n.js';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import type { SignatureDraft, SignaturePoint as Point, SignatureStroke } from './signature-placement.js';
+import './signature-placement.css';
+export type { SignatureDraft, SignatureStroke } from './signature-placement.js';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
   type CommitResult, type DocumentInfo, type EditCommand, type EditTransaction,
@@ -8,16 +11,13 @@ import {
 
 type Props = {
   document: DocumentInfo;
-  page: PageModel;
-  engine: EngineAdapter;
   disabled: boolean;
-  onBusyChange(busy: boolean): void;
-  onCommitted(result: CommitResult): Promise<void>;
+  draft: SignatureDraft | null;
+  placing?: boolean;
+  onDraftChange(draft: SignatureDraft | null): void;
+  onPlacementRequest(draft: SignatureDraft | null): void;
 };
-type Point = [number, number];
-export type SignatureStroke = Point[];
-type PlacementDraft = { x: string; y: string; width: string; height: string };
-type Gesture = { pointerId: number; scope: string; points: SignatureStroke };
+type Gesture = { pointerId: number; documentId: string; points: SignatureStroke };
 const DRAW_WIDTH = 600;
 const DRAW_HEIGHT = 200;
 
@@ -65,19 +65,18 @@ export async function commitSignature(
   await onCommitted(result);
 }
 
-export function SignaturePanel({ document, page, engine, disabled, onBusyChange, onCommitted }: Props) {
-  useI18n();
-  const scope = `${document.id}\0${document.revision}\0${page.id}`;
-  const scopeRef = useRef(scope);
-  scopeRef.current = scope;
+export function SignaturePanel({ document, disabled, draft, placing = false, onDraftChange, onPlacementRequest }: Props) {
+  const { t } = useI18n();
   const gesture = useRef<Gesture | null>(null);
-  const [draft, setDraft] = useState<{ scope: string; strokes: SignatureStroke[] }>({ scope, strokes: [] });
-  const [placement, setPlacement] = useState<PlacementDraft>({ x: '36', y: '36', width: '180', height: '60' });
-  const [width, setWidth] = useState('2');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const strokes = draft.scope === scope ? draft.strokes : [];
-  const locked = disabled || busy || !document.permissions.annotate || !document.capabilities.includes('annotation.add');
+  const [drawing, setDrawing] = useState<SignatureStroke | null>(null);
+  const strokes = draft?.strokes ?? [];
+  const strokeWidth = draft?.strokeWidth ?? 2;
+  const locked = disabled || placing || !document.permissions.annotate || !document.capabilities.includes('annotation.add');
+
+  useEffect(() => {
+    gesture.current = null;
+    setDrawing(null);
+  }, [document.id, locked]);
 
   function pointFromEvent(event: ReactPointerEvent<SVGSVGElement>): Point {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -89,102 +88,78 @@ export function SignaturePanel({ document, page, engine, disabled, onBusyChange,
 
   function appendPoint(event: ReactPointerEvent<SVGSVGElement>, force = false): void {
     const active = gesture.current;
-    if (!active || active.pointerId !== event.pointerId || active.scope !== scope || locked) return;
+    if (!active || active.pointerId !== event.pointerId || active.documentId !== document.id || locked) return;
     const point = pointFromEvent(event);
     const last = active.points[active.points.length - 1]!;
     const rect = event.currentTarget.getBoundingClientRect();
     if (!force && Math.hypot((point[0] - last[0]) * rect.width, (point[1] - last[1]) * rect.height) < 1.5) return;
     active.points = [...active.points, point];
-    setDraft(current => current.scope === scope
-      ? { scope, strokes: [...current.strokes.slice(0, -1), active.points] } : current);
+    setDrawing(active.points);
   }
 
   function cancelStroke(event: ReactPointerEvent<SVGSVGElement>): void {
-    const active = gesture.current;
-    if (!active || active.pointerId !== event.pointerId) return;
+    if (gesture.current?.pointerId !== event.pointerId) return;
     gesture.current = null;
-    setDraft(current => current.scope === active.scope
-      ? { scope: active.scope, strokes: current.strokes.slice(0, -1) } : current);
+    setDrawing(null);
   }
 
-  function clearDraft(lastOnly: boolean): void {
-    gesture.current = null;
-    setDraft({ scope, strokes: lastOnly ? strokes.slice(0, -1) : [] });
-  }
-
-  async function placeSignature(): Promise<void> {
-    if (locked || !strokes.length) return;
-    const expectedScope = scope;
-    setBusy(true);
-    onBusyChange(true);
-    setError('');
-    try {
-      await commitSignature(engine, document, page, strokes, {
-        x: Number(placement.x), y: Number(placement.y),
-        width: Number(placement.width), height: Number(placement.height),
-      }, Number(width), () => scopeRef.current === expectedScope, async result => {
-        if (scopeRef.current === expectedScope) setDraft({ scope: expectedScope, strokes: [] });
-        await onCommitted(result);
-      });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not place the signature');
-    } finally {
-      setBusy(false);
-      onBusyChange(false);
-    }
-  }
-
-  return <section className="text-edit-panel document-tools-panel" aria-label={t("Handwritten signature")}>
-    <span className="eyebrow">{t("Handwritten signature")}</span>
-    <p>{t("Draw your signature below.")}</p>
-
-    {document.permissions.signed ? <p role="alert">{t("Changing this signed PDF may invalidate its existing digital signature.")}</p> : null}
-    {!document.capabilities.includes('annotation.add') ? <p role="status">{t("Signatures are not available for this document.")}</p> : null}
-    {!document.permissions.annotate ? <p role="alert">{t("This document does not permit annotations.")}</p> : null}
-    <svg viewBox={`0 0 ${DRAW_WIDTH} ${DRAW_HEIGHT}`} preserveAspectRatio="none"
-      role="img" aria-label={t("Signature drawing area")} style={{ display: 'block', width: '100%', height: DRAW_HEIGHT,
-        border: '1px solid #858d99', background: '#fff', touchAction: 'none' }}
+  return <section className="text-edit-panel document-tools-panel signature-panel" aria-label={t('Handwritten signature')}>
+    <span className="eyebrow">{t('Handwritten signature')}</span>
+    <p>{t('Draw once, then place your signature as many times as you need.')}</p>
+    {document.permissions.signed ? <p role="alert">{t('Changing this signed PDF may invalidate its existing digital signature.')}</p> : null}
+    {!document.capabilities.includes('annotation.add') ? <p role="status">{t('Signatures are not available for this document.')}</p> : null}
+    {!document.permissions.annotate ? <p role="alert">{t('This document does not permit annotations.')}</p> : null}
+    <svg className="signature-drawing-area" viewBox={`0 0 ${DRAW_WIDTH} ${DRAW_HEIGHT}`} preserveAspectRatio="none"
+      role="img" aria-label={t('Signature drawing area')} aria-disabled={locked}
       onPointerDown={event => {
         if (locked || gesture.current || !event.isPrimary || event.button !== 0) return;
         const points: SignatureStroke = [pointFromEvent(event)];
-        gesture.current = { pointerId: event.pointerId, scope, points };
+        gesture.current = { pointerId: event.pointerId, documentId: document.id, points };
         event.currentTarget.setPointerCapture(event.pointerId);
-        setDraft(current => ({ scope, strokes: [...(current.scope === scope ? current.strokes : []), points] }));
+        setDrawing(points);
       }}
       onPointerMove={event => appendPoint(event)}
       onPointerUp={event => {
         const active = gesture.current;
         if (!active || active.pointerId !== event.pointerId) return;
-        if (locked || active.scope !== scope) { cancelStroke(event); return; }
-        appendPoint(event);
-        if (active.points.length === 1) {
+        if (locked || active.documentId !== document.id) { cancelStroke(event); return; }
+        appendPoint(event, true);
+        if (active.points.length === 2 && active.points[0]![0] === active.points[1]![0] && active.points[0]![1] === active.points[1]![1]) {
           const [x, y] = active.points[0]!;
-          active.points = [active.points[0]!, [x < 1 ? x + 1 / DRAW_WIDTH : x - 1 / DRAW_WIDTH, y]];
-          setDraft(current => current.scope === scope
-            ? { scope, strokes: [...current.strokes.slice(0, -1), active.points] } : current);
+          active.points = [[x, y], [x < 1 ? Math.min(1, x + 1 / DRAW_WIDTH) : x - 1 / DRAW_WIDTH, y]];
         }
         gesture.current = null;
+        setDrawing(null);
+        onDraftChange({ strokes: [...strokes, active.points], strokeWidth });
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       }}
-      onPointerCancel={cancelStroke}>
-      {strokes.map((stroke, index) => <polyline key={index}
+      onPointerCancel={cancelStroke} onLostPointerCapture={cancelStroke}>
+      <line x1="24" y1="155" x2="576" y2="155" className="signature-drawing-baseline" />
+      {[...strokes, ...(drawing ? [drawing] : [])].map((stroke, index) => <polyline key={index}
         points={stroke.map(([x, y]) => `${x * DRAW_WIDTH},${y * DRAW_HEIGHT}`).join(' ')}
-        fill="none" stroke="#000" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />)}
+        fill="none" stroke="#000" strokeWidth={strokeWidth * 2} strokeLinecap="round" strokeLinejoin="round" />)}
     </svg>
-    <div className="text-edit-actions">
-      <button type="button" disabled={busy || !strokes.length} onClick={() => clearDraft(true)}>{t("Undo draft stroke")}</button>
-      <button type="button" disabled={busy || !strokes.length} onClick={() => clearDraft(false)}>{t("Clear draft")}</button>
+    <div className="signature-draft-actions">
+      <button type="button" disabled={locked || !strokes.length || !!drawing}
+        onClick={() => onDraftChange({ strokes: strokes.slice(0, -1), strokeWidth })}>{t('Undo draft stroke')}</button>
+      <button type="button" className="signature-clear" disabled={disabled || (!strokes.length && !drawing)} onClick={() => {
+        gesture.current = null;
+        setDrawing(null);
+        onDraftChange(null);
+        onPlacementRequest(null);
+      }}>{t('Clear signature')}</button>
     </div>
-    <p>{t("Place within the current PDF page (coordinates in points from the top-left).")}</p>
-    <div className="document-tools-grid">
-      {(['x', 'y', 'width', 'height'] as const).map(key => <label key={key}>
-        {key === 'x' ? 'X' : key === 'y' ? 'Y' : key === 'width' ? t("Width") : t("Height")} (pt)
-        <input type="number" step="any" value={placement[key]} disabled={disabled || busy}
-          onChange={event => setPlacement(current => ({ ...current, [key]: event.target.value }))} />
-      </label>)}
-      <label>{t("Stroke width (pt)")}<input type="number" min="0.1" step="0.1" value={width} disabled={disabled || busy}
-        onChange={event => setWidth(event.target.value)} /></label>
-    </div>
-    <button type="button" disabled={locked || !strokes.length} onClick={() => void placeSignature()}>{t("Place signature")}</button>
-    {error ? <p role="alert">{t(error)}</p> : null}
+    <label className="signature-stroke-control">{t('Stroke width (pt)')}
+      <input type="range" min="0.5" max="5" step="0.5" value={strokeWidth} disabled={locked}
+        onChange={event => onDraftChange({ strokes, strokeWidth: Number(event.target.value) })} />
+      <output>{strokeWidth}</output>
+    </label>
+    {placing ? <>
+      <p className="signature-placement-status" role="status">{t('Signature preview active. Drag it on the page, then confirm to place.')}</p>
+      <button type="button" disabled={disabled} onClick={() => onPlacementRequest(null)}>{t('Cancel placement')}</button>
+    </> : <button type="button" className="signature-primary" disabled={locked || !strokes.length || !!drawing}
+      onClick={() => { if (draft) onPlacementRequest(draft); }}>{t('Place signature')}</button>}
+    <p className="signature-session-note">{t('Kept only for this editing session. Clear it when you are done.')}</p>
+    <p className="signature-session-note">{t('Handwritten ink only, not a digital certificate signature.')}</p>
   </section>;
 }

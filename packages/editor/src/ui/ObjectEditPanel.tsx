@@ -1,16 +1,18 @@
-import { translate as t, useI18n } from './i18n.js';
+import { useI18n } from './i18n.js';
 import { useEffect, useRef, useState } from 'react';
 import { CommandRegistry, validateTransaction } from '@pdf-editor/commands';
 import { WEB_LIMITS, type CommandType, type CommitResult, type DocumentInfo, type EditCommand,
   type EngineAdapter, type HostAdapter, type PageModel, type TextLayoutResult } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
+import { createPageNumberCommand, pageNumberLabels, parsePageRange, type PageNumberLabel, type PageNumberTotal } from './page-number-utils.js';
+import './page-number.css';
 
 type Props = { mode?: 'edit' | 'pages' | 'arrange'; pageSelection?: string[] | null; section?: 'number' | 'watermark' | 'header' | null; document: DocumentInfo; page: PageModel; selectedIds: string[]; engine: EngineAdapter;
-  host: HostAdapter; disabled: boolean; onBusyChange(busy: boolean): void;
+  host: HostAdapter; disabled: boolean; onBusyChange(busy: boolean): void; onImportPages?(): void;
   onSelectionChange(ids: string[]): void; onCommitted(result: CommitResult): Promise<void> };
 
-export function ObjectEditPanel({ mode = 'edit', section, pageSelection, document, page, selectedIds, engine, host, disabled, onBusyChange, onSelectionChange, onCommitted }: Props) {
-  useI18n();
+export function ObjectEditPanel({ mode = 'edit', section, pageSelection, document, page, selectedIds, engine, host, disabled, onBusyChange, onSelectionChange, onCommitted, onImportPages }: Props) {
+  const { t } = useI18n();
   const [x, setX] = useState(36), [y, setY] = useState(36);
   const [width, setWidth] = useState(240), [height, setHeight] = useState(120);
   const [dx, setDx] = useState(10), [dy, setDy] = useState(0);
@@ -29,6 +31,19 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
   }, [selectedPageNumbers]);
   const [decoration, setDecoration] = useState<'number' | 'header' | 'footer' | 'watermark'>('number');
   const [decorationText, setDecorationText] = useState('komopdf');
+  const [numberStart, setNumberStart] = useState('1');
+  const [numberTemplate, setNumberTemplate] = useState('{page}');
+  const [numberTotal, setNumberTotal] = useState<PageNumberTotal>('selected');
+  const [numberPosition, setNumberPosition] = useState<'left' | 'center' | 'right'>('right');
+  const [skipCover, setSkipCover] = useState(false);
+  let numberLabels: PageNumberLabel[] = [], numberError = '';
+  if (decoration === 'number') {
+    try {
+      numberLabels = pageNumberLabels({ order: document.pageOrder,
+        targetIds: parsePageRange(pageRange, document.pageOrder, page.id),
+        start: numberStart.trim() ? Number(numberStart) : NaN, template: numberTemplate, total: numberTotal, skipCover });
+    } catch (caught) { numberError = caught instanceof Error ? caught.message : String(caught); }
+  }
   const decorationSection = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     if (mode !== 'pages' || !section || !decorationSection.current) return;
@@ -137,25 +152,31 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
   async function addPageDecoration() {
     if (!chosenFont) throw new Error('Choose an embedded font first');
     if (!Number.isFinite(fontSize) || fontSize <= 0) throw new Error('Choose a positive font size');
-    const targetIds = parsePageRange(pageRange, document.pageOrder, page.id);
+    if (decoration === 'number' && numberError) throw new Error(numberError);
+    const targetIds = decoration === 'number' ? numberLabels.map(label => label.pageId) : parsePageRange(pageRange, document.pageOrder, page.id);
     if (targetIds.length > 4096) throw new Error('The native transaction can contain at most 4096 page decorations; use smaller ranges');
     const loaded = new Map<string, PageModel>();
     const commands: EditCommand[] = [];
     for (const pageId of targetIds) {
       const target = pageId === page.id ? page : await engine.describePage(document.id, pageId);
       loaded.set(pageId, target);
+      if (decoration === 'number') {
+        commands.push(createPageNumberCommand(target, numberLabels[commands.length]!.text,
+          { fontId: chosenFont, fontSize, color: rgb }, numberPosition));
+        continue;
+      }
       const number = document.pageOrder.indexOf(pageId) + 1;
       const margin = Math.min(36, target.widthPt * 0.08, target.heightPt * 0.08);
       const height = Math.min(48, target.heightPt * 0.2);
       const bounds = { x: margin, y: decoration === 'header' ? margin
         : decoration === 'watermark' ? (target.heightPt - height) / 2
           : target.heightPt - margin - height, width: target.widthPt - 2 * margin, height };
-      const label = decoration === 'number' ? String(number) : decorationText.replaceAll('{page}', String(number));
+      const label = decorationText.replaceAll('{page}', String(number));
       if (!label.trim()) throw new Error('Enter the page decoration text');
       commands.push({ type: 'text.insert', pageId, objectId: crypto.randomUUID(), bounds,
         text: label, style: { fontId: chosenFont, fontSize,
           color: decoration === 'watermark' ? [0.65, 0.65, 0.65] : rgb,
-          alignment: decoration === 'number' ? 'right' : decoration === 'watermark' ? 'center' : 'left' },
+          alignment: decoration === 'watermark' ? 'center' : 'left' },
         paragraph: true });
     }
     await execute(commands, new Set(), false, loaded);
@@ -171,7 +192,7 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     await host.saveDocument({ ...result, savedRevision: result.sourceRevision }, 'komopdf-extracted-pages.pdf');
   }
 
-  async function insertResource(kind: 'image' | 'pdf', mode: 'insert' | 'replace' | 'pages' = 'insert') {
+  async function insertResource(kind: 'image' | 'pdf', mode: 'insert' | 'replace' = 'insert') {
     if (mode === 'insert' && (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0)) throw new Error('Enter valid positive insertion dimensions');
     const source = await host.pickResource?.(kind);
     if (!source) return;
@@ -179,12 +200,7 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     if (resource.kind !== (kind === 'pdf' ? 'pdf' : 'image')) throw new Error('Selected resource has a different type');
     const target = { pageId: page.id, objectId: crypto.randomUUID(), resourceId: resource.id, bounds };
     let command: EditCommand;
-    if (mode === 'pages') {
-      if (!resource.pageCount) throw new Error('Imported PDF has no pages');
-      const pageIndices = Array.from({ length: resource.pageCount }, (_, index) => index);
-      command = { type: 'pages.import', resourceId: resource.id, pageIndices,
-        newPageIds: pageIndices.map(() => crypto.randomUUID()), afterPageId: page.id };
-    } else if (mode === 'replace') {
+    if (mode === 'replace') {
       if (selectedIds.length !== 1 || page.objects.find(object => object.id === selectedIds[0])?.type !== 'image') throw new Error('Select one image to replace');
       command = { type: 'image.replace', pageId: page.id, objectId: selectedIds[0]!, resourceId: resource.id };
     } else {
@@ -205,7 +221,7 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
         {supports('pages.duplicate') && <button disabled={locked} onClick={() => void run(() => execute([
           { type: 'pages.duplicate', pageIds: [page.id], newPageIds: [crypto.randomUUID()], afterPageId: page.id },
         ]))}>{t("Duplicate page")}</button>}
-        {supports('pages.import') && host.pickResource && <button disabled={locked} onClick={() => void run(() => insertResource('pdf', 'pages'))}>{t("Import PDF pages")}</button>}
+        {supports('pages.import') && onImportPages && <button disabled={locked} onClick={onImportPages}>{t("Import PDF pages")}</button>}
         {supports('pages.delete') && <button disabled={locked || document.pageOrder.length <= 1} onClick={() => {
           if (window.confirm(t("Delete this page? You can undo this action."))) void run(() => execute([{ type: 'pages.delete', pageIds: [page.id] }]));
         }}>{t("Delete page")}</button>}
@@ -263,7 +279,33 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
         <option value="number">{t("Page number")}</option><option value="header">{t("Header")}</option>
         <option value="footer">{t("Footer")}</option><option value="watermark">{t("Watermark")}</option>
       </select></label>
-      {decoration !== 'number' && <label>{t("Decoration text (use")} {'{page}'} {t("for page number)")}<input value={decorationText} disabled={locked} onChange={event => setDecorationText(event.target.value)} />
+      {decoration === 'number' ? <>
+        <label>{t('Starting number')}<input type="number" min="0" step="1" value={numberStart} disabled={locked}
+          onChange={event => setNumberStart(event.target.value)} /></label>
+        <label className="page-number-cover"><input type="checkbox" checked={skipCover} disabled={locked}
+          onChange={event => setSkipCover(event.target.checked)} />{t('Skip the first PDF page (cover)')}</label>
+        <label>{t('Page number template')}<input value={numberTemplate} disabled={locked} placeholder="{page} / {total}"
+          onChange={event => setNumberTemplate(event.target.value)} /></label>
+        <div className="text-edit-actions">
+          {['{page}', '{page} / {total}'].map(template => <button type="button" key={template} disabled={locked}
+            aria-pressed={numberTemplate === template} onClick={() => setNumberTemplate(template)}>{template}</button>)}
+        </div>
+        <label>{t('Total means')}<select value={numberTotal} disabled={locked}
+          onChange={event => setNumberTotal(event.target.value as PageNumberTotal)}>
+          <option value="selected">{t('Numbered pages only')}</option><option value="document">{t('All pages in this PDF')}</option>
+        </select></label>
+        <p>{t('{page} counts up from the starting number in document order. {total} is the page count, not the ending number.')}</p>
+        <label>{t('Page number position')}<select value={numberPosition} disabled={locked}
+          onChange={event => setNumberPosition(event.target.value as typeof numberPosition)}>
+          <option value="left">{t('Footer left')}</option><option value="center">{t('Footer center')}</option><option value="right">{t('Footer right')}</option>
+        </select></label>
+        {numberError ? <p className="page-number-error" role="alert">{t(numberError)}</p> : <div className="page-number-preview" aria-live="polite">
+          <strong>{t('Preview · {count} pages numbered', { count: numberLabels.length })}</strong>
+          {[numberLabels[0]!, ...(numberLabels.length > 1 ? [numberLabels.at(-1)!] : [])].map(label =>
+            <div key={label.pageId}>{t('PDF page {page}', { page: label.physicalPage })} · <samp>{label.text}</samp></div>)}
+        </div>}
+        <p>{t('Adds new text only. Existing page numbers are kept; numbers do not update when pages move.')}</p>
+      </> : <label>{t("Decoration text (use")} {'{page}'} {t("for page number)")}<input value={decorationText} disabled={locked} onChange={event => setDecorationText(event.target.value)} />
       </label>}
       <label>{t("Decoration font")}<select disabled={locked} value={chosenFont ?? ''}
         onChange={event => setFontId(event.target.value)}>
@@ -272,7 +314,8 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
       {numberField(t("Decoration font size (pt)"), fontSize, setFontSize)}
       <label>{t("Decoration color")}<input type="color" value={color} disabled={locked}
         onChange={event => setColor(event.target.value)} /></label>
-      <button disabled={locked || !chosenFont} onClick={() => void run(addPageDecoration)}>{t("Apply to selected pages")}</button>
+      <button disabled={locked || !chosenFont || (decoration === 'number' && Boolean(numberError))} onClick={() => void run(addPageDecoration)}>{t(busy ? 'Applying changes…' : 'Apply to selected pages')}</button>
+      {busy && <p role="status">{t('Preparing PDF changes. Large page ranges may take a moment.')}</p>}
 
     </details>}
     <details open hidden={mode !== 'edit'}><summary>{t("Add text & images")}</summary>
@@ -330,21 +373,4 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     </details>
     {error && <p role="alert">{t(error)}</p>}
   </section>;
-}
-
-function parsePageRange(input: string, order: string[], currentPage: string): string[] {
-  const normalized = input.trim().toLowerCase();
-  if (normalized === 'current') return [currentPage];
-  if (normalized === 'all') return [...order];
-  const positions = new Set<number>();
-  for (const part of normalized.split(',')) {
-    const match = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(part.trim());
-    if (!match) throw new Error('Use current, all, or page numbers such as 1-3,5');
-    const start = Number(match[1]), end = match[2] ? Number(match[2]) : start;
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end > order.length) {
-      throw new Error('Page range must refer to existing pages in ascending order');
-    }
-    for (let index = start; index <= end; index++) positions.add(index);
-  }
-  return [...positions].sort((a, b) => a - b).map(index => order[index - 1]!);
 }

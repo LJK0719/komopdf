@@ -1,8 +1,9 @@
-import type { ReactNode } from 'react';
+import { useId, useRef, useState, type ReactNode } from 'react';
 import { Menu } from '@base-ui/react/menu';
 import { Tooltip } from '@base-ui/react/tooltip';
-import { ArrowDownToLine, Bookmark, ChevronDown, ChevronLeft, ChevronRight, FilePlus2, FolderOpen, Languages, Maximize, Minus, PanelLeft, PanelRightClose, Plus, Printer, Redo2, Save, Search, Sparkles, Type, Undo2, X, LayoutGrid, MessageSquare, PenLine, ScanText, ListChecks } from 'lucide-react';
+import { ArrowDownToLine, Bookmark, ChevronDown, ChevronLeft, ChevronRight, FilePlus2, FolderOpen, Languages, Maximize, MoveHorizontal, Minus, PanelLeft, PanelRightClose, Plus, Printer, Redo2, Save, Search, Sparkles, Type, Undo2, X, LayoutGrid, MessageSquare, PenLine, ScanText, ListChecks } from 'lucide-react';
 import { useI18n, translate as t, type UiLocale } from './i18n.js';
+import { MIN_VIEW_ZOOM, MAX_VIEW_ZOOM, clampViewZoom, formatZoomPercent, parseZoomPercent, type ViewZoomMode } from './view-zoom.js';
 
 export type EditorTool = 'arrange' | 'edit' | 'pages' | 'comment' | 'forms' | 'sign' | 'ocr' | 'ai' | 'search' | 'export' | 'print' | 'fonts';
 export const toolNames: Record<EditorTool, string> = {
@@ -26,9 +27,9 @@ export function IconButton({ label, children, ...props }: React.ButtonHTMLAttrib
   </Tooltip.Root>;
 }
 
-export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUndo, canRedo, saving, tool, onTool, onOpen, onClose, onSave, onUndo, onRedo, extra, showAi = false }: {
+export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUndo, canRedo, saving, tool, onTool, onOpen, onClose, onSave, onSaveAs, onUndo, onRedo, extra, showAi = false }: {
   showAi?: boolean; productName?: string; name: string | undefined; dirty: boolean; busy: boolean; canUndo: boolean; canRedo: boolean; saving: boolean;
-  tool: EditorTool | null; onTool(tool: EditorTool): void; onOpen(): void; onClose(): void; onSave(): void; onUndo(): void; onRedo(): void; extra?: ReactNode;
+  tool: EditorTool | null; onTool(tool: EditorTool): void; onOpen(): void; onClose(): void; onSave(): void; onSaveAs?(): void; onUndo(): void; onRedo(): void; extra?: ReactNode;
 }) {
   const { t } = useI18n();
   return <header className="editor-topbar">
@@ -37,6 +38,7 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
         <Menu.Portal><Menu.Positioner sideOffset={8}><Menu.Popup className="ui-menu">
           <Menu.Item className="ui-menu-item" onClick={onOpen} disabled={busy}><FolderOpen size={16} />{t('Open…')}<kbd>Ctrl O</kbd></Menu.Item>
           <Menu.Item className="ui-menu-item" onClick={onSave} disabled={!name || busy}><Save size={16} />{t('Save')}<kbd>Ctrl S</kbd></Menu.Item>
+          {onSaveAs && <Menu.Item className="ui-menu-item" onClick={onSaveAs} disabled={!name || busy}><Save size={16} />{t('Save as…')}<kbd>Ctrl Shift S</kbd></Menu.Item>}
           <Menu.Item className="ui-menu-item" onClick={() => onTool('export')} disabled={!name || busy}><ArrowDownToLine size={16} />{t('Export…')}</Menu.Item>
           <Menu.Item className="ui-menu-item" onClick={() => onTool('print')} disabled={!name || busy}><Printer size={16} />{t('Print…')}<kbd>Ctrl P</kbd></Menu.Item>
           <Menu.Separator className="ui-separator" />
@@ -72,8 +74,24 @@ export function EditorToolbar({ tool, onTool, hasDocument, ocr, locked, onOpen, 
   </div>;
 }
 
-export function ViewControls({ page, pages, zoom, busy, onPage, onZoom, onFit }: { page: number; pages: number; zoom: number; busy: boolean; onPage(page: number): void; onZoom(zoom: number): void; onFit(): void }) {
+export function ViewControls({ page, pages, zoom, busy, onPage, onZoom, onFit, onFitWidth, zoomMode = 'manual' }: {
+  page: number; pages: number; zoom: number; busy: boolean;
+  onPage(page: number): void; onZoom(zoom: number): void; onFit(): void;
+  onFitWidth?(): void; zoomMode?: ViewZoomMode;
+}) {
   const { t } = useI18n();
+  const presetsId = useId();
+  const [zoomDraft, setZoomDraft] = useState<string | null>(null);
+  const cancelZoomDraft = useRef(false);
+  const fitStyle = { background: 'var(--canvas)', color: 'var(--accent)', borderColor: 'var(--line)' };
+  const commitZoom = (value: string) => {
+    if (!cancelZoomDraft.current && zoomDraft !== null) {
+      const next = parseZoomPercent(value);
+      if (next !== null) onZoom(next);
+    }
+    cancelZoomDraft.current = false;
+    setZoomDraft(null);
+  };
   return <div className="view-controls">
     <IconButton label={t('Previous page')} disabled={busy || page <= 1} onClick={() => onPage(page - 1)}><ChevronLeft size={16} /></IconButton>
     <label className="page-number-input"><span className="sr-only">{t('Page')}</span><input aria-label={t('Page')} type="number" min={pages ? 1 : 0} max={pages} key={page} defaultValue={page} disabled={busy || !pages}
@@ -81,12 +99,24 @@ export function ViewControls({ page, pages, zoom, busy, onPage, onZoom, onFit }:
       onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span>/ {pages}</span></label>
     <IconButton label={t('Next page')} disabled={busy || page >= pages} onClick={() => onPage(page + 1)}><ChevronRight size={16} /></IconButton>
     <span className="toolbar-divider" />
-    <IconButton label={t('Zoom out')} disabled={busy || !pages || zoom <= 0.25} onClick={() => onZoom(Math.max(0.25, zoom / 1.25))}><Minus size={16} /></IconButton>
-    <select aria-label={t('Zoom')} value={zoom} disabled={busy || !pages} onChange={event => onZoom(Number(event.target.value))}>
-      {[...new Set([0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, zoom])].sort((a, b) => a - b).map(value => <option key={value} value={value}>{Math.round(value * 100)}%</option>)}
-    </select>
-    <IconButton label={t('Zoom in')} disabled={busy || !pages || zoom >= 4} onClick={() => onZoom(Math.min(4, zoom * 1.25))}><Plus size={16} /></IconButton>
-    <IconButton label={t('Fit page')} disabled={busy || !pages} onClick={onFit}><Maximize size={16} /></IconButton>
+    <IconButton label={t('Zoom out')} disabled={busy || !pages || zoom <= MIN_VIEW_ZOOM} onClick={() => onZoom(clampViewZoom(zoom / 1.25))}><Minus size={16} /></IconButton>
+    <label className="page-number-input"><span className="sr-only">{t('Zoom')}</span>
+      <input aria-label={t('Zoom')} title={t('Zoom (25–400%)')} type="text" inputMode="decimal" list={presetsId}
+        style={{ width: 70 }} value={zoomDraft ?? formatZoomPercent(zoom)} disabled={busy || !pages}
+        onFocus={event => { cancelZoomDraft.current = false; event.currentTarget.select(); }}
+        onChange={event => setZoomDraft(event.target.value)} onBlur={event => commitZoom(event.currentTarget.value)}
+        onKeyDown={event => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
+          if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelZoomDraft.current = true; setZoomDraft(null); event.currentTarget.blur(); }
+        }} />
+      <datalist id={presetsId}>{[25, 50, 75, 100, 125, 150, 200, 300, 400].map(percent => <option key={percent} value={`${percent}%`} />)}</datalist>
+    </label>
+    <IconButton label={t('Zoom in')} disabled={busy || !pages || zoom >= MAX_VIEW_ZOOM} onClick={() => onZoom(clampViewZoom(zoom * 1.25))}><Plus size={16} /></IconButton>
+    {onFitWidth && <IconButton label={t('Fit width')} disabled={busy || !pages} aria-pressed={zoomMode === 'fit-width'}
+      style={zoomMode === 'fit-width' ? fitStyle : undefined} onClick={onFitWidth}><MoveHorizontal size={16} /></IconButton>}
+    <IconButton label={t('Fit page')} disabled={busy || !pages} aria-pressed={zoomMode === 'fit-page'}
+      style={zoomMode === 'fit-page' ? fitStyle : undefined} onClick={onFit}><Maximize size={16} /></IconButton>
   </div>;
 }
 

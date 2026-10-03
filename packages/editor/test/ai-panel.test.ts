@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EditTransaction, EngineAdapter, Rect, RenderResult } from '@pdf-editor/contracts';
 import { withReplacementFont } from '../src/ui/AiPanel.js';
 import { computeTextDiff } from '../src/ui/AiPanelDiff.js';
-import { captureRegionImage, createMinimalPngBase64 } from '../src/ui/AiPanelImage.js';
+import { captureRegionImage } from '../src/ui/AiPanelImage.js';
 
 describe('AI text candidate font selection', () => {
   it('copies the explicit fontId into every accepted text replacement candidate', () => {
@@ -75,22 +75,6 @@ describe('文本差异比较 (AiPanelDiff)', () => {
 });
 
 describe('局部图表提取与图像格式转换 (AiPanelImage)', () => {
-  it('生成符合规范的基础 PNG base64 数据（含有效 PNG 签名与 IHDR）', () => {
-    const base64 = createMinimalPngBase64(300, 200);
-    expect(typeof base64).toBe('string');
-    expect(base64.length).toBeGreaterThan(0);
-
-    const binary = atob(base64);
-    // PNG 签名 0x89 0x50 0x4E 0x47
-    expect(binary.charCodeAt(0)).toBe(0x89);
-    expect(binary.charCodeAt(1)).toBe(0x50);
-    expect(binary.charCodeAt(2)).toBe(0x4e);
-    expect(binary.charCodeAt(3)).toBe(0x47);
-
-    // IHDR 块标识
-    expect(binary.slice(12, 16)).toBe('IHDR');
-  });
-
   it('captureRegionImage 调用 engine.render 并正确传递裁剪区域与缩放比', async () => {
     const mockRenderResult: RenderResult = {
       width: 150,
@@ -112,8 +96,9 @@ describe('局部图表提取与图像格式转换 (AiPanelImage)', () => {
       }),
     };
 
-    const pngBase64 = await captureRegionImage(mockEngine as EngineAdapter, 'doc-test', 'page-test', clip, 1.5);
-    expect(typeof pngBase64).toBe('string');
+    // A non-browser host must fail rather than send a fake PNG with no pixels.
+    await expect(captureRegionImage(mockEngine as EngineAdapter, 'doc-test', 'page-test', clip, 1.5))
+      .rejects.toThrow('Page image encoding is unavailable');
     expect(mockEngine.render).toHaveBeenCalledTimes(1);
   });
 });

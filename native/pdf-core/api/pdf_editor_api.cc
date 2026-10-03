@@ -88,7 +88,7 @@
 
 namespace {
 
-constexpr uint32_t kAbiVersion = 3;
+constexpr uint32_t kAbiVersion = 4;
 constexpr size_t kCopyChunkSize = 64 * 1024;
 constexpr size_t kMaxObjectDepth = 64;
 constexpr size_t kUndoLimit = 100;
@@ -108,10 +108,11 @@ constexpr uint32_t kTextFitBoundsFlag = 256U;
 constexpr uint32_t kTextOcrFlag = 512U;
 constexpr uint32_t kTextParagraphFlag = 1024U;
 constexpr uint32_t kTextUnderlineFlag = 2048U;
+constexpr uint32_t kParagraphMetricsFlags = 4096U | 8192U | 16384U | 32768U;
 constexpr uint32_t kKnownTextInsertFlags =
     kKnownStyleFlags | kTextInsertLineHeightFlag | kTextInsertCenterFlag |
     kTextInsertRightFlag | kTextInvisibleFlag | kTextFitBoundsFlag |
-    kTextOcrFlag | kTextParagraphFlag | kTextUnderlineFlag;
+    kTextOcrFlag | kTextParagraphFlag | kTextUnderlineFlag | kParagraphMetricsFlags;
 constexpr double kDefaultLineHeight = 1.2;
 constexpr double kLayoutEpsilon = 0.01;
 constexpr double kMatrixEpsilon = 1e-12;
@@ -188,6 +189,7 @@ struct TextStyleData {
   std::optional<std::array<double, 3>> color;
   std::optional<double> character_spacing;
   std::optional<double> line_height;
+  std::array<std::optional<double>, 4> paragraph_metrics;
   std::optional<std::string> alignment;
   std::optional<int> weight;
   std::optional<bool> italic;
@@ -199,6 +201,21 @@ struct StyledRunData {
   TextStyleData style;
 };
 
+struct TextCharacterData {
+  uint32_t start = 0;
+  uint32_t end = 0;
+  Rect bounds;
+  double angle = 0;
+  bool rtl = false;
+};
+
+struct IndexedObjectText {
+  std::string text;
+  std::vector<TextCharacterData> characters;
+  uint32_t length = 0;
+};
+using TextGeometryIndex = std::map<FPDF_PAGEOBJECT, IndexedObjectText>;
+
 struct TextBlockData {
   std::string id;
   std::string page_id;
@@ -207,6 +224,11 @@ struct TextBlockData {
   std::string text;
   TextStyleData style;
   std::vector<StyledRunData> runs;
+  std::vector<TextCharacterData> characters;
+  std::string flow_id;
+  uint32_t flow_start = 0;
+  uint32_t flow_end = 0;
+  std::vector<StyledRunData> flow_runs;
   Rect bounds;
   Matrix transform;
   std::string editability = "direct";
@@ -304,7 +326,7 @@ struct EditCommand {
   uint32_t end_utf16 = 0;
   uint32_t flags = 0;
   uint32_t resource_page_index = 0;
-  std::array<double, 10> values{};
+  std::array<double, 14> values{};
 };
 
 struct EditTransaction {
@@ -325,11 +347,13 @@ struct PageIdentity {
 
 struct CandidateMetadata {
   std::vector<PageIdentity> pages;
+  std::set<std::string> flow_changed_pages;
+  std::map<std::string, std::pair<std::string, std::string>> paragraph_relocations;
 };
 
 #if defined(__wasm32__) || defined(__EMSCRIPTEN__)
-static_assert(sizeof(PdeEditCommand) == 128,
-              "PdeEditCommand must be 128 bytes on wasm32");
+static_assert(sizeof(PdeEditCommand) == 160,
+              "PdeEditCommand must be 160 bytes on wasm32");
 static_assert(offsetof(PdeEditCommand, values) == 48,
               "PdeEditCommand values must start at byte 48 on wasm32");
 #endif
@@ -1072,6 +1096,84 @@ std::string GetTextForObject(FPDF_PAGEOBJECT object, FPDF_TEXTPAGE text_page) {
   return Utf16ToUtf8(buffer, buffer.size());
 }
 
+TextGeometryIndex BuildTextGeometryIndex(FPDF_TEXTPAGE page,
+                                         const Matrix& pdf_to_page) {
+  TextGeometryIndex result;
+  std::map<FPDF_PAGEOBJECT, std::vector<FPDF_WCHAR>> units;
+  const int count = FPDFText_CountChars(page);
+  for (int index = 0; index < count; ++index) {
+    const auto object = FPDFText_GetTextObject(page, index);
+    const uint32_t code = FPDFText_GetUnicode(page, index);
+    if (!object || !code || code > 0x10ffff || FPDFText_IsGenerated(page, index) == 1) continue;
+    auto& entry = result[object];
+    auto& text = units[object];
+    const uint32_t start = static_cast<uint32_t>(text.size());
+    if (code > 0xffff) {
+      text.push_back(static_cast<FPDF_WCHAR>(0xd800 + ((code - 0x10000) >> 10)));
+      text.push_back(static_cast<FPDF_WCHAR>(0xdc00 + ((code - 0x10000) & 0x3ff)));
+    } else text.push_back(static_cast<FPDF_WCHAR>(code));
+    entry.length = static_cast<uint32_t>(text.size());
+    FS_RECTF rect{};
+    if (!FPDFText_GetLooseCharBox(page, index, &rect)) continue;
+    const Rect bounds = TransformBounds(rect.left, rect.bottom, rect.right, rect.top, pdf_to_page);
+    const double angle = FPDFText_GetCharAngle(page, index);
+    const double x = pdf_to_page.a * std::cos(angle) + pdf_to_page.c * std::sin(angle);
+    const double y = pdf_to_page.b * std::cos(angle) + pdf_to_page.d * std::sin(angle);
+    const auto direction = u_charDirection(static_cast<UChar32>(code));
+    entry.characters.push_back({start, entry.length, bounds, std::atan2(y, x),
+        direction == U_RIGHT_TO_LEFT || direction == U_RIGHT_TO_LEFT_ARABIC});
+  }
+  for (auto& [object, entry] : result) {
+    const auto& text = units.at(object);
+    entry.text = Utf16ToUtf8(text, text.size());
+  }
+  return result;
+}
+
+void CollectFormText(FPDF_PAGEOBJECT object, const TextGeometryIndex& index,
+                     IndexedObjectText* result, size_t depth = 0) {
+  if (depth > kMaxObjectDepth) return;
+  if (const auto found = index.find(object); found != index.end()) {
+    for (auto character : found->second.characters) {
+      character.start += result->length; character.end += result->length;
+      result->characters.push_back(character);
+    }
+    result->text += found->second.text;
+    result->length += found->second.length;
+  } else if (FPDFPageObj_GetType(object) == FPDF_PAGEOBJ_FORM) {
+    const int count = FPDFFormObj_CountObjects(object);
+    for (int i = 0; i < count; ++i)
+      CollectFormText(FPDFFormObj_GetObject(object, i), index, result, depth + 1);
+  }
+}
+
+std::vector<TextCharacterData> MatchTextGeometry(const IndexedObjectText& indexed,
+                                                std::string_view logical) {
+  if (indexed.text == logical) return indexed.characters;
+  LayoutText source, target;
+  if (!DecodeLayoutText(indexed.text, &source) || !DecodeLayoutText(logical, &target)) return {};
+  // Paragraph metadata contains explicit breaks; generated PDF line separators
+  // are deliberately absent from the per-object index. Match without inventing
+  // geometry for those breaks, and never attach mismatched glyphs to text.
+  std::vector<uint32_t> mapping(source.utf16.size() + 1);
+  size_t next = 0;
+  for (size_t i = 0; i < source.utf16.size(); ++i) {
+    while (next < target.utf16.size() && target.utf16[next] != source.utf16[i] &&
+           u_isUWhiteSpace(target.utf16[next])) ++next;
+    if (next == target.utf16.size() || target.utf16[next] != source.utf16[i]) return {};
+    mapping[i] = static_cast<uint32_t>(next++);
+  }
+  mapping.back() = static_cast<uint32_t>(next);
+  while (next < target.utf16.size() && u_isUWhiteSpace(target.utf16[next])) ++next;
+  if (next != target.utf16.size()) return {};
+  auto characters = indexed.characters;
+  for (auto& character : characters) {
+    character.start = mapping[character.start];
+    character.end = mapping[character.end - 1] + 1;
+  }
+  return characters;
+}
+
 bool HasObjectMark(FPDF_PAGEOBJECT object, const char* name) {
   for (int index = 0; index < FPDFPageObj_CountMarks(object); ++index) {
     const auto* mark = CPDFContentMarkItemFromFPDFPageObjectMark(FPDFPageObj_GetMark(object, index));
@@ -1625,6 +1727,51 @@ bool NestedFormPathIsStructurallyEditable(FPDF_PAGE page,
   return mcid < 0 || !!pdf_editor::tagged::ElementFor(doc, holder, mcid);
 }
 
+TextStyleData StoredParagraphStyle(const CPDF_Dictionary* info, TextStyleData style = {}) {
+  const auto font = info->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
+  if (!font.IsEmpty()) style.font_id = std::string(font.c_str(), font.GetLength());
+  style.font_size = info->GetFloatFor("FontSize");
+  style.character_spacing = info->GetFloatFor("LetterSpacing");
+  style.underline = info->GetBooleanFor("Underline", false);
+  if (info->KeyExist("LineHeight")) style.line_height = info->GetFloatFor("LineHeight");
+  if (info->KeyExist("Alignment")) {
+    const auto alignment = info->GetNameFor("Alignment");
+    style.alignment = alignment == "Justify" ? "justify" : alignment == "Center" ? "center" : alignment == "Right" ? "right" : "left";
+  }
+  const char* metrics[] = {"FirstLineIndent", "LineSpacing", "SpaceBefore", "SpaceAfter"};
+  for (size_t i = 0; i < 4; ++i) if (info->KeyExist(metrics[i])) style.paragraph_metrics[i] = info->GetFloatFor(metrics[i]);
+  const auto color = info->GetArrayFor("Color");
+  if (color && color->size() == 3) style.color = std::array<double, 3>{color->GetFloatAt(0), color->GetFloatAt(1), color->GetFloatAt(2)};
+  return style;
+}
+
+TextBlockData ReadStoredParagraph(const CPDF_Dictionary* info) {
+  TextBlockData block;
+  const auto utf8 = info->GetUnicodeTextFor("Text").ToUTF8();
+  block.text.assign(utf8.c_str(), utf8.GetLength());
+  block.style = StoredParagraphStyle(info);
+  block.is_paragraph = true;
+  if (const auto runs = info->GetArrayFor("StyleRuns")) {
+    LayoutText decoded;
+    uint32_t next = 0;
+    bool valid = DecodeLayoutText(block.text, &decoded);
+    for (size_t i = 0; valid && i < runs->size(); ++i) {
+      const auto run = runs->GetDictAt(i);
+      if (!run) { valid = false; break; }
+      const int first = run->GetIntegerFor("Start"), last = run->GetIntegerFor("End");
+      if (first < 0 || last <= first || static_cast<uint32_t>(first) != next ||
+          static_cast<size_t>(last) >= decoded.byte_offsets.size() ||
+          decoded.byte_offsets[first] == std::numeric_limits<size_t>::max() ||
+          decoded.byte_offsets[last] == std::numeric_limits<size_t>::max()) { valid = false; break; }
+      block.runs.push_back({block.text.substr(decoded.byte_offsets[first], decoded.byte_offsets[last] - decoded.byte_offsets[first]),
+          StoredParagraphStyle(run.Get(), block.style)});
+      next = static_cast<uint32_t>(last);
+    }
+    if (!valid || next != decoded.utf16.size()) { block.runs.clear(); block.editability = "geometry-only"; }
+  }
+  return block;
+}
+
 struct EnumerationContext {
   std::string page_id;
   std::string source_id;
@@ -1633,6 +1780,7 @@ struct EnumerationContext {
   Matrix pdf_to_page;
   std::vector<ObjectData>* objects;
   std::vector<TextBlockData>* text_blocks;
+  const TextGeometryIndex* text_geometry;
 };
 
 void EnumerateObject(FPDF_PAGEOBJECT object,
@@ -1684,67 +1832,30 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
     data.type = "text";
     data.bounds = TransformBounds(0, 0, paragraph->GetFloatFor("Width"),
                                   paragraph->GetFloatFor("Height"), object_to_page);
-    TextBlockData block;
+    TextBlockData block = ReadStoredParagraph(paragraph.Get());
     block.id = identity.text_block_id; block.page_id = context->page_id;
     block.source_id = context->source_id; block.object_id = data.id;
-    const ByteString utf8 = paragraph->GetUnicodeTextFor("Text").ToUTF8();
-    block.text.assign(utf8.c_str(), utf8.GetLength());
     block.bounds = data.bounds; block.transform = data.transform;
-    block.is_paragraph = true;
-    const ByteString base_id = paragraph->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
-    if (!base_id.IsEmpty()) block.style.font_id =
-        std::string(base_id.c_str(), base_id.GetLength());
-    block.style.font_size = paragraph->GetFloatFor("FontSize");
-    block.style.character_spacing = paragraph->GetFloatFor("LetterSpacing");
-    block.style.line_height = paragraph->GetFloatFor("LineHeight");
-    const auto alignment = paragraph->GetNameFor("Alignment");
-    block.style.alignment = alignment == "Justify" ? "justify" : alignment == "Center" ? "center" : alignment == "Right" ? "right" : "left";
-    if (paragraph->GetBooleanFor("Underline", false)) block.style.underline = true;
-    const auto color = paragraph->GetArrayFor("Color");
-    if (color && color->size() == 3)
-      block.style.color = std::array<double, 3>{color->GetFloatAt(0), color->GetFloatAt(1), color->GetFloatAt(2)};
-    if (const auto style_runs = paragraph->GetArrayFor("StyleRuns")) {
-      LayoutText decoded;
-      uint32_t next = 0;
-      bool valid = DecodeLayoutText(block.text, &decoded);
-      for (size_t index = 0; valid && index < style_runs->size(); ++index) {
-        const auto entry = style_runs->GetDictAt(index);
-        if (!entry) { valid = false; break; }
-        const int first = entry->GetIntegerFor("Start");
-        const int last = entry->GetIntegerFor("End");
-        if (first < 0 || last <= first || static_cast<uint32_t>(first) != next ||
-            static_cast<size_t>(last) >= decoded.byte_offsets.size() ||
-            decoded.byte_offsets[first] == std::numeric_limits<size_t>::max() ||
-            decoded.byte_offsets[last] == std::numeric_limits<size_t>::max()) {
-          valid = false; break;
-        }
-        StyledRunData run;
-        run.text = block.text.substr(decoded.byte_offsets[first],
-                                     decoded.byte_offsets[last] - decoded.byte_offsets[first]);
-        run.style.font_size = entry->GetFloatFor("FontSize");
-        run.style.character_spacing = entry->GetFloatFor("LetterSpacing");
-        run.style.line_height = block.style.line_height;
-        run.style.alignment = block.style.alignment;
-        run.style.underline = entry->GetBooleanFor("Underline", false);
-        const ByteString font_id = entry->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
-        if (!font_id.IsEmpty()) run.style.font_id =
-            std::string(font_id.c_str(), font_id.GetLength());
-        const auto rgb = entry->GetArrayFor("Color");
-        if (rgb && rgb->size() == 3) run.style.color = std::array<double, 3>{
-            rgb->GetFloatAt(0), rgb->GetFloatAt(1), rgb->GetFloatAt(2)};
-        block.runs.push_back(std::move(run));
-        next = static_cast<uint32_t>(last);
-      }
-      if (!valid || next != decoded.utf16.size()) {
-        block.runs.clear();
-        block.editability = "geometry-only";
+    if (const auto flow = paragraph->GetDictFor("Flow")) {
+      const auto id = flow->GetByteStringFor("Id");
+      block.flow_id = std::string(id.c_str(), id.GetLength()) + ":" + std::to_string(flow->GetObjNum());
+      block.flow_start = static_cast<uint32_t>(paragraph->GetIntegerFor("FlowStart"));
+      block.flow_end = static_cast<uint32_t>(paragraph->GetIntegerFor("FlowEnd"));
+      if (block.flow_start == 0) {
+        auto complete = ReadStoredParagraph(flow.Get());
+        if (complete.editability == "geometry-only") block.editability = "geometry-only";
+        else block.flow_runs = complete.runs.empty() ? std::vector<StyledRunData>{{complete.text, complete.style}} : std::move(complete.runs);
       }
     }
     if (depth > 0) block.editability = "geometry-only";
+    IndexedObjectText paragraph_text;
+    CollectFormText(object, *context->text_geometry, &paragraph_text);
+    block.characters = MatchTextGeometry(paragraph_text, block.text);
     data.text_block = block;
     context->text_blocks->push_back(std::move(block));
   } else if (type == FPDF_PAGEOBJ_TEXT) {
-    std::string text = GetTextForObject(object, context->text_page);
+    const auto indexed = context->text_geometry->find(object);
+    std::string text = indexed == context->text_geometry->end() ? std::string() : indexed->second.text;
     auto* holder = HolderAtPath(context->page, std::vector<size_t>(path.begin(), path.end()));
     auto* native_text = CPDFPageObjectFromFPDFPageObject(object)->AsText();
     if (holder && native_text && pdf_editor::tagged::ActualMark(native_text) &&
@@ -1763,6 +1874,8 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
       block.source_id = context->source_id;
       block.object_id = data.id;
       block.text = std::move(text);
+      if (indexed != context->text_geometry->end())
+        block.characters = MatchTextGeometry(indexed->second, block.text);
       block.style = GetTextStyle(object);
       block.bounds = data.bounds;
       block.transform = data.transform;
@@ -1844,13 +1957,15 @@ bool BuildPageData(Document* document, uint32_t page_index, PageData* result) {
   const int object_count = FPDFPage_CountObjects(page.get());
   if (object_count < 0 ||
       page_identity.objects.size() != static_cast<size_t>(object_count)) {
-    SetError("CORE_UNAVAILABLE",
-             "The page object identity map is out of sync.");
+    SetError("CORE_UNAVAILABLE", "The page object identity map is out of sync (page " +
+        std::to_string(page_index) + ", PDF " + std::to_string(object_count) +
+        ", identities " + std::to_string(page_identity.objects.size()) + ").");
     return false;
   }
+  const auto text_geometry = BuildTextGeometryIndex(text_page.get(), pdf_to_page);
   EnumerationContext context{result->id,       document->source_id,
                              text_page.get(),  page.get(), pdf_to_page,
-                             &result->objects, &result->text_blocks};
+                             &result->objects, &result->text_blocks, &text_geometry};
   for (int object_index = 0; object_index < object_count; ++object_index) {
     FPDF_PAGEOBJECT object = FPDFPage_GetObject(page.get(), object_index);
     if (!object) {
@@ -1932,6 +2047,11 @@ void AppendTextStyle(std::string* output, const TextStyleData& style) {
   if (style.alignment) {
     property(); output->append("\"alignment\":"); AppendJsonString(output, *style.alignment);
   }
+  const char* metric_names[] = {"firstLineIndent", "lineSpacing", "spaceBefore", "spaceAfter"};
+  for (size_t i = 0; i < 4; ++i) if (style.paragraph_metrics[i]) {
+    property(); AppendJsonString(output, metric_names[i]); output->push_back(':');
+    AppendJsonNumber(output, *style.paragraph_metrics[i]);
+  }
   if (style.weight) {
     property();
     output->append("\"weight\":");
@@ -1985,6 +2105,32 @@ void AppendTextBlock(std::string* output, const TextBlockData& block) {
   AppendJsonString(output, block.editability);
   if (block.is_ocr) output->append(",\"isOcr\":true");
   if (block.is_paragraph) output->append(",\"isParagraph\":true");
+  output->append(",\"characters\":[");
+  for (size_t i = 0; i < block.characters.size(); ++i) {
+    if (i) output->push_back(',');
+    const auto& character = block.characters[i];
+    output->append("{\"range\":["); AppendJsonUnsigned(output, character.start);
+    output->push_back(','); AppendJsonUnsigned(output, character.end);
+    output->append("],\"bounds\":"); AppendRect(output, character.bounds);
+    output->append(",\"angle\":"); AppendJsonNumber(output, character.angle);
+    output->append(",\"rtl\":"); output->append(character.rtl ? "true" : "false");
+    output->push_back('}');
+  }
+  output->push_back(']');
+  if (!block.flow_id.empty()) {
+    output->append(",\"flow\":{\"id\":"); AppendJsonString(output, block.flow_id);
+    output->append(",\"start\":"); AppendJsonUnsigned(output, block.flow_start);
+    output->append(",\"end\":"); AppendJsonUnsigned(output, block.flow_end);
+    if (!block.flow_runs.empty()) {
+      output->append(",\"runs\":[");
+      for (size_t i = 0; i < block.flow_runs.size(); ++i) {
+        if (i) output->push_back(',');
+        append_run(block.flow_runs[i].text, block.flow_runs[i].style);
+      }
+      output->push_back(']');
+    }
+    output->push_back('}');
+  }
   output->push_back('}');
 }
 
@@ -3514,11 +3660,15 @@ bool ApplyTextStyle(
     }
     const bool nested = target.path.size() > 1;
     if (ParagraphMetadata(target.object)) {
-      if (!ApplyParagraphStyle(document, pdf, page.get(), metadata, page_index,
+      if (!FPDFPage_GenerateContent(page.get()) ||
+          !ApplyParagraphStyle(document, pdf, page.get(), metadata, page_index,
                                target, command, resources)) return false;
+      page = ScopedPage(nullptr);
+      if (!FindPageIndex(*metadata, command.page_id)) return true;
+      if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) return false;
       continue;
     }
-    if (command.flags & (kTextStyleLineHeightFlag | kTextStyleAlignmentFlag)) {
+    if (command.flags & (kTextStyleLineHeightFlag | kTextStyleAlignmentFlag | kParagraphMetricsFlags)) {
       SetError("UNSUPPORTED_CAPABILITY", "Convert adjacent text to a paragraph before changing paragraph formatting.");
       return false;
     }
@@ -4226,6 +4376,8 @@ bool ApplyObjectsDistribute(FPDF_DOCUMENT pdf,
   return true;
 }
 
+#include "paragraph_flow_integrity.h"
+
 bool ApplyObjectsDelete(FPDF_DOCUMENT pdf,
                         CandidateMetadata* metadata,
                         const EditCommand& command) {
@@ -4590,6 +4742,8 @@ bool ApplyPageInsert(FPDF_DOCUMENT pdf,
   return true;
 }
 
+#include "paragraph_flow.h"
+
 struct SnapshotPdfWriter : FPDF_FILEWRITE {
   SnapshotPdfWriter() {
     version = 1;
@@ -4783,6 +4937,9 @@ bool ApplyImportedPages(const Document& document,
       return false;
     }
   }
+  // The source is a disposable resource/snapshot document, never the active PDF.
+  // Detach incomplete flows before the importer follows their full-text resources.
+  if (!ReconcileParagraphFlows(source, nullptr, &source_indices)) return false;
   // Existing numeric destinations must become page references before insertion
   // changes the original document's page indices.
   MigrateAllDestinations(pdf);
@@ -5348,6 +5505,14 @@ std::unique_ptr<CPDF_PageObject> CloneTopLevelObject(CPDF_PageObject* source) {
       CPDF_FormObject* source_form = source->AsForm();
       RetainPtr<CPDF_Stream> source_stream =
           source_form->form()->GetMutableStreamForEditing();
+      if (const auto paragraph = source_stream->GetDict()->GetDictFor("KomoParagraph");
+          paragraph && paragraph->KeyExist("Flow")) {
+        const auto detached = source_stream->Clone();
+        source_stream = pdfium::WrapRetain(detached->AsMutableStream());
+        auto info = source_stream->GetMutableDict()->GetMutableDictFor("KomoParagraph");
+        info->RemoveFor("Flow"); info->RemoveFor("FlowStart"); info->RemoveFor("FlowEnd");
+        source_form->form()->GetDocument()->AddIndirectObject(source_stream);
+      }
       auto form = std::make_unique<CPDF_Form>(
           source_form->form()->GetDocument(),
           source_form->form()->GetMutablePageResources(),
@@ -5668,6 +5833,8 @@ bool ApplyTransactionToPdf(
     bool* overflow,
     TextInsertLayoutResult* text_insert_layout,
     bool allow_text_insert_overflow) {
+  metadata->paragraph_relocations.clear();
+  metadata->flow_changed_pages.clear();
   std::set<std::string> batch_new_ids;
   for (const EditCommand& command : transaction.commands) {
     if (command.type == EditType::kPagesInsert) {
@@ -5695,17 +5862,38 @@ bool ApplyTransactionToPdf(
     bool* command_overflow = overflow && single_command ? overflow : nullptr;
     TextInsertLayoutResult* command_insert_layout =
         text_insert_layout && single_command ? text_insert_layout : nullptr;
-    if (!ApplyCommand(document, pdf, metadata, transaction.commands[index],
-                      resources, font_cache, &batch_new_ids, command_bounds,
-                      command_overflow, command_insert_layout,
-                      command_insert_layout && allow_text_insert_overflow)) {
-      return false;
+    const auto& original = transaction.commands[index];
+    const auto current_page = [&](const std::string& block) {
+      const auto moved = metadata->paragraph_relocations.find(block);
+      return moved != metadata->paragraph_relocations.end() && moved->second.first == original.page_id
+          ? moved->second.second : original.page_id;
+    };
+    std::vector<EditCommand> commands;
+    if (original.type == EditType::kTextStyle) {
+      std::map<std::string, std::vector<std::string>> groups;
+      for (const auto& block : original.ids) groups[current_page(block)].push_back(block);
+      for (const auto& [page, ids] : groups) {
+        auto command = original; command.page_id = page; command.ids = ids;
+        commands.push_back(std::move(command));
+      }
+    } else {
+      auto command = original;
+      if (command.type == EditType::kTextReplace) command.page_id = current_page(command.target_id);
+      commands.push_back(std::move(command));
+    }
+    for (const auto& command : commands) {
+      if (!ApplyCommand(document, pdf, metadata, command,
+                        resources, font_cache, &batch_new_ids, command_bounds,
+                        command_overflow, command_insert_layout,
+                        command_insert_layout && allow_text_insert_overflow)) return false;
+      if ((command.type == EditType::kPagesDelete || command.type == EditType::kObjectsDelete) &&
+          !ReconcileParagraphFlows(pdf, metadata)) return false;
     }
   }
-  std::set<std::string> decorated_pages;
-  for (const auto& command : transaction.commands) {
-    if (!command.page_id.empty() && decorated_pages.insert(command.page_id).second &&
-        !RefreshPageUnderlines(document, pdf, metadata, command.page_id)) return false;
+  std::set<std::string> decorated_pages = metadata->flow_changed_pages;
+  for (const auto& command : transaction.commands) if (!command.page_id.empty()) decorated_pages.insert(command.page_id);
+  for (const auto& page : decorated_pages) {
+    if (FindPageIndex(*metadata, page) && !RefreshPageUnderlines(document, pdf, metadata, page)) return false;
   }
   return true;
 }
@@ -5746,6 +5934,17 @@ bool RebuildCandidate(
       return false;
     }
   }
+#if defined(__EMSCRIPTEN__)
+  // Check the real candidate, including implicit paragraph continuation pages,
+  // before installing it or changing revision/history. Native hosts stay uncapped.
+  size_t total_pages = metadata.pages.size();
+  for (const auto& [handle, other] : g_documents)
+    if (other.get() != document) total_pages += other->metadata.pages.size();
+  if (metadata.pages.size() > 200 || total_pages > 400) {
+    SetError("RESOURCE_LIMIT", "Paragraph layout exceeds the web page limit (200 per document, 400 per session). Use the desktop app.");
+    return false;
+  }
+#endif
   *rebuilt_metadata = std::move(metadata);
   *rebuilt_pdf = candidate.release();
   return true;
@@ -5864,6 +6063,16 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
     return false;
   }
 
+  for (size_t index = 10; index < 14; ++index) {
+    if (!(target->flags & (4096U << (index - 10)))) continue;
+    if ((index == 10 ? std::abs(target->values[index]) > 1000 : target->values[index] < 0 || target->values[index] > 2000) ||
+        (target->type != EditType::kTextStyle && target->type != EditType::kTextReflow &&
+         !(target->type == EditType::kTextInsert && (target->flags & kTextParagraphFlag)))) {
+      SetError("INVALID_REQUEST", "Paragraph spacing requires a logical paragraph and valid point values.");
+      return false;
+    }
+  }
+
   const auto require_page = [&]() {
     if (!target->page_id.empty()) {
       return true;
@@ -5900,8 +6109,8 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
     case EditType::kTextStyle:
       if (!require_page() || !require_ids() ||
           (target->flags & ~(kKnownStyleFlags | kTextStyleRangeFlag |
-                              kTextStyleUnderlineFlag | kTextStyleLineHeightFlag | kTextStyleAlignmentFlag)) != 0 ||
-          (target->flags & (kKnownStyleFlags | kTextStyleUnderlineFlag | kTextStyleLineHeightFlag | kTextStyleAlignmentFlag)) == 0) {
+                              kTextStyleUnderlineFlag | kTextStyleLineHeightFlag | kTextStyleAlignmentFlag | kParagraphMetricsFlags)) != 0 ||
+          (target->flags & (kKnownStyleFlags | kTextStyleUnderlineFlag | kTextStyleLineHeightFlag | kTextStyleAlignmentFlag | kParagraphMetricsFlags)) == 0) {
         if (g_error_code.empty()) {
           SetError("UNSUPPORTED_CAPABILITY", "Unknown or empty text style.");
         }
@@ -6372,7 +6581,8 @@ void AppendPageOrder(std::string* output, const CandidateMetadata& metadata) {
 void AppendChangedPages(std::string* output,
                         const EditTransaction& transaction,
                         const CandidateMetadata& metadata) {
-  const std::set<std::string> changed = ChangedPageSet(transaction);
+  std::set<std::string> changed = ChangedPageSet(transaction);
+  changed.insert(metadata.flow_changed_pages.begin(), metadata.flow_changed_pages.end());
   const bool forms_changed = std::any_of(transaction.commands.begin(), transaction.commands.end(),
       [](const EditCommand& command) {
         return command.type == EditType::kFormFill || command.type == EditType::kFormUpdate;
@@ -6670,15 +6880,19 @@ bool BuildExtractedPdf(Document* document,
       return false;
     indices.push_back(static_cast<int>(*index));
   }
+  std::vector<uint8_t> snapshot;
+  if (!SaveCandidateSnapshot(document->pdf, &snapshot)) return false;
+  ScopedDocument source(FPDF_LoadMemDocument64(snapshot.data(), snapshot.size(), nullptr));
+  if (!source.get() || !ReconcileParagraphFlows(source.get(), nullptr, &indices)) return false;
   ScopedDocument extracted(FPDF_CreateNewDocument());
   if (!extracted.get() ||
-      !FPDF_ImportPagesByIndex(extracted.get(), document->pdf, indices.data(),
+      !FPDF_ImportPagesByIndex(extracted.get(), source.get(), indices.data(),
                                static_cast<unsigned long>(indices.size()), 0)) {
     SetError("CORE_UNAVAILABLE", "The selected pages could not be copied to a new PDF.");
     return false;
   }
   CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(extracted.get());
-  pdf_editor::structure::ExtractStructureForSelectedPages(dest_doc, native, indices);
+  pdf_editor::structure::ExtractStructureForSelectedPages(dest_doc, CPDFDocumentFromFPDFDocument(source.get()), indices);
   *result = extracted.release();
   return true;
 }

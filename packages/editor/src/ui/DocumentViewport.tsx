@@ -7,6 +7,7 @@ import { PdfTextLayer, type TextSelectionTarget, type ReadingAction } from './Pd
 
 export type PageView = 'single' | 'double';
 export type PointerTool = 'hand' | 'select' | 'edit';
+export type ViewportSize = { docId: string; pageId: string; view: PageView; widthPt: number; heightPt: number; columns: 1 | 2 };
 
 type Props = {
   engine: EngineAdapter; document: LoadedDocument; zoom: number;
@@ -18,6 +19,9 @@ type Props = {
   onInsertText(document: LoadedDocument, point: { x: number; y: number }): void;
   onAnnotate(document: LoadedDocument, targets: TextSelectionTarget[], action: ReadingAction): Promise<void>;
   onError(message: string): void;
+  onViewSize?(size: ViewportSize): void;
+  drawing?: boolean;
+  renderOverlay?(page: LoadedDocument, host: HTMLDivElement | null): ReactNode;
   children(page: LoadedDocument, host: HTMLDivElement | null): ReactNode;
 };
 
@@ -26,6 +30,16 @@ export function DocumentViewport(props: Props) {
   const container = useRef<HTMLDivElement>(null);
   const loaded = useRef(new Map<string, LoadedDocument>());
   useLayoutEffect(() => { loaded.current.clear(); }, [document.info.id, document.info.revision, props.zoom]);
+  useLayoutEffect(() => {
+    const stage = root.current;
+    const active = [...(container.current?.querySelectorAll<HTMLElement>('[data-document-page]') ?? [])]
+      .find(node => node.dataset.documentPage === document.page.id);
+    if (stage && active) {
+      // Do not let the previous document's scroll offset select a different page.
+      stage.scrollLeft = 0;
+      stage.scrollTop += active.getBoundingClientRect().top - stage.getBoundingClientRect().top - 24;
+    }
+  }, [document.info.id]);
   const latest = useRef(props); latest.current = props;
   const frame = useRef(0);
   const trackPage = () => {
@@ -59,6 +73,24 @@ export function DocumentViewport(props: Props) {
   const index = document.info.pageOrder.indexOf(document.page.id);
   const start = view === 'double' ? index - index % 2 : index;
   const ids = continuous ? document.info.pageOrder : document.info.pageOrder.slice(start, start + (view === 'double' ? 2 : 1));
+  useEffect(() => {
+    if (!props.onViewSize) return;
+    let cancelled = false;
+    const report = (other?: PageModel) => {
+      if (cancelled) return;
+      props.onViewSize?.({ docId: document.info.id, pageId: document.page.id, view,
+        widthPt: document.page.widthPt + (other?.widthPt ?? 0),
+        heightPt: Math.max(document.page.heightPt, other?.heightPt ?? 0), columns: other ? 2 : 1 });
+    };
+    const otherId = view === 'double' ? document.info.pageOrder.slice(start, start + 2).find(id => id !== document.page.id) : undefined;
+    if (!otherId) report();
+    else {
+      const other = loaded.current.get(otherId)?.page;
+      if (other) report(other);
+      else void props.engine.describePage(document.info.id, otherId).then(report).catch(() => undefined);
+    }
+    return () => { cancelled = true; };
+  }, [props.engine, props.onViewSize, document.info.id, document.info.revision, document.page.id, document.page.widthPt, document.page.heightPt, view, start]);
   return <div ref={container} className={`document-pages document-pages-${view}`}>
     {ids.map((id, position) => <PageSurface key={id} {...props} pageId={id}
       pageNumber={continuous ? position + 1 : start + position + 1}
@@ -67,7 +99,7 @@ export function DocumentViewport(props: Props) {
   </div>;
 }
 
-function PageSurface({ engine, document, zoom, root, pageId, pageNumber, children, pointer, onActive, onHost, locked, onReady, onRelease, onEditText, onInsertText, onAnnotate, onError }: Props & {
+function PageSurface({ engine, document, zoom, root, pageId, pageNumber, children, pointer, drawing, renderOverlay, onActive, onHost, locked, onReady, onRelease, onEditText, onInsertText, onAnnotate, onError }: Props & {
   pageId: string; pageNumber: number; onReady(page: LoadedDocument): void; onRelease(): void;
 }) {
   const { t } = useI18n();
@@ -119,9 +151,10 @@ function PageSurface({ engine, document, zoom, root, pageId, pageNumber, childre
     {shown && visible ? <>
       {shown.render.pixels.byteLength ? <canvas ref={canvas} className="pdf-canvas" aria-label={t('Page {page}', { page: pageNumber })} />
         : <div ref={tiles} className="pdf-tile-layer" role="img" aria-label={t('Page {page}', { page: pageNumber })} />}
-      {pointer === 'select' && document.info.permissions.copy && <PdfTextLayer document={shown} zoom={zoom} disabled={locked}
+      {!drawing && pointer === 'select' && document.info.permissions.copy && <PdfTextLayer document={shown} zoom={zoom} disabled={locked}
         onEdit={onEditText} onInsert={onInsertText} onAnnotate={onAnnotate} onError={onError} />}
       {active && children(shown, host)}
+      {renderOverlay?.(shown, host)}
     </> : <span className="page-placeholder">{error || t('Page {page}', { page: pageNumber })}</span>}
     <span className="page-caption" aria-hidden="true">{pageNumber}</span>
   </div>;

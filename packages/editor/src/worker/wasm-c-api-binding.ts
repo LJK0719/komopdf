@@ -168,14 +168,14 @@ export function createPdfCoreBinding(
   }
 
   const abiVersion = module._pde_abi_version();
-  if (![ABI_1, ABI_2, 3].includes(abiVersion)) {
+  if (![ABI_1, ABI_2, 3, 4].includes(abiVersion)) {
     throw new EngineError('CORE_UNAVAILABLE', `Unsupported PDF core ABI ${abiVersion}`);
   }
   const abi2 = abiVersion >= ABI_2 ? bindAbi2Exports(module) : null;
-  if (abiVersion === 3) {
+  if (abiVersion >= 3) {
     const names = ['_pde_edit_command_stride', '_pde_register_rgba_image', '_pde_register_pdf_resource',
       '_pde_preview_commands', '_pde_apply_commands', '_pde_confirm_save'] as const;
-    if (names.some(name => typeof module[name] !== 'function') || module._pde_edit_command_stride!() !== EDIT_COMMAND_STRIDE) {
+    if (names.some(name => typeof module[name] !== 'function') || module._pde_edit_command_stride!() !== (abiVersion >= 4 ? EDIT_COMMAND_STRIDE : 128)) {
       throw new EngineError('CORE_UNAVAILABLE', 'Incomplete or incompatible ABI 3 core');
     }
   }
@@ -189,8 +189,8 @@ export function createPdfCoreBinding(
     );
   }
 
-  let capabilities: CommandType[] = abiVersion === 3 ? [...ABI3_BASE_CAPABILITIES] : abi2 ? [TEXT_REPLACE_CAPABILITY] : [];
-  if (abiVersion === 3 && module._pde_capabilities) {
+  let capabilities: CommandType[] = abiVersion >= 3 ? [...ABI3_BASE_CAPABILITIES] : abi2 ? [TEXT_REPLACE_CAPABILITY] : [];
+  if (abiVersion >= 3 && module._pde_capabilities) {
     const value: unknown = JSON.parse(readCString(module, module._pde_capabilities()));
     if (!isStringArray(value) || new Set(value).size !== value.length || !stringsSubsetOf(value, ABI3_CAPABILITIES)) {
       module._pde_shutdown();
@@ -393,7 +393,7 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
   }
 
   async apply(transaction: EditTransaction): Promise<CommitResult> {
-    if (this.module._pde_abi_version() === 3) return this.executeCommands(transaction, true) as Promise<CommitResult>;
+    if (this.module._pde_abi_version() >= 3) return this.executeCommands(transaction, true) as Promise<CommitResult>;
     const abi2 = this.requireAbi2();
     if (!isRecord(transaction)
         || typeof transaction.id !== 'string' || transaction.id.length === 0
@@ -589,7 +589,7 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     if (!isNonNegativeInteger(request.savedRevision) || request.savedRevision > session.info.revision) {
       throw new EngineError('INVALID_REQUEST', 'Save confirmation does not match a document revision');
     }
-    if (this.module._pde_abi_version() === 3) {
+    if (this.module._pde_abi_version() >= 3) {
       session.info = validateDocumentInfo(this.readJson(
         () => this.module._pde_confirm_save!(session.handle, request.savedRevision), 'Unable to confirm save'),
         request.docId, session.info.sourceIds[0]!, this.capabilities);
@@ -601,7 +601,7 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
   }
 
   private requireAbi3(): void {
-    if (this.module._pde_abi_version() !== 3) throw unsupported('This operation requires the general editing core');
+    if (this.module._pde_abi_version() < 3) throw unsupported('This operation requires the general editing core');
   }
 
   private async executeCommands(input: EditTransaction, commit: boolean): Promise<CommitResult | TransactionPreviewResult> {
@@ -616,7 +616,7 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     }
     const allocations = new WasmAllocations(this.module);
     try {
-      const commands = packCommands(allocations, transaction.commands);
+      const commands = packCommands(allocations, transaction.commands, this.module._pde_edit_command_stride!());
       const id = allocations.string(transaction.id);
       if (commit) {
         const result = validateCommitResult(this.readJson(
@@ -772,7 +772,7 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     if (command.style.fontId) await this.requireFontRegistry().ensureRegistered(command.style.fontId);
     const allocations = new WasmAllocations(this.module);
     try {
-      const pointer = packCommands(allocations, [command]);
+      const pointer = packCommands(allocations, [command], this.module._pde_edit_command_stride!());
       return validateTextLayoutResult(this.readJson(
         () => this.module._pde_preview_text_insert!(session.handle, request.baseRevision, pointer), 'Unable to preview text box'));
     } finally { allocations.free(); }

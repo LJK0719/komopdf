@@ -5,7 +5,7 @@
 ## 发布约定
 
 - 发布目录示例：`/opt/pdf-editor/releases/<version>`；`current` 指向启用版本。
-- 公共 CI 的手动 `workflow_dispatch` 输入网站版本号，先运行源码检查，再在 Linux 构建、解包检查并上传同名站点 tar.gz（产物只保留 1 天）。取回产物核对 SHA-256 后在目标主机解包并调用 `infra/deploy.sh <version>`；这只是网站/网关部署，不是桌面安装包发版。
+- 公共 CI 的手动 `workflow_dispatch` 输入网站版本号，先运行源码检查，再在 Linux 构建、解包检查并上传同名站点 tar.gz（产物只保留 1 天）。取回产物核对 SHA-256 后在目标主机解包并调用 `infra/deploy.sh <version>`；这用于网站/网关部署。
 - 静态产物：`apps/web/dist`；目前是否具备下载/帮助等页面以实际构建产物为准。
 - 网关配置只使用 `apps/gateway` 内的配置样例及其实际校验 schema，不维护第二套可能不兼容的配置。
 - 启动契约：`/opt/pdf-editor/runtime/node --max-old-space-size=256 apps/gateway/dist/cli.mjs --host 127.0.0.1 --port 8787 --config /etc/pdf-editor/gateway.config.json --credential-file %d/gemini`。网关已在开发机构建为 JS bundle；发布时带上该产物、非敏感配置和对应 Linux Fastify 生产依赖。不在 VPS 上编译 PDF 或运行 TypeScript 构建。
@@ -14,7 +14,7 @@
 
 ## 凭证和绑定
 
-部署前读取账号 registry，绑定实际 VPS、域名、签名与下载资源。不猜测域名或赞助账号。上游使用指定的 `https://gemini.openjk.space` / `gemini-3.8-flash-high`，不替换成 Google 官方域名。
+部署前读取账号 registry，绑定实际 VPS、域名与下载资源。不猜测域名或赞助账号。上游使用指定的 `https://gemini.openjk.space` / `gemini-3.8-flash-high`，不替换成 Google 官方域名。
 
 密钥由部署过程在内存中从 vault 读取，写入服务器受限凭证文件 `/etc/pdf-editor/credentials/gemini`（目录 0700，文件 root:root 0400），由 `LoadCredential` 注入。不要把实际密钥粘贴进命令行、Shell 历史、项目配置或日志。宿主受限凭证文件本身包含秘密，不能宣传为“密钥从不落盘”。
 

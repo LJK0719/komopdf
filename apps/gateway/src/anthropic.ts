@@ -203,14 +203,29 @@ function separator(buffer: Buffer): { index: number; length: number } | null {
   return { index: lf, length: 2 };
 }
 
-function observeSseFrame(frame: Buffer, state: StreamState): void {
-  const data = frame.toString('utf8').split(/\r?\n/)
-    .filter(line => line.startsWith('data:'))
-    .map(line => line.slice(5).trimStart())
-    .join('\n');
-  if (!data || data === '[DONE]') return;
+function publicPayload(value: unknown): unknown {
+  const payload = asRecord(value);
+  if (!payload) return value;
+  if (typeof payload.model === 'string') payload.model = 'komo';
+  const message = asRecord(payload.message);
+  if (message && typeof message.model === 'string') message.model = 'komo';
+  if (payload.type === 'error') {
+    const error = asRecord(payload.error);
+    if (error) error.message = 'komo service could not complete this request';
+  }
+  return value;
+}
+
+function publicSseFrame(frame: Buffer, state: StreamState): Buffer {
+  const lines = frame.toString('utf8').split(/\r?\n/);
+  const data = lines.filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trimStart()).join('\n');
+  if (!data || data === '[DONE]') return Buffer.concat([frame, Buffer.from('\n\n')]);
   try {
-    observePayload(JSON.parse(data) as unknown, state);
+    const payload = JSON.parse(data) as unknown;
+    observePayload(payload, state);
+    const metadata = lines.filter(line => !line.startsWith('data:'));
+    return Buffer.from([...metadata, `data: ${JSON.stringify(publicPayload(payload))}`, '', ''].join('\n'));
   } catch {
     throw new AnthropicProxyError('UPSTREAM_PROTOCOL', 'Upstream SSE frame is not valid JSON');
   }
@@ -325,16 +340,17 @@ export class AnthropicMessagesProxy implements AnthropicForwarder {
             upstream.destroy();
             throw new AnthropicProxyError('UPSTREAM_LIMIT', 'Upstream SSE frame exceeded size limit');
           }
-          observeSseFrame(frame, state);
+          await writeChunk(request.response, publicSseFrame(frame, state), request.signal);
           boundary = separator(pending);
         }
         if (pending.byteLength > this.config.limits.upstreamFrameBytes) {
           upstream.destroy();
           throw new AnthropicProxyError('UPSTREAM_LIMIT', 'Upstream SSE frame exceeded size limit');
         }
-        await writeChunk(request.response, chunk, request.signal);
       }
-      if (pending.toString('utf8').trim()) observeSseFrame(pending, state);
+      if (pending.toString('utf8').trim()) {
+        await writeChunk(request.response, publicSseFrame(pending, state), request.signal);
+      }
       await endResponse(request.response, undefined, request.signal);
       return { usage: normalizedUsage(state), finishReason: state.finishReason, streamError: state.streamError, ...(state.errorType ? { errorType: state.errorType } : {}) };
     }
@@ -347,8 +363,9 @@ export class AnthropicMessagesProxy implements AnthropicForwarder {
     const state: StreamState = { finishReason: null, streamError: false };
     observePayload(result.value, state);
     if (request.endpoint === 'count_tokens') observeUsage(result.value, state);
-    startResponse(request.response, statusCode, 'application/json; charset=utf-8', result.bytes.byteLength);
-    await endResponse(request.response, result.bytes, request.signal);
+    const body = Buffer.from(JSON.stringify(publicPayload(result.value)));
+    startResponse(request.response, statusCode, 'application/json; charset=utf-8', body.byteLength);
+    await endResponse(request.response, body, request.signal);
     return { usage: normalizedUsage(state), finishReason: state.finishReason, streamError: state.streamError, ...(state.errorType ? { errorType: state.errorType } : {}) };
   }
 }
