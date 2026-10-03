@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Hand, MousePointer2, Type, ImagePlus, FilePlus2, Copy, Trash2, RotateCcw, RotateCw, Search,
-  Printer, Download, ScanText, PenLine, MessageSquare, LayoutGrid, BookOpen, File, Play, Maximize, Scissors, Files, PanelLeft } from 'lucide-react';
+  Printer, Download, ScanText, PenLine, MessageSquare, LayoutGrid, BookOpen, File, Play, Maximize, MoveHorizontal, Square, StickyNote, Scissors, Files, PanelLeft } from 'lucide-react';
 import type { EditorTool } from './EditorChrome.js';
 import type { PageView, PointerTool } from './DocumentViewport.js';
 import { useI18n } from './i18n.js';
@@ -9,10 +9,13 @@ import type { PageTools, PageAction } from './PageOrganizer.js';
 export type RibbonTab = 'home' | 'edit' | 'insert' | 'comment' | 'pages' | 'view';
 export type RibbonAction = 'insertText' | 'insertImage' | 'blankPage' | 'importPages' | 'duplicatePage' | 'deletePage' |
   'rotatePageLeft' | 'rotatePageRight' | 'duplicate' | 'delete' | 'replaceImage' | 'cropImage' | 'rotateLeft' | 'rotateRight' | 'present' | 'fit' |
-  'copyPages' | 'pastePages' | 'extractPages' | 'pageNumbers' | 'watermark' | 'headerFooter' | 'cropPage' | 'flipHorizontal' | 'flipVertical';
+  'copyPages' | 'pastePages' | 'extractPages' | 'pageNumbers' | 'watermark' | 'headerFooter' | 'cropPage' | 'flipHorizontal' | 'flipVertical' |
+  'fitWidth' | 'note' | 'rectangle' | 'ink';
 export function EditorRibbon({ tab, onTab, pointer, onPointer, onTool, onAction, view, continuous, onView, onContinuous,
-  hasDocument, busy, ocr, railOpen, onToggleRail, selection, children, pageTools, overviewColumns, onOverviewColumns }: {
+  hasDocument, busy, ocr, railOpen, onToggleRail, selection, children, pageTools, overviewColumns, onOverviewColumns, annotationTool, canAnnotate = true, zoomMode }: {
   pageTools: PageTools; overviewColumns: number; onOverviewColumns(columns: number): void;
+  annotationTool?: 'text' | 'rectangle' | 'ink' | null; canAnnotate?: boolean;
+  zoomMode?: 'manual' | 'fit-width' | 'fit-page';
   tab: RibbonTab; onTab(tab: RibbonTab): void; pointer: PointerTool; onPointer(tool: PointerTool): void;
   onTool(tool: EditorTool): void; onAction(action: RibbonAction): void; view: PageView; continuous: boolean;
   onView(view: PageView): void; onContinuous(): void; hasDocument: boolean; busy: boolean; ocr: boolean;
@@ -84,6 +87,12 @@ export function EditorRibbon({ tab, onTab, pointer, onPointer, onTool, onAction,
         {button('Comment', MessageSquare, () => onTool('comment'))}
       </>}
       {tab === 'comment' && <>
+        {canAnnotate && <>
+          {button('Sticky note', StickyNote, () => onAction('note'), annotationTool === 'text')}
+          {button('Rectangle', Square, () => onAction('rectangle'), annotationTool === 'rectangle')}
+          {button('Freehand', PenLine, () => onAction('ink'), annotationTool === 'ink')}
+          <span className="ribbon-separator" />
+        </>}
         {button('Comment', MessageSquare, () => onTool('comment'))}
         {button('Sign', PenLine, () => onTool('sign'))}
         {button('Fill & forms', File, () => onTool('forms'))}
@@ -105,7 +114,8 @@ export function EditorRibbon({ tab, onTab, pointer, onPointer, onTool, onAction,
         {button('Single page', File, () => onView('single'), view === 'single')}
         {button('Facing pages', BookOpen, () => onView('double'), view === 'double')}
         {button('Continuous scrolling', Files, onContinuous, continuous)}
-        {button('Fit page', Maximize, () => onAction('fit'))}
+        {button('Fit width', MoveHorizontal, () => onAction('fitWidth'), zoomMode === 'fit-width')}
+        {button('Fit page', Maximize, () => onAction('fit'), zoomMode === 'fit-page')}
         {button('Slide show', Play, () => onAction('present'))}
         {tab === 'view' && button('Toggle pages', PanelLeft, onToggleRail, railOpen)}
         {tab === 'view' && button('Fonts', Type, () => onTool('fonts'))}

@@ -106,8 +106,10 @@ const char* pde_apply_text(uint32_t document,
                            const PdeTextEdit* edits,
                            uint32_t count);
 
-// ABI 3 command layout. wasm32 has twelve 32-bit scalar/pointer fields followed
-// by ten doubles at offset 48, for an exact stride of 128 bytes. Native callers
+// ABI 4 command layout. wasm32 has twelve 32-bit scalar/pointer fields followed
+// by fourteen doubles at offset 48, for an exact stride of 160 bytes.
+// Paragraph flags 4096/8192/16384/32768 set first-line indent, fixed line
+// spacing (0=multiplier), space-before and space-after in values[10..13]. Native callers
 // must use this C structure and pde_edit_command_stride(); a 64-bit native
 // structure is intentionally larger than the wasm32 record. For type 3,
 // flags 1/2/4/8 keep font/size/color/character-spacing; flag 16 enables
@@ -154,7 +156,7 @@ typedef struct PdeEditCommand {
   uint32_t end_utf16;
   uint32_t flags;
   uint32_t resource_page_index;
-  double values[10];
+  double values[14];
 } PdeEditCommand;
 
 uint32_t pde_edit_command_stride(void);

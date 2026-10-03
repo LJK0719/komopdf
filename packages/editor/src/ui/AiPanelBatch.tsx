@@ -177,7 +177,7 @@ export function AiPanelBatch({
         taskType: 'document.translate',
         scope: { scope: taskScope, pageCount: pageIds.length },
         contentFingerprint: `doc-${document.id}-rev-${document.revision}-b${batches.length}`,
-        model: 'gemini-3.8-flash-high',
+        model: 'komo',
         templateVersion: '1',
         protocolVersion: 1,
         settings: { targetLanguage },

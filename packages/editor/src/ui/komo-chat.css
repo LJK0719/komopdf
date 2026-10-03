@@ -1,0 +1,48 @@
+.panel-content:has(> div:not([hidden]) > .komo-chat) { overflow: hidden; }
+.panel-content > div:has(> .komo-chat) { height: 100%; }
+.komo-chat { display: flex; flex-direction: column; height: 100%; gap: 8px; padding: 10px 12px; min-width: 0; min-height: 0; color: var(--ink); font-size: 12px; line-height: 1.6; }
+.komo-chat-heading, .komo-chat-composer, .komo-chat-scan, .komo-chat-settings { flex-shrink: 0; }
+.komo-chat-heading { display: flex; gap: 8px; align-items: center; }
+.komo-chat-heading h2 { margin: 0; font-size: 18px; letter-spacing: -.5px; }
+.komo-chat-heading .icon-button { margin-left: auto; min-height: 28px; padding: 5px; }
+.komo-chat-tag { color: var(--muted); font-size: 10px; }
+.komo-chat-avatar { display: grid; place-items: center; width: 26px; height: 28px; border-radius: 7px 7px 7px 2px; background: var(--dark); color: white; font: italic 700 23px Georgia, serif; }
+.komo-chat-settings { font-size: 11px; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+.komo-chat-settings summary { cursor: pointer; color: var(--accent); padding: 3px 0; overflow-wrap: anywhere; }
+.komo-chat-settings > div { display: grid; gap: 8px; max-height: 26vh; overflow: auto; padding-top: 6px; }
+.komo-chat-settings label { display: flex; align-items: center; gap: 8px; }
+.komo-chat-settings select { flex: 1; min-width: 0; padding: 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.komo-chat-settings p { margin: 0; color: var(--muted); }
+.komo-chat-settings .komo-chat-consent { align-items: flex-start; }
+.komo-chat-consent input { flex: none; margin: 3px 0 0; }
+.komo-chat-transcript { flex: 1; min-height: 60px; overflow: auto; display: flex; flex-direction: column; gap: 16px; overscroll-behavior: contain; scrollbar-width: thin; }
+.komo-chat-transcript > * { flex-shrink: 0; }
+.komo-chat-exchange { display: grid; gap: 10px; }
+.komo-chat-empty { padding: 10px 0; }
+.komo-chat-empty h3 { margin: 0 0 8px; font: 500 22px/1.25 Georgia, 'Songti SC', serif; letter-spacing: -.4px; }
+.komo-chat-empty p { color: var(--muted); }
+.komo-chat-suggestions, .komo-chat-actions, .komo-chat-citations { display: flex; flex-wrap: wrap; gap: 6px; }
+.komo-chat :is(.komo-chat-suggestions,.komo-chat-actions,.komo-chat-citations) button { border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; background: var(--paper); text-align: left; font-size: 11px; }
+.komo-chat :is(.komo-chat-suggestions,.komo-chat-actions,.komo-chat-citations) button:hover:not(:disabled) { background: var(--acid); border-color: var(--signal); }
+.komo-chat-citations { margin-top: 10px; }
+.komo-chat-citations button { color: var(--accent); }
+.komo-chat-message { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 9px 9px 9px 2px; }
+.komo-chat-message > strong { display: block; margin-bottom: 5px; font-size: 11px; color: var(--accent); }
+.komo-chat-user > p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.komo-chat-user { margin-left: 16px; background: var(--canvas); border-color: transparent; border-radius: 9px 9px 2px 9px; }
+.komo-chat-coverage { margin-top: 8px; color: var(--muted); font-size: 10px; }
+.komo-chat-coverage summary { cursor: pointer; }
+.komo-chat-coverage p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.komo-chat-scan { border-left: 2px solid var(--signal); background: var(--acid); border-radius: 0 5px 5px 0; font-size: 10px; padding: 4px 8px; }
+.komo-chat-scan summary { cursor: pointer; }
+.komo-chat-scan p { margin: 6px 0 2px; max-height: 18vh; overflow: auto; }
+.komo-chat-error { color: #a23828; margin: 6px 0; }
+.komo-chat-progress { color: var(--accent); margin: 6px 0; }
+.komo-new-answer, .komo-sharing-reminder { border: 0; background: var(--acid); color: var(--accent); font-size: 11px; padding: 5px; border-radius: 5px; }
+.komo-chat-composer { padding: 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); }
+.komo-chat-composer:focus-within { border-color: var(--signal); }
+.komo-chat-composer textarea { display: block; width: 100%; min-height: 40px; max-height: 16vh; resize: vertical; border: 0; padding: 2px; background: transparent; color: var(--ink); line-height: 1.5; }
+.komo-chat-composer > div { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-top: 4px; }
+.komo-chat-composer small { color: var(--muted); font-size: 9px; }
+.komo-chat-composer .button { min-height: 28px; padding: 4px 9px; }
+@media (max-height: 650px) { .komo-chat { gap: 5px; padding: 7px 10px; } .komo-chat-composer textarea { height: 36px; min-height: 36px; } .komo-chat-settings > div { max-height: 22vh; } }

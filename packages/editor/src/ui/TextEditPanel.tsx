@@ -529,6 +529,10 @@ export type SelectionFormatOptions = {
   formatSize?: string;
   formatSpacing?: string;
   formatLineHeight?: string;
+  formatFirstLineIndent?: string;
+  formatLineSpacing?: string;
+  formatSpaceBefore?: string;
+  formatSpaceAfter?: string;
   formatAlignment?: TextStyle['alignment'];
   formatColor?: string;
   formatUnderline?: '' | 'on' | 'off';
@@ -568,6 +572,7 @@ export function resolveSelectionFormatStyle({
   formatSize = '',
   formatSpacing = '',
   formatLineHeight = '',
+  formatFirstLineIndent = '', formatLineSpacing = '', formatSpaceBefore = '', formatSpaceAfter = '',
   formatAlignment,
   formatColor = '',
   formatUnderline = '',
@@ -591,6 +596,10 @@ export function resolveSelectionFormatStyle({
   if (formatSize) style.fontSize = Number(formatSize);
   if (formatSpacing) style.characterSpacing = Number(formatSpacing);
   if (formatLineHeight) style.lineHeight = Number(formatLineHeight);
+  if (formatFirstLineIndent) style.firstLineIndent = Number(formatFirstLineIndent);
+  if (formatLineSpacing) style.lineSpacing = Number(formatLineSpacing);
+  if (formatSpaceBefore) style.spaceBefore = Number(formatSpaceBefore);
+  if (formatSpaceAfter) style.spaceAfter = Number(formatSpaceAfter);
   if (formatAlignment) style.alignment = formatAlignment;
   if (formatUnderline) style.underline = formatUnderline === 'on';
   if (formatColor) {

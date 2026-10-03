@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('continuous reading, facing pages, single-page navigation and hand tool', async ({ page }) => {
-  await expect(page.getByRole('button', { name: 'Ask komo', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Ask komo', exact: true })).toBeVisible();
   await expect(page.locator('.object-hitbox')).toHaveCount(0);
   await expect(page.locator('.inspector-panel')).toBeHidden();
   await page.locator('.canvas-stage').evaluate(element => { element.scrollTop = 930; });
@@ -33,20 +33,50 @@ test('continuous reading, facing pages, single-page navigation and hand tool', a
   await page.screenshot({ path: 'tmp/browser/ribbon-reading-zh.png' });
 });
 
+test('reading caret reaches the end and forward/backward selections include the last glyph', async ({ page }) => {
+  const layer = page.locator('.pdf-text-layer').first();
+  const glyphs = layer.locator('.pdf-character');
+  await expect(glyphs).toHaveCount(5);
+  const first = (await glyphs.first().boundingBox())!, last = (await glyphs.last().boundingBox())!;
+  await page.mouse.click(last.x + last.width * 0.8, last.y + last.height / 2);
+  await expect(layer.locator('.reading-caret')).toBeVisible();
+  const offset = () => layer.evaluate(root => {
+    const selection = window.getSelection()!, span = root.querySelector('[data-text-object]')!;
+    const range = document.createRange(); range.selectNodeContents(span); range.setEnd(selection.focusNode!, selection.focusOffset);
+    return range.toString().length;
+  });
+  await expect.poll(offset).toBe(5);
+  const caret = (await layer.locator('.reading-caret').boundingBox())!;
+  expect(Math.abs(caret.x - last.x - last.width)).toBeLessThan(2);
+  await page.mouse.move(first.x + 1, first.y + first.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(last.x + last.width - 1, last.y + last.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Alpha');
+  await expect(layer.locator('.reading-caret')).toHaveCount(0);
+  await expect(layer.locator('.pdf-selection-paint i')).toHaveCount(1);
+  await page.screenshot({ path: 'tmp/browser/reading-selection-geometry.png' });
+  await page.mouse.move(last.x + last.width - 1, last.y + last.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(first.x + 1, first.y + first.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Alpha');
+});
+
 test('edit text in place, format, context menu, delete, undo, save and reopen', async ({ page }) => {
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
   const text = page.locator('.object-hitbox[data-object-type="text"]').first();
   await expect(text).toBeVisible();
   await text.dblclick();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });
-  await expect(input).toHaveValue('Alpha');
+  await expect(input).toHaveText('Alpha');
   await page.screenshot({ path: 'tmp/browser/ribbon-inline-text.png' });
   await expect(page.locator('.inspector-panel')).toBeHidden();
   await input.fill('Alto');
   await input.press('Control+Enter');
   await expect(input).toHaveCount(0);
   await text.dblclick();
-  await expect(input).toHaveValue('Alto');
+  await expect(input).toHaveText('Alto');
   await input.press('Escape');
   await text.click();
   await page.getByRole('spinbutton', { name: 'Font size', exact: true }).fill('16');
@@ -69,8 +99,42 @@ test('edit text in place, format, context menu, delete, undo, save and reopen', 
   await (await chooser).setFiles({ name: 'saved.pdf', mimeType: 'application/pdf', buffer: bytes });
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
   await text.dblclick();
-  await expect(input).toHaveValue('Alto');
+  await expect(input).toHaveText('Alto');
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
+});
+
+test('save confirmation stays above objects and blocks background shortcuts', async ({ page }) => {
+  await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const text = page.locator('.object-hitbox[data-object-type="text"]').first();
+  await text.dblclick();
+  const input = page.getByRole('textbox', { name: 'Page text', exact: true });
+  await input.fill('Alto');
+  await input.press('Control+Enter');
+  await expect(input).toHaveCount(0);
+  await text.click();
+  const count = await page.locator('.object-hitbox').count();
+  await page.getByRole('button', { name: 'File', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Close document', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Save your changes?' });
+  await expect(dialog).toBeVisible();
+  const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus();
+  await page.keyboard.press('Delete');
+  await page.keyboard.press('Control+z');
+  await expect(page.locator('.object-hitbox')).toHaveCount(count);
+  await expect(page.locator('.save-state')).toHaveText('Unsaved changes');
+  await cancel.click();
+  await expect(dialog).toHaveCount(0);
+  await text.dblclick();
+  await expect(input).toHaveText('Alto');
+  await input.press('Escape');
+  await page.getByRole('button', { name: 'File', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Close document', exact: true }).click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Don’t save', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('.document-pages')).toHaveCount(0);
 });
 
 test('image contextual tools crop and replace real PDF content', async ({ page }) => {
@@ -111,17 +175,17 @@ test('search and replace, insert text, and save edits by clicking outside', asyn
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
   await page.locator('.object-hitbox[data-object-type="text"]').dblclick();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });
-  await expect(input).toHaveValue('Brave');
+  await expect(input).toHaveText('Brave');
   await input.fill('Bravo');
   await page.locator('.page-wrap[data-page-number="2"]').click({ position: { x: 360, y: 250 } });
   await expect(input).toHaveCount(0);
   await page.locator('.object-hitbox[data-object-type="text"]').dblclick();
-  await expect(input).toHaveValue('Bravo');
+  await expect(input).toHaveText('Bravo');
   await input.press('Escape');
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Insert', exact: true }).click();
   await page.getByRole('button', { name: 'Add text', exact: true }).click();
   await page.locator('.placement-layer').click({ position: { x: 80, y: 320 } });
-  await expect(input).toHaveValue('New text');
+  await expect(input).toHaveText('New text');
   await input.fill('Added');
   await input.press('Control+Enter');
   await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(2);
@@ -318,28 +382,29 @@ test('page overview zoom, Mac modifiers, drag reorder and saved order', async ({
 
 test('reading selection shows a caret and enters in-place editing at the selected range', async ({ page }) => {
   const span = page.locator('.page-wrap[data-page-number="1"] [data-text-object]').first();
-  await span.click({ position: { x: 2, y: 5 } });
+  await span.locator('.pdf-character').first().click({ position: { x: 2, y: 5 } });
   await expect(page.locator('.reading-caret')).toBeVisible();
   await span.evaluate(element => {
-    const range = document.createRange(); range.setStart(element.firstChild!, 0); range.setEnd(element.firstChild!, 2);
+    const characters = element.querySelectorAll('.pdf-character');
+    const range = document.createRange(); range.setStart(characters[0]!.firstChild!, 0); range.setEnd(characters[1]!.firstChild!, 1);
     const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
   });
-  await span.click({ button: 'right', position: { x: 5, y: 5 } });
+  await span.locator('.pdf-character').first().click({ button: 'right', position: { x: 5, y: 5 } });
   await expect(page.getByRole('menuitem', { name: 'Highlight selection' })).toBeVisible();
   await page.getByRole('menuitem', { name: 'Edit selected text' }).click();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });
-  await expect(input).toHaveValue('Alpha');
-  expect(await input.evaluate(element => [(element as HTMLTextAreaElement).selectionStart, (element as HTMLTextAreaElement).selectionEnd])).toEqual([0, 2]);
+  await expect(input).toHaveText('Alpha');
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Al');
   await input.press('Backspace'); await input.press('A');
   await input.press('Control+Enter');
   await expect(input).toHaveCount(0);
   await page.locator('.object-hitbox[data-object-type="text"]').dblclick();
-  await expect(input).toHaveValue('Apha');
+  await expect(input).toHaveText('Apha');
   await input.press('Escape');
   await page.getByRole('button', { name: 'Select', exact: true }).click();
   await page.locator('.page-wrap[data-page-number="1"] .pdf-text-layer').click({ button: 'right', position: { x: 260, y: 300 } });
   await page.getByRole('menuitem', { name: 'Add text here' }).click();
-  await expect(input).toHaveValue('New text');
+  await expect(input).toHaveText('New text');
   await input.fill('Inserted'); await input.press('Control+Enter');
   await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(2);
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
@@ -349,7 +414,7 @@ test('reading text context applies actual highlight and underline commands', asy
   const span = page.locator('.page-wrap[data-page-number="1"] [data-text-object]').first();
   const selectText = async () => {
     await span.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); });
-    await span.click({ button: 'right' });
+    await span.locator('.pdf-character').first().click({ button: 'right' });
   };
   await selectText();
   await page.getByRole('menuitem', { name: 'Highlight selection' }).click();

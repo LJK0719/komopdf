@@ -29,7 +29,7 @@ function packed(commands: EditCommand[]) {
   const record = (index: number) => {
     const offset = index * EDIT_COMMAND_STRIDE;
     const fields = Array.from({ length: 12 }, (_, field) => view.getUint32(offset + field * 4, true));
-    const values = Array.from({ length: 10 }, (_, field) => view.getFloat64(offset + 48 + field * 8, true));
+    const values = Array.from({ length: 14 }, (_, field) => view.getFloat64(offset + 48 + field * 8, true));
     const idsBuffer = allocator.buffers.get(fields[6]!);
     const ids = idsBuffer ? Array.from({ length: fields[7]! }, (_, item) => {
       const idPointer = new DataView(idsBuffer.buffer, idsBuffer.byteOffset, idsBuffer.byteLength).getUint32(item * 4, true);
@@ -40,7 +40,15 @@ function packed(commands: EditCommand[]) {
   return { bytes, record };
 }
 
-describe('ABI 3 command encoding', () => {
+describe('general command encoding', () => {
+  it('packs paragraph indentation and spacing in ABI 4 and rejects silently dropping them in ABI 3', () => {
+    const command: EditCommand = { type: 'text.style', pageId: 'p', blockIds: ['b'],
+      style: { firstLineIndent: 24, lineSpacing: 18, spaceBefore: 6, spaceAfter: 8 } };
+    const { record } = packed([command]);
+    expect(record(0).fields[10]).toBe(4096 | 8192 | 16384 | 32768);
+    expect(record(0).values.slice(10)).toEqual([24, 18, 6, 8]);
+    expect(() => packCommands(new TestAllocator(), [command], 128)).toThrow(/Update the PDF core/);
+  });
   it('encodes paragraph formatting without colliding with range or underline flags', () => {
     const { record } = packed([{ type: 'text.style', pageId: 'p', blockIds: ['b'], range: [0, 4],
       style: { characterSpacing: 2, underline: true, lineHeight: 1.6, alignment: 'justify' } }]);
@@ -64,7 +72,7 @@ describe('ABI 3 command encoding', () => {
       opacity: 0.5, strokeWidth: 2.5, points: [[4, 5], [4, 5]],
     }]);
     const command = record(0);
-    expect(bytes.byteLength).toBe(128);
+    expect(bytes.byteLength).toBe(EDIT_COMMAND_STRIDE);
     expect(command.fields[0]).toBe(17);
     expect(command.string(1)).toBe('page-1');
     expect(command.string(2)).toBe('annotation-1');

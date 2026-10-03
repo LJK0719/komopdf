@@ -60,6 +60,10 @@ struct ParagraphRequest {
   float height = 0;
   float font_size = 12.0f;
   float line_height = 1.2f;
+  float first_line_indent = 0;
+  float line_spacing = 0;
+  float space_before = 0;
+  float space_after = 0;
   float letter_spacing = 0;
   ParagraphColor color;
   // Paint a vector underline along each non-empty visual line inside the Form.
@@ -70,6 +74,8 @@ struct ParagraphRequest {
   // Empty means one default style. Otherwise contiguous resolved UTF-16 runs;
   // font_index selects fonts[0] (base) or another embedded font resource.
   std::vector<ParagraphStyleRun> styles;
+  // A page break is not the end of a justified logical paragraph.
+  bool continues = false;
 };
 
 struct ParagraphResult {

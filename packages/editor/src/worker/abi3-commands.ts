@@ -1,6 +1,6 @@
 import { EngineError, type CommandType, type EditCommand, type TextStyle } from '@pdf-editor/contracts';
 
-export const EDIT_COMMAND_STRIDE = 128;
+export const EDIT_COMMAND_STRIDE = 160;
 export const ABI3_BASE_CAPABILITIES: CommandType[] = [
   'text.replace', 'text.style', 'text.insert', 'objects.transform', 'objects.delete',
   'pages.rotate', 'pages.delete', 'pages.reorder', 'pages.insert', 'image.insert', 'content.insert',
@@ -15,14 +15,15 @@ export const ABI3_CAPABILITIES: CommandType[] = [...ABI3_BASE_CAPABILITIES,
 type Allocator = { string(value: string): number; bytes(value: Uint8Array): number };
 type PackedCommand = { fields: number[]; values: number[] };
 
-export function packCommands(allocations: Allocator, commands: EditCommand[]): number {
+export function packCommands(allocations: Allocator, commands: EditCommand[], stride = EDIT_COMMAND_STRIDE): number {
   const records = commands.map(command => packCommand(allocations, command));
-  const buffer = new Uint8Array(records.length * EDIT_COMMAND_STRIDE);
+  if (stride === 128 && records.some(record => record.fields[10]! & 61440)) throw new EngineError('UNSUPPORTED_CAPABILITY', 'Update the PDF core to use paragraph spacing and indentation');
+  const buffer = new Uint8Array(records.length * stride);
   const view = new DataView(buffer.buffer);
   records.forEach((record, index) => {
-    const offset = index * EDIT_COMMAND_STRIDE;
+    const offset = index * stride;
     record.fields.forEach((value, field) => view.setUint32(offset + field * 4, value, true));
-    record.values.forEach((value, field) => view.setFloat64(offset + 48 + field * 8, value, true));
+    record.values.slice(0, (stride - 48) / 8).forEach((value, field) => view.setFloat64(offset + 48 + field * 8, value, true));
   });
   return allocations.bytes(buffer);
 }
@@ -30,7 +31,7 @@ export function packCommands(allocations: Allocator, commands: EditCommand[]): n
 function packCommand(allocations: Allocator, command: EditCommand): PackedCommand {
   // type,page,target,resource,text,font,ids,count,start,end,flags,resourcePage
   const fields = new Array<number>(12).fill(0);
-  const values = new Array<number>(10).fill(0);
+  const values = new Array<number>(14).fill(0);
   const string = (field: number, value: string | null | undefined) => { fields[field] = value ? allocations.string(value) : 0; };
   const ids = (items: string[]) => {
     if (items.length === 0) { fields[6] = 0; fields[7] = 0; return; }
@@ -45,7 +46,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
   };
   const style = (input: TextStyle, insert: boolean, paragraph = false) => {
     const supported = ['fontId', 'fontSize', 'color', 'characterSpacing',
-      'lineHeight', 'alignment', ...(!insert || paragraph ? ['underline'] : [])];
+      'lineHeight', 'alignment', 'firstLineIndent', 'lineSpacing', 'spaceBefore', 'spaceAfter', ...(!insert || paragraph ? ['underline'] : [])];
     if (Object.keys(input).some(key => !supported.includes(key))) {
       throw new EngineError('UNSUPPORTED_CAPABILITY', 'This core does not yet support the requested text style');
     }
@@ -65,6 +66,12 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
     if (!insert && input.lineHeight !== undefined) { flags |= 64; values[6] = input.lineHeight; }
     if (!insert && input.alignment !== undefined) { flags |= 128; values[7] = ['left', 'center', 'right', 'justify'].indexOf(input.alignment); }
     if (paragraph && input.underline) flags |= 2048;
+    const metrics = ['firstLineIndent', 'lineSpacing', 'spaceBefore', 'spaceAfter'] as const;
+    metrics.forEach((key, index) => {
+      if (input[key] === undefined) return;
+      if (insert && !paragraph) throw new EngineError('UNSUPPORTED_CAPABILITY', 'Paragraph metrics require paragraph layout');
+      flags |= 4096 << index; values[10 + index] = input[key]!;
+    });
     if (insert && (flags & 3) !== 3) throw new EngineError('INVALID_REQUEST', 'New text requires an explicit font and font size');
     fields[10] = flags;
   };

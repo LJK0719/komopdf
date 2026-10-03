@@ -1,5 +1,17 @@
 // Logical paragraphs stay real Form XObjects in the same candidate document.
 
+bool ReflowParagraphAcrossPages(const Document& document, FPDF_DOCUMENT pdf,
+    CandidateMetadata* metadata, const EditCommand& command, const std::string& object_id,
+    const std::vector<std::shared_ptr<const FontResource>>& fonts,
+    const pdf_editor::ParagraphRequest& request, TextInsertLayoutResult* layout);
+
+void ApplyParagraphMetrics(pdf_editor::ParagraphRequest* request, const EditCommand& command) {
+  if (command.flags & 4096U) request->first_line_indent = static_cast<float>(command.values[10]);
+  if (command.flags & 8192U) request->line_spacing = static_cast<float>(command.values[11]);
+  if (command.flags & 16384U) request->space_before = static_cast<float>(command.values[12]);
+  if (command.flags & 32768U) request->space_after = static_cast<float>(command.values[13]);
+}
+
 bool CreateParagraphObject(FPDF_DOCUMENT pdf,
     const std::vector<std::shared_ptr<const FontResource>>& fonts,
     const pdf_editor::ParagraphRequest& request,
@@ -31,6 +43,7 @@ bool ParagraphIdentity(const Document& document, FPDF_PAGEOBJECT object,
     identity->text_block_id = retained->text_block_id;
   } else {
     identity->id = seed;
+    identity->text_block_id = seed + ":text";
   }
   return true;
 }
@@ -79,6 +92,10 @@ bool ReadParagraphStyles(
   request->height = info->GetFloatFor("Height");
   request->font_size = info->GetFloatFor("FontSize");
   request->line_height = info->GetFloatFor("LineHeight");
+  request->first_line_indent = info->GetFloatFor("FirstLineIndent");
+  request->line_spacing = info->GetFloatFor("LineSpacing");
+  request->space_before = info->GetFloatFor("SpaceBefore");
+  request->space_after = info->GetFloatFor("SpaceAfter");
   request->letter_spacing = info->GetFloatFor("LetterSpacing");
   request->underline = info->GetBooleanFor("Underline", false);
   const auto color = info->GetArrayFor("Color");
@@ -231,6 +248,7 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   if (command.flags & 4U) request.color = {static_cast<float>(command.values[5]), static_cast<float>(command.values[6]), static_cast<float>(command.values[7])};
   if (command.flags & 8U) request.letter_spacing = static_cast<float>(command.values[8]);
   if (command.flags & 16U) request.line_height = static_cast<float>(command.values[9]);
+  ApplyParagraphMetrics(&request, command);
   request.underline = (command.flags & kTextUnderlineFlag) != 0;
   request.alignment = (command.flags & (32U | 64U)) == (32U | 64U)
       ? pdf_editor::ParagraphAlignment::kJustify
@@ -240,9 +258,6 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, *font->second, request, &paragraph)) return false;
   std::unique_ptr<CPDF_PageObject> object(CPDFPageObjectFromFPDFPageObject(paragraph.object));
-  if (paragraph.overflow && !allow_overflow) {
-    SetError("UNSUPPORTED_CAPABILITY", "The paragraph does not fit its text box."); return false;
-  }
   if (!SetObjectMatrix(page.get(), paragraph.object,
       Matrix{1, 0, 0, -1, command.values[0], command.values[1] + command.values[3]})) return false;
   ObjectIdentity identity;
@@ -288,13 +303,34 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
       positions.push_back(target.path[0]);
     }
     std::sort(positions.begin(), positions.end());
-    for (size_t index = 1; index < positions.size(); ++index) {
-      if (positions[index] != positions[index - 1] + 1) {
-        SetError("UNSUPPORTED_CAPABILITY", "Reflow currently requires adjacent text objects in content order."); return false;
+    insertion = positions.front();
+    std::set<size_t> selected(positions.begin(), positions.end());
+    std::vector<size_t> whitespace_positions;
+    Matrix page_matrix, inverse;
+    if (!GetPageMatrices(page.get(), &page_matrix, &inverse)) return false;
+    for (size_t position = positions.front(); position <= positions.back(); ++position) {
+      if (selected.contains(position)) continue;
+      auto other = FPDFPage_GetObject(page.get(), static_cast<int>(position));
+      float left = 0, bottom = 0, right = 0, top = 0;
+      if (!IsActiveObject(other) || !FPDFPageObj_GetBounds(other, &left, &bottom, &right, &top)) continue;
+      const Rect bounds = TransformBounds(left, bottom, right, top, page_matrix);
+      if (bounds.x < command.values[0] + command.values[2] && bounds.x + bounds.width > command.values[0] &&
+          bounds.y < command.values[1] + command.values[3] && bounds.y + bounds.height > command.values[1]) {
+        auto* text = CPDFPageObjectFromFPDFPageObject(other)->AsText();
+        if (text && HasSupportedTextMarks(other)) {
+          const std::string value = pdf_editor::tagged::GlyphText(text);
+          LayoutText decoded;
+          if (!value.empty() && DecodeLayoutText(value, &decoded) &&
+              std::all_of(decoded.utf16.begin(), decoded.utf16.end(), [](char16_t unit) { return u_isUWhiteSpace(unit); })) {
+            whitespace_positions.push_back(position); selected.insert(position); continue;
+          }
+        }
+        if (bounds.width <= 0.01 || bounds.height <= 0.01) continue;
+        SetError("UNSUPPORTED_CAPABILITY", "Overlapping interleaved artwork must stay outside the paragraph selection."); return false;
       }
     }
-    insertion = positions.front();
-    const std::set<size_t> selected(positions.begin(), positions.end());
+    positions.insert(positions.end(), whitespace_positions.begin(), whitespace_positions.end());
+    std::sort(positions.begin(), positions.end());
     for (size_t position : positions) {
       auto* source = native_page->GetPageObjectByIndex(position);
       const int mcid = source->GetContentMarks()->GetMarkedContentID();
@@ -392,6 +428,10 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
     }
   }
   if (!FPDFPage_GenerateContent(page.get())) { SetError("CORE_UNAVAILABLE", "The paragraph content could not be saved."); return false; }
+  if (!allow_overflow && paragraph.overflow) {
+    return ReflowParagraphAcrossPages(document, pdf, metadata, command, command.target_id,
+        {font->second}, request, layout);
+  }
   if (layout) {
     layout->overflow = paragraph.overflow;
     layout->bounds = {command.values[0], command.values[1], command.values[2], command.values[3]};
@@ -458,31 +498,36 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
     SetError("UNSUPPORTED_CAPABILITY", "Only a top-level logical paragraph can be styled.");
     return false;
   }
-  const ByteString raw = info->GetUnicodeTextFor("Text").ToUTF8();
+  const auto flow = info->GetDictFor("Flow");
+  const auto logical = flow ? flow : info;
+  const uint32_t fragment_start = flow ? static_cast<uint32_t>(info->GetIntegerFor("FlowStart")) : 0;
+  const ByteString raw = logical->GetUnicodeTextFor("Text").ToUTF8();
   const std::string original(raw.c_str(), raw.GetLength());
   LayoutText decoded;
   std::vector<bool> boundaries;
   if (!DecodeLayoutText(original, &decoded) ||
       !CollectUnicodeBreaks(UBRK_CHARACTER, decoded.utf16, &boundaries)) return false;
   const bool has_range = (command.flags & kTextStyleRangeFlag) != 0;
-  const uint32_t start = has_range ? command.start_utf16 : 0;
-  const uint32_t end = has_range ? command.end_utf16 :
+  const uint32_t start = has_range ? command.start_utf16 + fragment_start : 0;
+  const uint32_t end = has_range ? command.end_utf16 + fragment_start :
       static_cast<uint32_t>(decoded.utf16.size());
   if (start >= end || end > decoded.utf16.size() ||
       !boundaries[start] || !boundaries[end]) {
     SetError("INVALID_REQUEST", "Paragraph style ranges must preserve complete graphemes.");
     return false;
   }
-  if (!ParagraphRangePreservesClusters(target.object,
+  if (!flow && !ParagraphRangePreservesClusters(target.object,
       std::u16string(decoded.utf16.begin(), decoded.utf16.end()), start, end)) {
     SetError("UNSUPPORTED_CAPABILITY", "The paragraph range cuts a shaped glyph cluster or has unsupported text marks.");
     return false;
   }
   pdf_editor::ParagraphRequest request;
   std::vector<std::shared_ptr<const FontResource>> fonts;
-  if (!ReadParagraphStyles(info.Get(), static_cast<uint32_t>(decoded.utf16.size()),
+  if (!ReadParagraphStyles(logical.Get(), static_cast<uint32_t>(decoded.utf16.size()),
                            resources, &fonts, &request)) return false;
+  request.height = info->GetFloatFor("Height");
   request.utf8 = original;
+  ApplyParagraphMetrics(&request, command);
   if (command.flags & kTextStyleLineHeightFlag) request.line_height = static_cast<float>(command.values[6]);
   if (command.flags & kTextStyleAlignmentFlag) {
     request.alignment = command.values[7] == 3 ? pdf_editor::ParagraphAlignment::kJustify :
@@ -546,9 +591,10 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;
   std::unique_ptr<CPDF_PageObject> replacement(CPDFPageObjectFromFPDFPageObject(paragraph.object));
-  if (paragraph.overflow) {
-    SetError("UNSUPPORTED_CAPABILITY", "The styled paragraph overflows its text box.");
-    return false;
+  if (flow) {
+    auto updated_info = replacement->AsForm()->form()->GetMutableDict()->GetMutableDictFor("KomoParagraph");
+    updated_info->SetNewFor<CPDF_Reference>("Flow", CPDFDocumentFromFPDFDocument(pdf), flow->GetObjNum());
+    updated_info->SetNewFor<CPDF_Number>("FlowStart", static_cast<int>(fragment_start));
   }
   FS_MATRIX matrix{};
   if (!FPDFPageObj_GetMatrix(target.object, &matrix) ||
@@ -573,8 +619,11 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
       !native_page->InsertPageObjectAtIndex(position, std::move(replacement))) {
     SetUnexpectedError(); return false;
   }
+  const std::string object_id = identity.id;
   metadata->pages[page_index].objects[position] = std::move(identity);
-  return true;
+  if (!FPDFPage_GenerateContent(page)) return false;
+  if (!flow && !paragraph.overflow) return true;
+  return ReflowParagraphAcrossPages(document, pdf, metadata, command, object_id, fonts, request, nullptr);
 }
 
 bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE page,
@@ -583,26 +632,26 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
     const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
     Rect* layout_bounds, bool* overflow, TextInsertLayoutResult* paragraph_layout) {
   const auto info = ParagraphMetadata(target.object);
-  const ByteString raw = info->GetUnicodeTextFor("Text").ToUTF8();
+  const auto flow = info->GetDictFor("Flow");
+  const auto logical = flow ? flow : info;
+  const uint32_t fragment_start = flow ? static_cast<uint32_t>(info->GetIntegerFor("FlowStart")) : 0;
+  const uint32_t start = command.start_utf16 + fragment_start, end = command.end_utf16 + fragment_start;
+  const ByteString raw = logical->GetUnicodeTextFor("Text").ToUTF8();
   const std::string original(raw.c_str(), raw.GetLength());
   LayoutText decoded;
   std::vector<bool> boundaries;
   if (!DecodeLayoutText(original, &decoded) || !CollectUnicodeBreaks(UBRK_CHARACTER, decoded.utf16, &boundaries)) return false;
-  if (command.end_utf16 > decoded.utf16.size() || command.start_utf16 > command.end_utf16 ||
-      !boundaries[command.start_utf16] || !boundaries[command.end_utf16]) {
+  if (end > decoded.utf16.size() || start > end ||
+      !boundaries[start] || !boundaries[end]) {
     SetError("INVALID_REQUEST", "Paragraph replacements must preserve complete graphemes."); return false;
   }
   std::string updated;
-  if (!ReplaceUtf16Range(original, command.start_utf16, command.end_utf16, command.text, &updated)) return false;
+  if (!ReplaceUtf16Range(original, start, end, command.text, &updated)) return false;
   auto* native_page = CPDFPageFromFPDFPage(page);
   auto& identities = metadata->pages[page_index].objects;
   const size_t index = target.path[0];
   FS_MATRIX matrix{};
   if (!FPDFPageObj_GetMatrix(target.object, &matrix)) { SetUnexpectedError(); return false; }
-  Matrix to_page, to_pdf;
-  if (!GetPageMatrices(page, &to_page, &to_pdf)) return false;
-  const Matrix paragraph_to_page = MatrixFromFs(matrix).Then(to_page);
-  const Rect box = TransformBounds(0, 0, info->GetFloatFor("Width"), info->GetFloatFor("Height"), paragraph_to_page);
   auto* native_doc = CPDFDocumentFromFPDFDocument(pdf);
   auto* old_object = CPDFPageObjectFromFPDFPageObject(target.object);
   const int old_mcid = old_object->GetContentMarks()->GetMarkedContentID();
@@ -615,37 +664,59 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
     return false;
   }
   if (updated.empty()) {
-    if (!native_page->RemovePageObject(native_page->GetPageObjectByIndex(index))) return false;
-    if (old_mcid >= 0 && !pdf_editor::tagged::HasOtherMember(native_page, old_mcid, nullptr))
-      pdf_editor::tagged::ClearMcid(native_doc, native_page, old_mcid);
-    identities.erase(identities.begin() + index);
-    if (layout_bounds) *layout_bounds = {box.x, box.y, 0, 0};
+    TextInsertLayoutResult cleared;
+    pdf_editor::ParagraphRequest empty;
+    if (!ReflowParagraphAcrossPages(document, pdf, metadata, command, target.identity->id, {}, empty, &cleared)) return false;
+    if (layout_bounds) *layout_bounds = cleared.bounds;
     if (overflow) *overflow = false;
-    return FPDFPage_GenerateContent(page);
+    if (paragraph_layout) *paragraph_layout = std::move(cleared);
+    return true;
   }
   pdf_editor::ParagraphRequest request;
   std::vector<std::shared_ptr<const FontResource>> fonts;
-  if (!ReadParagraphStyles(info.Get(), static_cast<uint32_t>(decoded.utf16.size()),
+  if (!ReadParagraphStyles(logical.Get(), static_cast<uint32_t>(decoded.utf16.size()),
                            resources, &fonts, &request)) return false;
+  request.height = info->GetFloatFor("Height");
+  std::optional<uint32_t> replacement_font;
   if (!command.font_id.empty()) {
     const auto selected = resources.find(command.font_id);
     if (selected == resources.end()) {
       SetError("INVALID_REQUEST", "The requested paragraph font is not registered.");
       return false;
     }
-    fonts[0] = selected->second;
+    if (request.styles.empty()) request.styles.push_back({{0, static_cast<uint32_t>(decoded.utf16.size())}, 0,
+        request.font_size, request.letter_spacing, request.color, request.underline});
+    const auto existing = std::find_if(fonts.begin(), fonts.end(), [&](const auto& font) { return font->id == command.font_id; });
+    replacement_font = static_cast<uint32_t>(existing - fonts.begin());
+    if (existing == fonts.end()) fonts.push_back(selected->second);
   }
   LayoutText inserted;
   if (!DecodeLayoutText(command.text, &inserted)) return false;
   RemapParagraphStyles(&request, static_cast<uint32_t>(decoded.utf16.size()),
-                       command.start_utf16, command.end_utf16,
-                       static_cast<uint32_t>(inserted.utf16.size()));
+                       start, end, static_cast<uint32_t>(inserted.utf16.size()));
+  if (replacement_font && !inserted.utf16.empty()) {
+    const uint32_t inserted_end = start + static_cast<uint32_t>(inserted.utf16.size());
+    std::vector<pdf_editor::ParagraphStyleRun> styles;
+    for (auto run : request.styles) {
+      if (run.range.end <= start || run.range.start >= inserted_end) { styles.push_back(run); continue; }
+      if (run.range.start < start) { auto before = run; before.range.end = start; styles.push_back(before); }
+      auto replacement = run;
+      replacement.range = {std::max(run.range.start, start), std::min(run.range.end, inserted_end)};
+      replacement.font_index = *replacement_font; styles.push_back(replacement);
+      if (run.range.end > inserted_end) { run.range.start = inserted_end; styles.push_back(run); }
+    }
+    request.styles = std::move(styles);
+  }
   request.utf8 = updated;
   CompactParagraphFonts(&request, &fonts);
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;
   std::unique_ptr<CPDF_PageObject> object(CPDFPageObjectFromFPDFPageObject(paragraph.object));
-  if (paragraph.overflow && !overflow) { SetError("UNSUPPORTED_CAPABILITY", "The replacement paragraph overflows its text box."); return false; }
+  if (flow) {
+    auto updated_info = object->AsForm()->form()->GetMutableDict()->GetMutableDictFor("KomoParagraph");
+    updated_info->SetNewFor<CPDF_Reference>("Flow", CPDFDocumentFromFPDFDocument(pdf), flow->GetObjNum());
+    updated_info->SetNewFor<CPDF_Number>("FlowStart", static_cast<int>(fragment_start));
+  }
   if (!FPDFPageObj_SetMatrix(paragraph.object, &matrix)) { SetUnexpectedError(); return false; }
   object->SetContentStream(CPDFPageObjectFromFPDFPageObject(target.object)->GetContentStream());
   object->SetContentMarks(*old_object->GetContentMarks());
@@ -657,19 +728,32 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   if (!native_page->RemovePageObject(native_page->GetPageObjectByIndex(index)) || !native_page->InsertPageObjectAtIndex(index, std::move(object))) {
     SetUnexpectedError(); return false;
   }
+  const std::string object_id = identity.id;
   identities[index] = std::move(identity);
   if (!FPDFPage_GenerateContent(page)) { SetUnexpectedError(); return false; }
-  if (layout_bounds) *layout_bounds = box;
-  if (overflow) *overflow = paragraph.overflow;
-  if (paragraph_layout) {
-    paragraph_layout->bounds = box;
-    paragraph_layout->overflow = paragraph.overflow;
-    for (const auto& line : paragraph.lines) {
-      const auto& b = line.bounds;
-      const Rect normalized = TransformBounds(b.x, request.height - b.y - b.height,
-          b.x + b.width, request.height - b.y, paragraph_to_page);
-      paragraph_layout->lines.push_back({normalized, line.text_range.start, line.text_range.end});
+  if (!flow && !paragraph.overflow) {
+    if (overflow) *overflow = false;
+    if (layout_bounds || paragraph_layout) {
+      Matrix to_page, to_pdf;
+      if (!GetPageMatrices(page, &to_page, &to_pdf)) return false;
+      const Matrix placement = MatrixFromFs(matrix).Then(to_page);
+      const Rect box = TransformBounds(0, 0, request.width, request.height, placement);
+      if (layout_bounds) *layout_bounds = box;
+      if (paragraph_layout) {
+        paragraph_layout->bounds = box; paragraph_layout->overflow = false;
+        for (const auto& line : paragraph.lines) {
+          const auto& b = line.bounds;
+          paragraph_layout->lines.push_back({TransformBounds(b.x, request.height - b.y - b.height,
+              b.x + b.width, request.height - b.y, placement), line.text_range.start, line.text_range.end});
+        }
+      }
     }
+    return true;
   }
+  TextInsertLayoutResult flow_layout;
+  if (!ReflowParagraphAcrossPages(document, pdf, metadata, command, object_id, fonts, request, &flow_layout)) return false;
+  if (layout_bounds) *layout_bounds = flow_layout.bounds;
+  if (overflow) *overflow = false;
+  if (paragraph_layout) *paragraph_layout = std::move(flow_layout);
   return true;
 }

@@ -19,7 +19,8 @@ SHADING_PATCH = ROOT / 'native/vendor/patches/0006-shading-serialization.patch'
 ACTUALTEXT_PATCH = ROOT / 'native/vendor/patches/0007-actualtext-scope.patch'
 ACTUALTEXT_UTF16_PATCH = ROOT / 'native/vendor/patches/0008-actualtext-utf16.patch'
 SUPPLEMENTARY_PATCH = ROOT / 'native/vendor/patches/0009-supplementary-text-indices.patch'
-CORE_PATCHES = (FONT_PATCH, FONT_CODE_PATCH, TEXT_SPACING_PATCH, SHADING_PATCH, ACTUALTEXT_PATCH, ACTUALTEXT_UTF16_PATCH, SUPPLEMENTARY_PATCH)
+FONT_IDENTITY_PATCH = ROOT / 'native/vendor/patches/0010-font-resource-identity.patch'
+CORE_PATCHES = (FONT_PATCH, FONT_CODE_PATCH, TEXT_SPACING_PATCH, SHADING_PATCH, ACTUALTEXT_PATCH, ACTUALTEXT_UTF16_PATCH, SUPPLEMENTARY_PATCH, FONT_IDENTITY_PATCH)
 spec = importlib.util.spec_from_file_location('native_build', Path(__file__).with_name('prepare-native.py'))
 native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
@@ -59,6 +60,7 @@ def copy_api(source):
         ('core/fpdftext/cpdf_textpage.cpp', 'The lexical ActualText scope is independent of inner decoration marks.', ACTUALTEXT_PATCH),
         ('core/fpdftext/cpdf_textpage.cpp', 'WideString TextPageUtf16Units(', ACTUALTEXT_UTF16_PATCH),
         ('core/fpdftext/cpdf_textpage.cpp', 'Keep unmarked ToUnicode text in the same UTF-16 index space as ActualText.', SUPPLEMENTARY_PATCH),
+        ('core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp', 'A font name is not its identity:', FONT_IDENTITY_PATCH),
     ):
         if marker not in (source / relative).read_text(encoding='utf-8'):
             subprocess.run(['git', 'apply', '--check', str(patch)], cwd=source, check=True)
@@ -151,13 +153,13 @@ def build_wasm():
     digest.update((ROOT / 'native/wasm/wasm-lock.json').read_bytes())
     for path in [*api_sources(), *bridge_sources(), *CORE_PATCHES, overlay / 'BUILD.gn', *artifacts]:
         digest.update(path.read_bytes())
-    build_id = 'pdfium-80fccd-abi3-' + digest.hexdigest()[:20]
+    build_id = 'pdfium-80fccd-abi4-' + digest.hexdigest()[:20]
     destination = ROOT / 'native/wasm/artifacts'
     destination.mkdir(parents=True, exist_ok=True)
     runtime = artifacts[0].read_text(encoding='utf-8')
     (destination / artifacts[0].name).write_text(runtime + '\nexport const PDF_CORE_BUILD_ID = ' + json.dumps(build_id) + ';\n', encoding='utf-8', newline='\n')
     shutil.copy2(artifacts[1], destination / artifacts[1].name)
-    metadata = {'abiVersion': 3, 'coreBuildId': build_id, 'pdfiumCommit': native.PDFIUM_COMMIT,
+    metadata = {'abiVersion': 4, 'coreBuildId': build_id, 'pdfiumCommit': native.PDFIUM_COMMIT,
                 'files': {path.name: {'bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
                           for path in (destination / artifact.name for artifact in artifacts)}}
     (ROOT / 'native/wasm/runtime-build.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')

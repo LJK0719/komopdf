@@ -33,7 +33,7 @@ The font binaries are downloaded from fixed sources and staged with their licens
 
 ## JavaScript dependencies
 
-Dependencies in `pnpm-lock.yaml` retain the license texts shipped in their npm packages. Packaging a JavaScript bundle does not waive these notices: esbuild legal comments and the upstream package licenses must be retained in the corresponding distribution. This native inventory is not a complete npm SBOM or a signature/installation attestation.
+Dependencies in `pnpm-lock.yaml` retain the license texts shipped in their npm packages. Packaging a JavaScript bundle does not waive these notices: esbuild legal comments and the upstream package licenses must be retained in the corresponding distribution. This native inventory is not a complete npm SBOM or installation attestation.
 
 ## Maintenance
 

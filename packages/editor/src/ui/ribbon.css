@@ -43,16 +43,27 @@
 .document-pages-single { grid-template-columns: max-content; }
 .document-pages-double { grid-template-columns: repeat(2, max-content); }
 .document-pages .page-wrap { margin: 0; flex-shrink: 0; }
+.document-pages .page-wrap:has(.direct-text-editor) { z-index: 10; }
+.paragraph-settings { z-index: 120; display: grid; gap: 12px; min-width: 280px; padding: 16px; background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px #173f2526; }
+.paragraph-settings label { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 12px; color: var(--ink); }
+.paragraph-settings input { width: 80px; height: 32px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; }
 .page-caption { position: absolute; bottom: -21px; left: 0; width: 100%; text-align: center; font-size: 10px; color: #7b8980; pointer-events: none; }
 .page-placeholder { display: grid; place-items: center; height: 100%; color: #8a978f; font-size: 12px; }
 .page-object-tools { position: absolute; inset: 0; }
 .pdf-text-layer { position: absolute; inset: 0; overflow: hidden; user-select: text; cursor: text; }
-.pdf-text-layer span { position: absolute; color: transparent; white-space: pre-wrap; line-height: 1.1; overflow: hidden; }
-.pdf-text-layer span::selection { color: transparent; background: #3588db55; }
+.pdf-text-object { display: contents; }
+.pdf-text-separator { position: absolute; white-space: pre; line-height: 1; color: transparent; pointer-events: none; }
+.pdf-character, .pdf-text-fallback { position: absolute; color: transparent; white-space: pre; line-height: 1; }
+.pdf-character { overflow: hidden; }
+.pdf-text-layer span::selection { color: transparent; background: transparent; }
+.pdf-selection-paint { position: absolute; inset: 0; pointer-events: none; user-select: none; }
+.pdf-selection-paint i { position: absolute; background: #3588db55; }
 .hand-tool { cursor: grab; touch-action: none; }
 .hand-tool:active { cursor: grabbing; }
 .direct-text-editor { position: absolute; z-index: 5; outline: 2px solid var(--signal); background: white; box-shadow: 0 2px 12px #173f2520; }
 .direct-text-editor textarea { display: block; resize: none; width: 100%; min-width: 40px; margin: 0; padding: 0; border: 0; border-radius: 0; outline: none; color: black; background: white; font-family: Arial, 'Microsoft YaHei', sans-serif; line-height: 1.15; overflow: auto; }
+.paragraph-input { min-height: 1.2em; max-height: min(65vh, 640px); overflow-y: auto; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; color: #111; caret-color: #111; }
+.paragraph-input p { margin: var(--paragraph-space-before, 0) 0 var(--paragraph-space-after, 0); }
 .direct-text-actions { display: flex; position: absolute; right: -2px; top: calc(100% + 5px); padding: 3px; gap: 2px; border: 1px solid #d5e4db; border-radius: 5px; background: white; box-shadow: 0 2px 10px #173f2520; }
 .direct-text-actions button { display: grid; place-items: center; width: 28px; height: 26px; border: 0; background: white; border-radius: 3px; }
 .direct-text-actions button:hover { background: #e7f3eb; }

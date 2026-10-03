@@ -13,14 +13,20 @@ import {
   type Rect,
 } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
+import { annotationTypeLabels, filterAnnotations, type AnnotationDrawingOptions } from './annotation-drawing.js';
+import './annotations.css';
 
 type Props = {
   mode?: 'comment' | 'forms';
+  active?: boolean;
   document: DocumentInfo;
   page: PageModel;
   selectedIds: string[];
   engine: EngineAdapter;
   disabled: boolean;
+  drawing?: AnnotationDrawingOptions | null;
+  onDrawingChange?(next: AnnotationDrawingOptions | null): void;
+  onNavigate?(annotation: PdfAnnotationInfo): void;
   onBusyChange(busy: boolean): void;
   onCommitted(result: CommitResult): Promise<void>;
 };
@@ -37,7 +43,7 @@ type FieldPropertiesDraft = {
 
 const DEFAULT_FORM_FONT_ID = 'noto-sans-cjk-sc-regular';
 
-export function DocumentToolsPanel({ mode = 'comment', document, page, selectedIds, engine, disabled, onBusyChange, onCommitted }: Props) {
+export function DocumentToolsPanel({ mode = 'comment', active = true, document, page, selectedIds, engine, disabled, drawing = null, onDrawingChange, onNavigate, onBusyChange, onCommitted }: Props) {
   useI18n();
   const [boundsDraft, setBoundsDraft] = useState<BoundsDraft>({ x: '36', y: '36', width: '180', height: '48' });
   const [annotationText, setAnnotationText] = useState('');
@@ -56,6 +62,9 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
   const [fieldPropertyDrafts, setFieldPropertyDrafts] = useState<Record<string, FieldPropertiesDraft>>({});
   const [annotations, setAnnotations] = useState<PdfAnnotationInfo[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [annotationPage, setAnnotationPage] = useState('');
+  const [annotationType, setAnnotationType] = useState('');
+  const [annotationSearch, setAnnotationSearch] = useState('');
   const [fields, setFields] = useState<FormFieldInfo[]>([]);
   const [fieldDrafts, setFieldDrafts] = useState<Record<string, FormValue>>({});
   const [dataScope, setDataScope] = useState('');
@@ -64,9 +73,19 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
   const loadSequence = useRef(0);
-  const scope = `${document.id}\0${document.revision}\0${page.id}`;
+  const documentScope = `${document.id}\0${document.revision}`;
+  const documentScopeRef = useRef(documentScope); documentScopeRef.current = documentScope;
+  const scope = `${documentScope}\0${page.id}`;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
+
+  useEffect(() => {
+    setSelectedAnnotationId(null); setAnnotationPage(''); setAnnotationType(''); setAnnotationSearch('');
+  }, [document.id]);
+  useEffect(() => {
+    if (!drawing) return;
+    setAnnotationColor(drawing.color); setOpacity(String(drawing.opacity)); setStrokeWidth(String(drawing.strokeWidth));
+  }, [drawing?.color, drawing?.opacity, drawing?.strokeWidth]);
 
   const { fonts, error: fontError } = useFontResources(engine);
   const chosenFont = fonts.find(font => font.id === fieldFontId)
@@ -80,8 +99,8 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
   const supportsFormCreate = document.capabilities.includes('form.create');
   const supportsFormUpdate = document.capabilities.includes('form.update');
   const supportsFormFill = document.capabilities.includes('form.fill');
-  const canReadAnnotations = supportsAnnotations && Boolean(engine.describeAnnotations);
-  const canReadForms = (supportsFormCreate || supportsFormUpdate || supportsFormFill) && Boolean(engine.describeForms);
+  const canReadAnnotations = active && mode === 'comment' && Boolean(engine.describeAnnotations);
+  const canReadForms = active && mode === 'forms' && (supportsFormCreate || supportsFormUpdate || supportsFormFill) && Boolean(engine.describeForms);
 
   const selectedBounds = useMemo(() => {
     const objects = page.objects.filter(object => selectedIds.includes(object.id));
@@ -95,20 +114,20 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
 
   useEffect(() => {
     const sequence = ++loadSequence.current;
-    const expectedScope = scope;
+    const expectedScope = documentScope;
     setLoading(canReadAnnotations || canReadForms);
     setLoadError('');
     setDataScope('');
 
     const annotationRequest = canReadAnnotations
-      ? engine.describeAnnotations!(document.id, page.id)
+      ? Promise.all(document.pageOrder.map(pageId => engine.describeAnnotations!(document.id, pageId))).then(pages => pages.flat())
       : Promise.resolve<PdfAnnotationInfo[]>([]);
     const formRequest = canReadForms
       ? engine.describeForms!(document.id)
       : Promise.resolve<FormFieldInfo[]>([]);
 
     void Promise.all([annotationRequest, formRequest]).then(([nextAnnotations, nextFields]) => {
-      if (loadSequence.current !== sequence || scopeRef.current !== expectedScope) return;
+      if (loadSequence.current !== sequence || documentScopeRef.current !== expectedScope) return;
       setAnnotations(nextAnnotations);
       setFields(nextFields);
       setFieldDrafts(Object.fromEntries(nextFields.map(field => [field.id, copyFormValue(field.value)])));
@@ -121,23 +140,25 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
       }])));
       setDataScope(expectedScope);
     }).catch(caught => {
-      if (loadSequence.current === sequence && scopeRef.current === expectedScope) {
+      if (loadSequence.current === sequence && documentScopeRef.current === expectedScope) {
         setAnnotations([]);
         setFields([]);
         setLoadError(formatError(caught));
       }
     }).finally(() => {
-      if (loadSequence.current === sequence && scopeRef.current === expectedScope) setLoading(false);
+      if (loadSequence.current === sequence && documentScopeRef.current === expectedScope) setLoading(false);
     });
 
     return () => { loadSequence.current += 1; };
-  }, [canReadAnnotations, canReadForms, document.id, document.revision, engine, page.id, scope]);
+  }, [canReadAnnotations, canReadForms, document.id, documentScope, engine]);
 
-  const currentFields = dataScope === scope
+  const currentFields = dataScope === documentScope
     ? fields.filter(field => field.widgets.some(widget => widget.pageId === page.id))
     : [];
-  const currentAnnotations = dataScope === scope ? annotations : [];
-  const selectedAnnotation = currentAnnotations.find(annotation => annotation.id === selectedAnnotationId);
+  const currentAnnotations = dataScope === documentScope ? annotations : [];
+  const filteredAnnotations = filterAnnotations(currentAnnotations, { pageId: annotationPage === 'current' ? page.id : annotationPage,
+    subtype: annotationType, text: annotationSearch });
+  const selectedAnnotation = currentAnnotations.find(annotation => annotation.id === selectedAnnotationId && annotation.pageId === page.id);
 
   async function execute(command: EditCommand): Promise<void> {
     const expectedScope = scope;
@@ -148,10 +169,13 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
       source: 'manual',
       commands: [command],
     };
+    const targetPageId = 'pageId' in command ? command.pageId : page.id;
+    const targetPage = targetPageId === page.id ? page : await engine.describePage(document.id, targetPageId);
+    if (scopeRef.current !== expectedScope) throw new Error('The document changed while previewing this edit');
     const context = {
       document,
-      pages: new Map([[page.id, page]]),
-      fields: buildFieldContext(dataScope === scope ? fields : [], page.id),
+      pages: new Map([[page.id, page], [targetPage.id, targetPage]]),
+      fields: buildFieldContext(dataScope === documentScope ? fields : [], page.id),
       annotations: new Map(currentAnnotations.map(annotation => [annotation.id,
         { pageId: annotation.pageId, subtype: annotation.subtype }])),
       ...(command.type === 'form.create' && command.fontId
@@ -211,7 +235,9 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
   }
 
   function selectAnnotation(annotation: PdfAnnotationInfo): void {
+    onDrawingChange?.(null);
     setSelectedAnnotationId(annotation.id);
+    onNavigate?.(annotation);
     setBoundsDraft({
       x: formatNumber(annotation.bounds.x), y: formatNumber(annotation.bounds.y),
       width: formatNumber(annotation.bounds.width), height: formatNumber(annotation.bounds.height),
@@ -234,7 +260,7 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
   }
 
   async function deleteAnnotation(annotation: PdfAnnotationInfo): Promise<void> {
-    await execute({ type: 'annotation.delete', pageId: page.id, annotationId: annotation.id });
+    await execute({ type: 'annotation.delete', pageId: annotation.pageId, annotationId: annotation.id });
     setSelectedAnnotationId(null);
   }
 
@@ -300,52 +326,110 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
     });
   }
 
-  return <section className="text-edit-panel document-tools-panel" aria-label="Annotations and forms">
+  function startDrawing(tool: AnnotationDrawingOptions['tool']): void {
+    if (drawing?.tool === tool) { onDrawingChange?.(null); return; }
+    try {
+      onDrawingChange?.({ tool, color: annotationColor, opacity: readOpacity(opacity),
+        strokeWidth: readPositive(strokeWidth, 'Stroke width'), text: annotationText });
+      setError('');
+    } catch (caught) { setError(formatError(caught)); }
+  }
+
+  return <section className="text-edit-panel document-tools-panel" aria-label={t("Annotations and forms")}>
     <span className="eyebrow">{t("Document Tools")}</span>
 
-    <div className="document-tools-grid">
-      {boundsInput('X', 'x', boundsDraft, setBoundsDraft, locked)}
-      {boundsInput('Y', 'y', boundsDraft, setBoundsDraft, locked)}
-      {boundsInput(t("Width"), 'width', boundsDraft, setBoundsDraft, locked)}
-      {boundsInput(t("Height"), 'height', boundsDraft, setBoundsDraft, locked)}
-    </div>
-    <button type="button" disabled={locked || !selectedBounds} onClick={useSelectionBounds}>{t("Use selection bounds")}</button>
+    {mode === 'comment' && onDrawingChange ? <div className="annotation-drawing-tools" role="group" aria-label={t('Draw annotations')}>
+      <div className="annotation-drawing-tool-buttons">
+        {(['text', 'rectangle', 'ink'] as const).map(tool => <button key={tool} type="button"
+          aria-pressed={drawing?.tool === tool} disabled={locked || !canAddAnnotation || !document.permissions.annotate}
+          onClick={() => startDrawing(tool)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+            {tool === 'text' ? <path d="M5 3h14v12l-6 6H5V3Zm8 18v-6h6M8 8h8M8 11h6" />
+              : tool === 'rectangle' ? <rect x="4" y="5" width="16" height="14" rx="1" />
+                : <path d="M3 17c3-12 4-13 5-6s4 8 5 0 1 12 8-4" />}
+          </svg>
+          <span>{t(annotationTypeLabels[tool])}</span>
+        </button>)}
+      </div>
+      <p>{drawing ? t(drawing.tool === 'text' ? 'Click on the page to write a note. Esc cancels.'
+        : drawing.tool === 'rectangle' ? 'Drag to draw a rectangle. Esc cancels.' : 'Draw on the page. Esc cancels.')
+        : t('Choose a tool, then add annotations directly on the page.')}</p>
+      {drawing ? <button type="button" onClick={() => onDrawingChange(null)}>{t('Stop drawing')}</button> : null}
+    </div> : null}
+
+    {mode === 'comment' ? <div className="document-tools-grid">
+      <label>{t("Color")}<input type="color" value={annotationColor} disabled={locked || !supportsAnnotations}
+        onChange={event => { setAnnotationColor(event.target.value); if (drawing) onDrawingChange?.({ ...drawing, color: event.target.value }); }} /></label>
+      <label>{t("Opacity")}<input type="number" min="0" max="1" step="0.05" value={opacity} disabled={locked || !supportsAnnotations}
+        onChange={event => {
+          const value = event.target.value; setOpacity(value);
+          if (drawing && value !== '' && Number(value) >= 0 && Number(value) <= 1) onDrawingChange?.({ ...drawing, opacity: Number(value) });
+        }} /></label>
+      <label>{t("Stroke width")}<input type="number" min="0.1" step="0.1" value={strokeWidth} disabled={locked || !supportsAnnotations}
+        onChange={event => {
+          const value = event.target.value; setStrokeWidth(value);
+          if (drawing && Number.isFinite(Number(value)) && Number(value) > 0) onDrawingChange?.({ ...drawing, strokeWidth: Number(value) });
+        }} /></label>
+    </div> : null}
+
+    <details open={mode === 'forms'}>
+      <summary>{t('Placement coordinates')}</summary>
+      <div className="document-tools-grid">
+        {boundsInput('X', 'x', boundsDraft, setBoundsDraft, locked)}
+        {boundsInput('Y', 'y', boundsDraft, setBoundsDraft, locked)}
+        {boundsInput(t("Width"), 'width', boundsDraft, setBoundsDraft, locked)}
+        {boundsInput(t("Height"), 'height', boundsDraft, setBoundsDraft, locked)}
+      </div>
+      <button type="button" disabled={locked || !selectedBounds} onClick={useSelectionBounds}>{t("Use selection bounds")}</button>
+    </details>
 
     <details open hidden={mode !== 'comment'}>
-      <summary>{t("Annotations on this page")}</summary>
-      {!supportsAnnotations ? <p role="status">{t("The current PDF core does not advertise annotation editing.")}</p> : <>
+      <summary>{t("Document annotations")}</summary>
+      {!supportsAnnotations ? <p role="status">{t("The current PDF core does not advertise annotation editing.")}</p> : null}
+      <>
         {!engine.describeAnnotations ? <p role="alert">{t("Annotation inspection is unavailable in this adapter.")}</p> : null}
-        {loading ? <p role="status">{t("Loading annotations…")}</p> : null}
-        {!loading && canReadAnnotations && currentAnnotations.length === 0 ? <p>{t("No annotations on this page.")}</p> : null}
-        {currentAnnotations.length > 0 ? <ul className="document-tools-list">
-          {currentAnnotations.map(annotation => <li key={annotation.id}>
-            <strong>{annotation.subtype}</strong>
-            <span>{formatRect(annotation.bounds)} · {Math.round(annotation.opacity * 100)}%</span>
-            {annotation.text ? <span>{annotation.text}</span> : null}
+        <div className="annotation-list-filters">
+          <label>{t('Pages')}<select value={annotationPage} onChange={event => setAnnotationPage(event.target.value)}>
+            <option value="">{t('All pages')}</option><option value="current">{t('Current page')}</option>
+            {document.pageOrder.map((pageId, index) => <option key={pageId} value={pageId}>{t('Page {page}', { page: index + 1 })}</option>)}
+          </select></label>
+          <label>{t('Annotation type')}<select value={annotationType} onChange={event => setAnnotationType(event.target.value)}>
+            <option value="">{t('All types')}</option>
+            {Object.entries(annotationTypeLabels).map(([type, label]) => <option key={type} value={type}>{t(label)}</option>)}
+          </select></label>
+          <label>{t('Find annotation text')}<input type="search" value={annotationSearch} placeholder={t('Search notes…')}
+            onChange={event => setAnnotationSearch(event.target.value)} /></label>
+        </div>
+        {loading ? <p className="annotation-list-status" role="status">{t("Loading document annotations…")}</p> : null}
+        {!loading && !loadError && canReadAnnotations ? <p className="annotation-list-status" role="status">
+          {currentAnnotations.length === 0 ? t('No annotations in this document yet.')
+            : filteredAnnotations.length === 0 ? t('No annotations match these filters.')
+              : t('{shown} of {total} annotations', { shown: filteredAnnotations.length, total: currentAnnotations.length })}
+        </p> : null}
+        {filteredAnnotations.length > 0 ? <ul className="document-tools-list annotation-document-list" aria-label={t('Document annotations')}>
+          {filteredAnnotations.map(annotation => <li key={annotation.id} data-selected={selectedAnnotationId === annotation.id}>
+            <button type="button" className="annotation-list-item" disabled={locked}
+              aria-pressed={selectedAnnotationId === annotation.id} onClick={() => selectAnnotation(annotation)}
+              aria-label={t('Go to {type} on page {page}', { type: t(annotationTypeLabels[annotation.subtype]), page: document.pageOrder.indexOf(annotation.pageId) + 1 })}>
+              <span className="annotation-list-item-heading"><strong><i className="annotation-list-swatch" aria-hidden="true" style={{ background: rgbToHex(annotation.color) }} />{t(annotationTypeLabels[annotation.subtype])}</strong>
+                <span>{t('Page {page}', { page: document.pageOrder.indexOf(annotation.pageId) + 1 })}</span></span>
+              <span className="annotation-list-item-text">{annotation.text || t('No comment text')}</span>
+              <span className="annotation-list-item-meta" title={formatRect(annotation.bounds)}>{Math.round(annotation.opacity * 100)}%</span>
+            </button>
             {annotation.subtype === 'link' || annotation.subtype === 'other' ? (
-              <span className="document-tools-readonly">{annotation.subtype === 'link' ? 'Link (read-only)' : 'Unsupported (read-only)'}</span>
-            ) : (
-              <button type="button" disabled={locked} onClick={() => selectAnnotation(annotation)}
-                aria-label={`Edit ${annotation.subtype} annotation`}>{t("Select for editing")}</button>
-            )}
-            {canDeleteAnnotation && <button type="button" disabled={locked || !document.permissions.annotate}
-              aria-label={`Delete ${annotation.subtype} annotation`} onClick={() => {
+              <span className="document-tools-readonly">{t(annotation.subtype === 'link' ? 'Link (read-only)' : 'Unsupported (read-only)')}</span>
+            ) : null}
+            {canDeleteAnnotation && <div className="annotation-list-actions"><button type="button" disabled={locked || !document.permissions.annotate}
+              aria-label={t('Delete {type} annotation', { type: t(annotationTypeLabels[annotation.subtype]) })} onClick={() => {
                 if (window.confirm(t("Delete this annotation? You can undo this change.")))
                   void run(() => deleteAnnotation(annotation));
-              }}>{t("Delete")}</button>}
+              }}>{t("Delete")}</button></div>}
           </li>)}
         </ul> : null}
+        <details open={Boolean(selectedAnnotation)}><summary>{t(selectedAnnotation ? 'Edit selected annotation' : 'Advanced annotation controls')}</summary>
         <label>{t("Annotation text")}<textarea rows={2} value={annotationText} disabled={locked || !supportsAnnotations}
-          onChange={event => setAnnotationText(event.target.value)} /></label>
-        <div className="document-tools-grid">
-          <label>{t("Color")}<input type="color" value={annotationColor} disabled={locked || !supportsAnnotations}
-            onChange={event => setAnnotationColor(event.target.value)} /></label>
-          <label>{t("Opacity")}<input type="number" min="0" max="1" step="0.05" value={opacity} disabled={locked || !supportsAnnotations}
-            onChange={event => setOpacity(event.target.value)} /></label>
-          <label>{t("Stroke width")}<input type="number" min="0.1" step="0.1" value={strokeWidth} disabled={locked || !supportsAnnotations}
-            onChange={event => setStrokeWidth(event.target.value)} /></label>
-        </div>
-        {canUpdateAnnotation && selectedAnnotation && selectedAnnotation.subtype !== 'other' && <button type="button"
+          onChange={event => { setAnnotationText(event.target.value); if (drawing) onDrawingChange?.({ ...drawing, text: event.target.value }); }} /></label>
+        {canUpdateAnnotation && selectedAnnotation && selectedAnnotation.subtype !== 'other' && selectedAnnotation.subtype !== 'link' && <button type="button"
           disabled={locked || !document.permissions.annotate} onClick={() => void run(() => updateAnnotation(selectedAnnotation))}>{t("Update selected annotation")}</button>}
         <div className="text-edit-actions">
           <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('text'))}>{t("Add note")}</button>
@@ -357,11 +441,12 @@ export function DocumentToolsPanel({ mode = 'comment', document, page, selectedI
           onChange={event => setInkPoints(event.target.value)} /></label>
         {selectedAnnotation?.subtype === 'ink' && <p>{t("Updating ink replaces its stroke with these points.")}</p>}
         <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(addInk)}>{t("Add ink")}</button>
+        </details>
         {!document.permissions.annotate ? <p role="alert">{t("This document does not permit annotations.")}</p> : null}
-      </>}
+      </>
     </details>
 
-    <details open>
+    <details open hidden={mode !== 'forms'}>
       <summary>{t("Forms on this page")}</summary>
       {!supportsFormCreate && !supportsFormUpdate && !supportsFormFill ? <p role="status">{t("The current PDF core does not advertise form editing.")}</p> : <>
         {!engine.describeForms ? <p role="alert">{t("Form inspection is unavailable in this adapter.")}</p> : null}

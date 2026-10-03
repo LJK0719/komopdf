@@ -1,0 +1,5 @@
+.page-number-preview { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line, #d7e4db); border-radius: 6px; background: #f6f8f7; font-size: 12px; }
+.page-number-preview samp { white-space: pre-wrap; overflow-wrap: anywhere; }
+.text-edit-panel .page-number-error { color: #a53025; }
+.text-edit-panel label.page-number-cover { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.text-edit-panel .page-number-cover input { width: auto; }

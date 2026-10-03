@@ -37,7 +37,7 @@ function blockText(context: CommandContext, pageId: string, blockId: string): st
   const page = requirePage(context, pageId);
   const block = page.objects.find(object => object.textBlock?.id === blockId)?.textBlock;
   if (!block || block.editability === 'geometry-only') invalid('Target is not an editable text block');
-  return block.runs.map(run => run.text).join('');
+  return (block.flow?.start === 0 && block.flow.runs ? block.flow.runs : block.runs).map(run => run.text).join('');
 }
 function validateRange(context: CommandContext, pageId: string, blockId: string, range: TextRange): void {
   try { assertTextRange(blockText(context, pageId, blockId), range, context.clusterBoundaries?.get(blockId)); }
@@ -216,7 +216,7 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
           transform: [1, 0, 0, 1, 0, 0],
           locator: { pageId: command.pageId, containerPath: [], objectIndex: page.objects.length },
           textBlock: {
-            id: command.objectId,
+            id: command.objectId + ':text',
             pageId: command.pageId,
             sourceObjectIds: [command.objectId],
             runs: [{ text: command.text, style: command.style, sourceObjectIds: [command.objectId] }],

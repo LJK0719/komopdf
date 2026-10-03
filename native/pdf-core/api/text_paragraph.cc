@@ -115,6 +115,8 @@ struct LayoutLine {
   uint32_t start_utf16 = 0;
   uint32_t end_utf16 = 0;
   bool soft_wrap = false;
+  bool paragraph_start = false;
+  float indent = 0;
   ShapedText shaped;
   std::vector<uint16_t> character_codes;
   float ascent = 0;
@@ -163,7 +165,11 @@ bool ValidateRequest(const ParagraphRequest& request,
       !IsFinitePositive(request.height) ||
       !IsFinitePositive(request.font_size) ||
       !IsFinitePositive(request.line_height) ||
-      !std::isfinite(request.letter_spacing)) {
+      !std::isfinite(request.letter_spacing) ||
+      !std::isfinite(request.first_line_indent) || request.first_line_indent >= request.width ||
+      !std::isfinite(request.line_spacing) || request.line_spacing < 0 ||
+      !std::isfinite(request.space_before) || request.space_before < 0 ||
+      !std::isfinite(request.space_after) || request.space_after < 0) {
     return Fail("Paragraph dimensions, font size, and line height must be "
                 "positive and all layout values must be finite.",
                 error_message);
@@ -467,6 +473,8 @@ bool WrapParagraph(const std::vector<ParagraphFont>& fonts,
     LayoutLine empty;
     empty.start_utf16 = paragraph_start;
     empty.end_utf16 = paragraph_end;
+    empty.paragraph_start = true;
+    empty.indent = request.first_line_indent;
     lines->push_back(std::move(empty));
     return true;
   }
@@ -478,30 +486,74 @@ bool WrapParagraph(const std::vector<ParagraphFont>& fonts,
     return false;
   }
 
+  LayoutLine paragraph_shape;
+  if (!ShapeRange(fonts, styles, logical_text, paragraph_start, paragraph_end, request,
+                  paragraph_direction, &paragraph_shape, error_message)) return false;
+  std::vector<float> advances(paragraph_end - paragraph_start + 1, 0);
+  bool monotone = request.letter_spacing >= 0 && std::all_of(styles.begin(), styles.end(),
+      [](const ParagraphStyleRun& style) { return style.letter_spacing >= 0; });
+  for (const auto& glyph : paragraph_shape.shaped.glyphs) {
+    if (glyph.x_advance < 0) monotone = false;
+    advances[glyph.cluster.end] += glyph.x_advance;
+  }
+  for (size_t i = 1; i < advances.size(); ++i) advances[i] += advances[i - 1];
+  const auto final_boundary = std::upper_bound(grapheme_boundaries.begin(), grapheme_boundaries.end(), paragraph_end);
   uint32_t line_start = paragraph_start;
   while (line_start < paragraph_end) {
+    const float indent = line_start == paragraph_start ? std::max(0.0f, request.first_line_indent) : std::max(0.0f, -request.first_line_indent);
+    const float available_width = request.width - indent;
     std::optional<LayoutLine> first_grapheme;
     std::optional<LayoutLine> furthest_fit;
     std::optional<LayoutLine> preferred_break;
-    for (uint32_t boundary : grapheme_boundaries) {
-      if (boundary <= line_start) {
-        continue;
-      }
-      if (boundary > paragraph_end) {
-        break;
-      }
+    if (monotone) {
+      // One paragraph shape estimates advances. Reshape only the candidate line
+      // and its neighbours, rather than every suffix for every visual line.
+      const auto first = std::upper_bound(grapheme_boundaries.begin(), final_boundary, line_start);
+      const float limit = advances[line_start - paragraph_start] + available_width + kLayoutEpsilon;
+      auto boundary = std::upper_bound(first, final_boundary, limit,
+          [&](float width, uint32_t end) { return width < advances[end - paragraph_start]; });
+      if (boundary != first) --boundary;
+      if (boundary == final_boundary) --boundary;
       LayoutLine candidate;
-      if (!ShapeRange(fonts, styles, logical_text, line_start, boundary, request,
-                      paragraph_direction, &candidate, error_message)) {
-        return false;
+      const auto shape = [&](uint32_t end, LayoutLine* output) {
+        return ShapeRange(fonts, styles, logical_text, line_start, end, request,
+                          paragraph_direction, output, error_message);
+      };
+      if (!shape(*boundary, &candidate)) return false;
+      while (candidate.width > available_width + kLayoutEpsilon && boundary != first) {
+        --boundary;
+        if (!shape(*boundary, &candidate)) return false;
       }
-      if (!first_grapheme) {
-        first_grapheme = candidate;
-      }
-      if (candidate.width <= request.width + kLayoutEpsilon) {
+      if (candidate.width > available_width + kLayoutEpsilon) first_grapheme = candidate;
+      else {
         furthest_fit = candidate;
-        if (line_breaks[boundary]) {
-          preferred_break = candidate;
+        while (boundary + 1 != final_boundary) {
+          if (!shape(*(boundary + 1), &candidate)) return false;
+          if (candidate.width > available_width + kLayoutEpsilon) break;
+          ++boundary; furthest_fit = candidate;
+        }
+        if (furthest_fit->end_utf16 != paragraph_end) {
+          for (auto preferred = boundary;; --preferred) {
+            if (line_breaks[*preferred]) {
+              if (!shape(*preferred, &candidate)) return false;
+              preferred_break = candidate; break;
+            }
+            if (preferred == first) break;
+          }
+        }
+      }
+    } else {
+      // Negative tracking can make prefix widths non-monotone.
+      for (uint32_t boundary : grapheme_boundaries) {
+        if (boundary <= line_start) continue;
+        if (boundary > paragraph_end) break;
+        LayoutLine candidate;
+        if (!ShapeRange(fonts, styles, logical_text, line_start, boundary, request,
+                        paragraph_direction, &candidate, error_message)) return false;
+        if (!first_grapheme) first_grapheme = candidate;
+        if (candidate.width <= available_width + kLayoutEpsilon) {
+          furthest_fit = candidate;
+          if (line_breaks[boundary]) preferred_break = candidate;
         }
       }
     }
@@ -525,9 +577,11 @@ bool WrapParagraph(const std::vector<ParagraphFont>& fonts,
       return Fail("Paragraph wrapping did not advance the logical text.",
                   error_message);
     }
-    if (chosen->width > request.width + kLayoutEpsilon) {
+    if (chosen->width > available_width + kLayoutEpsilon) {
       *overflow = true;
     }
+    chosen->paragraph_start = line_start == paragraph_start;
+    chosen->indent = indent;
     chosen->soft_wrap = chosen->end_utf16 < paragraph_end;
     line_start = chosen->end_utf16;
     lines->push_back(std::move(*chosen));
@@ -629,7 +683,7 @@ bool JustifyLines(const ParagraphRequest& request,
       }
     };
     measure();
-    const float extra = request.width - (maximum - minimum);
+    const float extra = request.width - line.indent - (maximum - minimum);
     if (!std::isfinite(extra) || extra < -kLayoutEpsilon) {
       return Fail("A justified line exceeds its text box.", error_message);
     }
@@ -714,12 +768,14 @@ bool PositionLines(const ParagraphRequest& request,
         !std::isfinite(line_step) || !std::isfinite(font_height) || font_height <= 0) {
       return Fail("The shaped paragraph font metrics are invalid.", error_message);
     }
+    if (request.line_spacing > 0) line_step = request.line_spacing;
     const float leading = std::max(0.0f, line_step - font_height) / 2;
     line.ascent = ascent;
     line.descent = descent;
-    line.x = AlignedX(request.alignment, request.width, line.width, line.shaped.base_direction);
+    line.x = line.indent + AlignedX(request.alignment, request.width - line.indent, line.width, line.shaped.base_direction);
+    if (line.paragraph_start) top += request.space_before;
     line.top = top;
-    top += line_step;
+    top += line_step + (line.soft_wrap ? 0 : request.space_after);
     line.bounds_y = line.top + leading;
     line.bounds_height = font_height;
     line.baseline = request.height - line.bounds_y - ascent;
@@ -1165,6 +1221,10 @@ void SetParagraphMetadata(CPDF_Document* document,
   metadata->SetNewFor<CPDF_Number>("Height", request.height);
   metadata->SetNewFor<CPDF_Number>("FontSize", request.font_size);
   metadata->SetNewFor<CPDF_Number>("LineHeight", request.line_height);
+  metadata->SetNewFor<CPDF_Number>("FirstLineIndent", request.first_line_indent);
+  metadata->SetNewFor<CPDF_Number>("LineSpacing", request.line_spacing);
+  metadata->SetNewFor<CPDF_Number>("SpaceBefore", request.space_before);
+  metadata->SetNewFor<CPDF_Number>("SpaceAfter", request.space_after);
   metadata->SetNewFor<CPDF_Number>("LetterSpacing", request.letter_spacing);
   if (request.underline) {
     metadata->SetNewFor<CPDF_Boolean>("Underline", true);
@@ -1360,6 +1420,7 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
     return false;
   }
 
+  if (request.continues && !lines.empty()) lines.back().soft_wrap = true;
   if (request.alignment == ParagraphAlignment::kJustify) {
     if (request.direction == TextDirection::kRightToLeft) {
       return Fail("Right-to-left paragraphs cannot be justified safely.", error_message);

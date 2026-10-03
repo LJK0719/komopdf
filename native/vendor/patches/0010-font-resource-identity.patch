@@ -1,0 +1,81 @@
+diff --git a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
+--- a/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
++++ b/core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp
+@@ -1040,42 +1040,42 @@
+     font = CPDF_Font::GetStockFont(document_, "Helvetica");
+   }
+ 
+-  FontData data;
+-  const CPDF_FontEncoding* pEncoding = nullptr;
+-  if (font->IsType1Font()) {
+-    data.type = "Type1";
+-    pEncoding = font->AsType1Font()->GetEncoding();
+-  } else if (font->IsTrueTypeFont()) {
+-    data.type = "TrueType";
+-    pEncoding = font->AsTrueTypeFont()->GetEncoding();
+-  } else if (font->IsCIDFont()) {
+-    data.type = "Type0";
+-  } else {
+-    return;
+-  }
+-  data.baseFont = font->GetBaseFontName();
+-
+-  ByteString dict_name;
+-  std::optional<ByteString> maybe_name = obj_holder_->FontsMapSearch(data);
+-  if (maybe_name.has_value()) {
+-    dict_name = std::move(maybe_name.value());
+-  } else {
+-    RetainPtr<const CPDF_Object> pIndirectFont = font->GetFontDict();
+-    if (pIndirectFont->IsInline()) {
+-      // In this case we assume it must be a standard font
+-      auto font_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+-      font_dict->SetNewFor<CPDF_Name>("Type", "Font");
+-      font_dict->SetNewFor<CPDF_Name>("Subtype", data.type);
+-      font_dict->SetNewFor<CPDF_Name>("BaseFont", data.baseFont);
+-      if (pEncoding) {
+-        font_dict->SetFor("Encoding",
+-                          pEncoding->Realize(document_->GetByteStringPool()));
++  // A font name is not its identity: equal BaseFont names can carry different
++  // encodings, embedded subsets, CID maps and ToUnicode dictionaries.
++  RetainPtr<const CPDF_Object> font_dict = font->GetFontDict();
++  RetainPtr<const CPDF_Dictionary> fonts;
++  if (obj_holder_->GetResources()) {
++    fonts = obj_holder_->GetResources()->GetDictFor("Font");
++  }
++  const auto is_same_font = [&](const CPDF_Object* candidate) {
++    return candidate &&
++           (candidate == font_dict.Get() ||
++            (font_dict->GetObjNum() != 0 &&
++             candidate->GetObjNum() == font_dict->GetObjNum()));
++  };
++  ByteString dict_name = pTextObj->GetResourceName();
++  if (!fonts || dict_name.IsEmpty() ||
++      !is_same_font(fonts->GetDirectObjectFor(dict_name.AsStringView()).Get())) {
++    dict_name.clear();
++    if (fonts) {
++      CPDF_DictionaryLocker locker(fonts.Get());
++      for (const auto& entry : locker) {
++        if (is_same_font(entry.second->GetDirect().Get())) {
++          dict_name = entry.first;
++          break;
++        }
+       }
+-      document_->AddIndirectObject(font_dict);
+-      pIndirectFont = std::move(font_dict);
+-    }
+-    dict_name = RealizeResource(std::move(pIndirectFont), "Font");
+-    obj_holder_->FontsMapInsert(data, dict_name);
++    }
++  }
++  if (dict_name.IsEmpty()) {
++    if (font_dict->IsInline()) {
++      // Direct fonts are not necessarily standard fonts. Preserve the complete
++      // dictionary, including embedded programs and character mappings.
++      auto indirect_font = font_dict->Clone();
++      document_->AddIndirectObject(indirect_font);
++      font_dict = std::move(indirect_font);
++    }
++    dict_name = RealizeResource(font_dict, "Font");
+   }
+   pTextObj->SetResourceName(dict_name);
+ 

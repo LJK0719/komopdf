@@ -504,8 +504,8 @@ describe('WASM C ABI binding', () => {
 
   it('validates ABI/build identity and maps pde_error fields to EngineError', async () => {
     const wrongAbi = new FakePdfCoreModule();
-    wrongAbi.abiVersion = 4;
-    expect(() => createPdfCoreBinding(wrongAbi)).toThrow(/Unsupported PDF core ABI 4/);
+    wrongAbi.abiVersion = 5;
+    expect(() => createPdfCoreBinding(wrongAbi)).toThrow(/Unsupported PDF core ABI 5/);
 
     const incompleteAbi3 = new FakePdfCoreModule();
     incompleteAbi3.abiVersion = 3;

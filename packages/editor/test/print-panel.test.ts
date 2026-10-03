@@ -49,7 +49,7 @@ describe('printCurrentPdf', () => {
     const host = { capabilities: { platform: 'windows' }, printDocument: vi.fn().mockResolvedValue(undefined) } as unknown as HostAdapter;
     await expect(printCurrentPdf(engine, 'doc-1', host, ['p1', 'p2'])).resolves.toBe('queued');
     expect(engine.save).toHaveBeenCalledExactlyOnceWith({ docId: 'doc-1', protection: 'preserve' });
-    expect(host.printDocument).toHaveBeenCalledExactlyOnceWith(result, ['p1', 'p2']);
+    expect(host.printDocument).toHaveBeenCalledExactlyOnceWith(result, ['p1', 'p2'], { copies: 1 });
     expect(engine.confirmSave).not.toHaveBeenCalled();
   });
 
@@ -59,7 +59,7 @@ describe('printCurrentPdf', () => {
     const host = { capabilities: { platform: 'macos' }, printDocument: vi.fn().mockResolvedValue(undefined) } as unknown as HostAdapter;
     await expect(printCurrentPdf(engine, 'doc-1', host, ['p1'], true)).resolves.toBe('queued');
     expect(engine.save).toHaveBeenCalledExactlyOnceWith({ docId: 'doc-1', protection: 'remove' });
-    expect(host.printDocument).toHaveBeenCalledExactlyOnceWith(result, ['p1']);
+    expect(host.printDocument).toHaveBeenCalledExactlyOnceWith(result, ['p1'], { copies: 1 });
     expect(engine.confirmSave).not.toHaveBeenCalled();
   });
 });

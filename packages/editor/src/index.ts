@@ -1,5 +1,8 @@
 export { EditorShell, type EditorAiContext } from './ui/EditorShell.js';
 export { AiPanel } from './ui/AiPanel.js';
+export { KomoChatPanel } from './ui/KomoChatPanel.js';
+export { AiMarkdown } from './ui/AiMarkdown.js';
+export { commandLabel } from './ui/command-labels.js';
 export { useI18n, translate, setUiLocale, type UiLocale } from './ui/i18n.js';
 export { LanguageSelect } from './ui/EditorChrome.js';
 export { AppDialog } from './ui/AppDialog.js';

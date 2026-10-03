@@ -33,24 +33,36 @@ describe('nested selection', () => {
   });
 });
 
-describe('conservative paragraph detection', () => {
+describe('spatial paragraph detection', () => {
   it('recognizes adjacent matching lines without changing source objects', () => {
     const a = text('a', 30, 40, 0), b = text('b', 30, 68, 1);
     const result = detectParagraph(page([a, b]), 'b')!;
     expect(result.objects).toEqual([a, b]);
-    expect(result.text).toBe('Text\nText');
+    expect(result.text).toBe('Text Text');
     expect(result.lineHeight).toBe(1.4);
     expect(result.style.characterSpacing).toBe(2);
     expect(a.textBlock?.isParagraph).toBeUndefined();
   });
-  it('does not join columns, headings, rotated text or separated content order', () => {
+  it('does not join columns, headings or rotated text, but ignores drawing order', () => {
     const a = text('a', 30, 40, 0);
     expect(detectParagraph(page([a, text('column', 250, 68, 1)]), 'a')).toBeNull();
     const heading = text('heading', 30, 68, 1); heading.textBlock!.runs[0]!.style.fontSize = 30;
     expect(detectParagraph(page([a, heading]), 'a')).toBeNull();
     const rotated = text('rotated', 30, 68, 1); rotated.transform = [0, 1, 1, 0, 30, 68];
     expect(detectParagraph(page([a, rotated]), 'a')).toBeNull();
-    expect(detectParagraph(page([a, text('gap', 30, 68, 2)]), 'a')).toBeNull();
+    expect(detectParagraph(page([text('gap', 30, 68, 9), a]), 'a')?.text).toBe('Text Text');
+  });
+  it('joins shuffled character objects and retains mixed styles without CJK spaces', () => {
+    const chars = ['段', '落', '识', '别'].map((value, i) => {
+      const item = text(String(i), 30 + i % 2 * 20, 40 + Math.floor(i / 2) * 28, 10 - i, value);
+      item.bounds.width = 20;
+      if (i === 1) item.textBlock!.runs[0]!.style = { fontId: 'bold', fontSize: 20, weight: 700 };
+      return item;
+    });
+    const result = detectParagraph(page([chars[3]!, chars[1]!, chars[0]!, chars[2]!]), '1')!;
+    expect(result.text).toBe('段落识别');
+    expect(result.runs.some(run => run.text === '落' && run.style.weight === 700)).toBe(true);
+    expect(result.objects).toEqual(chars);
   });
   it('stops at table separators and does not exceed following content', () => {
     const a = text('a', 30, 40, 0), b = text('b', 30, 68, 1);

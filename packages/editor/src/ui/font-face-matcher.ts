@@ -256,7 +256,8 @@ export function resolveFormattingFont(fonts: readonly EditorFont[], criteria: Fo
     return index >= 0 ? index : preferred.length + 1;
   };
   // Do not route Chinese text to a Latin-only alias such as Arimo.
-  const candidates = fonts.filter(font => !cjk || normalizeFamily(font.family) === source || /cjk|wenkai|zhuque|zcool|mashan|longcang|zhimang/i.test(font.family));
+  const latinOnlySource = /^(liberation(sans|serif|mono)|arial|helvetica|timesnewroman|courier(new)?|arimo|cousine|carlito|caladea|calibri|cambria|notosans|notoserif)$/.test(source);
+  const candidates = fonts.filter(font => !cjk || (!latinOnlySource && normalizeFamily(font.family) === source) || /cjk|wenkai|zhuque|zcool|mashan|longcang|zhimang/i.test(font.family));
   const pool = candidates.length ? candidates : [...fonts];
   const matchingStyle = pool.filter(font => getFontItalic(font) === criteria.italic && (getFontWeight(font) >= 600) === (criteria.weight >= 600));
   const choices = matchingStyle.length ? matchingStyle : pool.filter(font => getFontItalic(font) === criteria.italic);

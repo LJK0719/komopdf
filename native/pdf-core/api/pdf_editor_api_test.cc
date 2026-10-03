@@ -134,6 +134,11 @@ std::vector<std::string> TextBlockIds(std::string_view page) {
   return ids;
 }
 
+std::vector<std::string> TextBlockIds(const char* page) {
+  Require(page != nullptr, "describe text block IDs");
+  return TextBlockIds(std::string_view(page));
+}
+
 std::string JsonStringAfter(std::string_view json,
                             std::string_view marker,
                             size_t offset = 0) {
@@ -174,6 +179,53 @@ std::vector<uint8_t> RenderPixels(uint32_t document,
           "render edited page");
   return std::vector<uint8_t>(pde_binary_data(),
                               pde_binary_data() + pde_binary_size());
+}
+
+void TestDeletePreservesFontIdentity() {
+  for (const bool direct : {false, true}) {
+    const std::string first = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+    const std::string second = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        "/Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [65 /B 66 /A] >> >>";
+    const std::string fonts = direct ? "/A " + first + " /B " + second : "/A 6 0 R /B 7 0 R";
+    const std::string content = "0 0 0 rg 10 10 20 20 re f\n"
+        "BT /A 24 Tf 20 160 Td (ABBA) Tj ET\n"
+        "BT /B 24 Tf 20 110 Td (ABBA) Tj ET\n";
+    const std::string pdf = Pdf({
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 200] /Resources 5 0 R /Contents 4 0 R >>",
+        Stream(content), "<< /Font << " + fonts + " >> >>", first, second,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 200] /Resources 5 0 R /Contents 4 0 R >>"});
+    const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+        static_cast<uint32_t>(pdf.size()), "font-identity", "font-identity-source", nullptr);
+    Require(doc != 0, "open same-name font identity fixture");
+    const auto before = RenderPixels(doc, 0, 240, 200);
+    const auto other = RenderPixels(doc, 1, 240, 200);
+    const std::string original_text = RequireResult(pde_extract_page(doc, 0), "original text mappings");
+    const auto description = RequireResult(pde_describe_page(doc, 0), "font identity page");
+    const auto page_id = PageIdFromDescription(description);
+    const auto object_id = FirstObjectId(description);
+    const char* ids[] = {object_id.c_str()};
+    PdeEditCommand command{};
+    command.type = 5; command.page_id = page_id.c_str(); command.ids = ids; command.id_count = 1;
+    Require(pde_apply_commands(doc, 0, "delete-path", &command, 1) != nullptr, "delete path beside same-name fonts");
+    const auto after = RenderPixels(doc, 0, 240, 200);
+    Require(std::equal(before.begin(), before.begin() + 240 * 150 * 4, after.begin()),
+        "deleting a path must preserve every surviving font's pixels");
+    Require(before != after, "the deleted path disappears");
+    Require(RenderPixels(doc, 1, 240, 200) == other, "shared resources do not change another page");
+    Require(RequireResult(pde_extract_page(doc, 0), "edited text mappings") == original_text,
+        "deleting a path preserves text extraction");
+    Require(pde_save_memory(doc) != nullptr, "save font identity fixture");
+    const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+    const auto reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+        "reopened-fonts", "reopened-source", nullptr);
+    Require(reopened != 0 && RenderPixels(reopened, 0, 240, 200) == after &&
+        RenderPixels(reopened, 1, 240, 200) == other, "font identities survive saving and reopening");
+    Require(pde_undo(doc) != nullptr && RenderPixels(doc, 0, 240, 200) == before, "undo restores original fonts");
+    Require(pde_redo(doc) != nullptr && RenderPixels(doc, 0, 240, 200) == after, "redo preserves original fonts");
+    pde_close(reopened); pde_close(doc);
+  }
 }
 
 void TestNativeLongPath() {
@@ -1706,6 +1758,9 @@ void TestTextTransactions() {
   Require(page_pointer != nullptr, "describe editable page");
   const std::vector<std::string> ids = TextBlockIds(page_pointer);
   Require(ids.size() == 2, "two editable text blocks");
+  Require(std::string(page_pointer).find("\"characters\":[{\"range\":[0,1]") != std::string::npos &&
+          std::string(page_pointer).find("\"range\":[5,6]") != std::string::npos,
+          "text geometry includes the final character in logical UTF-16 coordinates");
 
   PdeTextEdit failed_edits[] = {
       {0, ids[0].c_str(), 0, 5, "CHANGED", nullptr},
@@ -2966,6 +3021,194 @@ void TestTrackingAndParagraphFormatting(const std::string& font_id) {
   pde_close(reopened); pde_close(doc);
 }
 
+void TestParagraphFlow(const std::string& font_id) {
+  const std::string source = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 160] /Resources << >> /Contents 4 0 R >>",
+      Stream("0.2 0.6 0.3 rg 10 60 170 20 re f")});
+  const auto doc = pde_open_memory(reinterpret_cast<const uint8_t*>(source.data()), source.size(), "flow-test", "flow-source", nullptr);
+  Require(doc != 0, "open paragraph flow source");
+  const std::string page = PageIdFromDescription(pde_describe_page(doc, 0));
+  std::string text;
+  for (int i = 0; i < 20; ++i) text += "Alpha beta gamma delta. ";
+  const auto before = RenderPixels(doc, 0, 200, 160);
+  PdeEditCommand insert{};
+  insert.type = 3; insert.page_id = page.c_str(); insert.target_id = "flow-root";
+  insert.text_utf8 = text.c_str(); insert.font_id = font_id.c_str();
+  insert.flags = 3 | 16 | 1024 | 4096;
+  insert.values[0] = 10; insert.values[1] = 10; insert.values[2] = 170;
+  insert.values[3] = 24; insert.values[4] = 12; insert.values[9] = 1.2; insert.values[10] = 12;
+  Require(pde_apply_commands(doc, 0, "flow-insert", &insert, 1) != nullptr, "long paragraph automatically continues at the same font size");
+  auto check = [&](uint32_t handle, const std::string& expected, bool multiple) {
+    Require(pde_save_memory(handle) != nullptr, "save flow snapshot");
+    const std::vector<uint8_t> bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+    FPDF_DOCUMENT saved = FPDF_LoadMemDocument64(bytes.data(), bytes.size(), nullptr);
+    Require(saved != nullptr && (multiple ? FPDF_GetPageCount(saved) > 1 : FPDF_GetPageCount(saved) == 1), "flow page count");
+    std::string joined;
+    uint32_t flow_dictionary = 0;
+    for (int p = 0; p < FPDF_GetPageCount(saved); ++p) {
+      FPDF_PAGE loaded = FPDF_LoadPage(saved, p);
+      for (int i = 0; i < FPDFPage_CountObjects(loaded); ++i) {
+        auto* object = CPDFPageObjectFromFPDFPageObject(FPDFPage_GetObject(loaded, i));
+        if (!object->AsForm()) continue;
+        auto info = object->AsForm()->form()->GetDict()->GetDictFor("KomoParagraph");
+        if (!info) continue;
+        const auto part = info->GetUnicodeTextFor("Text").ToUTF8(); joined.append(part.c_str(), part.GetLength());
+        Require(std::abs(info->GetFloatFor("FontSize") - 12) < 0.01, "flow preserves font size");
+        const auto flow = info->GetDictFor("Flow");
+        Require(flow && flow->GetObjNum(), "flow metadata is a shared PDF dictionary");
+        if (!flow_dictionary) flow_dictionary = flow->GetObjNum();
+        Require(flow_dictionary == flow->GetObjNum(), "all fragments reference the same logical paragraph");
+      }
+      FPDF_ClosePage(loaded);
+    }
+    FPDF_CloseDocument(saved);
+    Require(joined == expected, "flow preserves every character without duplication");
+    return bytes;
+  };
+  const auto snapshot = check(doc, text, true);
+  Require(PixelAt(before, 200, 15, 90) == PixelAt(RenderPixels(doc, 0, 200, 160), 200, 15, 90), "flow does not cover the downstream illustration");
+  Require(pde_undo(doc) != nullptr && RenderPixels(doc, 0, 200, 160) == before, "one undo restores original objects and pages");
+  Require(pde_redo(doc) != nullptr, "redo whole paragraph flow");
+  check(doc, text, true);
+  pde_close(doc);
+  const auto reopened = pde_open_memory(snapshot.data(), snapshot.size(), "flow-reopen", "flow-saved", nullptr);
+  const auto ids = TextBlockIds(pde_describe_page(reopened, 0));
+  PdeTextEdit replace{0, ids.front().c_str(), 0, static_cast<uint32_t>(text.size()), "Short paragraph.", nullptr};
+  Require(pde_apply_text(reopened, 0, "flow-shorten", &replace, 1) != nullptr, "edit a saved logical paragraph and remove unused continuation pages");
+  check(reopened, "Short paragraph.", false);
+  Require(pde_undo(reopened) != nullptr, "undo flow shortening"); check(reopened, text, true);
+  replace.replacement_utf8 = "";
+  Require(pde_apply_text(reopened, 2, "flow-clear", &replace, 1) != nullptr, "clear the whole logical paragraph");
+  check(reopened, "", false);
+  Require(pde_undo(reopened) != nullptr, "undo clearing all linked fragments"); check(reopened, text, true);
+  pde_close(reopened);
+  const auto edge = pde_open_memory(reinterpret_cast<const uint8_t*>(source.data()), source.size(), "flow-edge", "edge-source", nullptr);
+  const std::string edge_page = PageIdFromDescription(pde_describe_page(edge, 0));
+  insert.page_id = edge_page.c_str(); insert.target_id = "flow-edge-root";
+  insert.text_utf8 = "Edge"; insert.values[1] = 150; insert.values[3] = 5;
+  Require(pde_apply_commands(edge, 0, "edge-insert", &insert, 1) != nullptr, "a first line without space on the source page moves to a new page");
+  check(edge, "Edge", true); pde_close(edge);
+}
+
+void TestParagraphFlowBoundaries(const std::string& font_id) {
+  const std::string source = Pdf({"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 160] /Resources << >> /Contents 4 0 R >>", Stream("")});
+  const auto doc = pde_open_memory(reinterpret_cast<const uint8_t*>(source.data()), source.size(), "flow-boundaries", "flow-boundary-source", nullptr);
+  const std::string first_page = PageIdFromDescription(pde_describe_page(doc, 0));
+  std::string text;
+  for (int i = 0; i < 24; ++i) text += "Alpha beta gamma delta. ";
+  text += "\nTAIL_ONLY_31415";
+  PdeEditCommand insert{};
+  insert.type = 3; insert.page_id = first_page.c_str(); insert.target_id = "boundary-root";
+  insert.font_id = font_id.c_str(); insert.text_utf8 = text.c_str(); insert.flags = 3 | 16 | 1024;
+  insert.values[0] = 10; insert.values[1] = 10; insert.values[2] = 170; insert.values[3] = 24;
+  insert.values[4] = 12; insert.values[9] = 1.2;
+  Require(pde_apply_commands(doc, 0, "create-boundary-flow", &insert, 1) != nullptr, "create boundary flow");
+  Require(pde_save_memory(doc) != nullptr, "save boundary flow");
+  const std::vector<uint8_t> complete_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  FPDF_DOCUMENT external = FPDF_LoadMemDocument64(complete_bytes.data(), complete_bytes.size(), nullptr);
+  const int count = FPDF_GetPageCount(external); FPDF_CloseDocument(external);
+  Require(count > 2, "boundary flow has multiple continuations");
+  std::vector<std::string> pages;
+  for (int p = 0; p < count; ++p) pages.push_back(PageIdFromDescription(pde_describe_page(doc, p)));
+  const auto root_block = TextBlockIds(pde_describe_page(doc, 0)).front();
+  const char* selected[] = {pages.front().c_str()};
+  Require(pde_extract_pages_memory(doc, selected, 1) != nullptr, "extract only the root fragment page");
+  const std::vector<uint8_t> partial(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const auto extracted = pde_open_memory(partial.data(), partial.size(), "partial-flow", "partial-source", nullptr);
+  const auto partial_description = RequireResult(pde_describe_page(extracted, 0), "partial description");
+  Require(partial_description.find("\"flow\"") == std::string::npos && partial_description.find("TAIL_ONLY") == std::string::npos,
+          "partial extraction does not expose or restore unselected text");
+  external = FPDF_LoadMemDocument64(partial.data(), partial.size(), nullptr);
+  auto* native = CPDFDocumentFromFPDFDocument(external);
+  for (uint32_t n = 1; n <= native->GetLastObjNum(); ++n) {
+    const auto object = native->GetOrParseIndirectObject(n);
+    const auto dictionary = object ? object->GetDict() : nullptr;
+    if (!dictionary) continue;
+    const auto stored = dictionary->GetUnicodeTextFor("Text").ToUTF8();
+    Require(std::string_view(stored.c_str(), stored.GetLength()).find("TAIL_ONLY") == std::string_view::npos,
+            "partial extraction has no orphan full-text dictionary payload");
+    if (const auto paragraph = dictionary->GetDictFor("KomoParagraph")) {
+      const auto content = paragraph->GetUnicodeTextFor("Text").ToUTF8();
+      Require(std::string_view(content.c_str(), content.GetLength()).find("TAIL_ONLY") == std::string_view::npos,
+              "partial extraction has no hidden full paragraph in a Form resource");
+    }
+  }
+  FPDF_CloseDocument(external); pde_close(extracted);
+  Require(std::string(pde_describe_page(doc, 0)).find("TAIL_ONLY") != std::string::npos, "extraction does not alter the active source flow");
+  std::vector<const char*> all;
+  for (const auto& id : pages) all.push_back(id.c_str());
+  Require(pde_extract_pages_memory(doc, all.data(), all.size()) != nullptr, "extract the complete flow");
+  const std::vector<uint8_t> full(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const auto full_doc = pde_open_memory(full.data(), full.size(), "complete-flow", "complete-source", nullptr);
+  Require(std::string(pde_describe_page(full_doc, 0)).find("TAIL_ONLY") != std::string::npos, "complete extraction retains logical flow");
+  pde_close(full_doc);
+  const auto copied_doc = pde_open_memory(complete_bytes.data(), complete_bytes.size(), "copy-flow", "copy-flow-source", nullptr);
+  const auto copied_first = PageIdFromDescription(pde_describe_page(copied_doc, 0));
+  const auto copied_last = PageIdFromDescription(pde_describe_page(copied_doc, count - 1));
+  const char* duplicate_ids[] = {copied_first.c_str(), "partial-copy-page"};
+  PdeEditCommand duplicate{}; duplicate.type = 12; duplicate.target_id = copied_last.c_str();
+  duplicate.ids = duplicate_ids; duplicate.id_count = 2;
+  Require(pde_apply_commands(copied_doc, 0, "copy-one-flow-page", &duplicate, 1) != nullptr, "copy only one flow page");
+  Require(std::string(pde_describe_page(copied_doc, count)).find("\"flow\"") == std::string::npos, "partial page copies are independent fragments");
+  Require(std::string(pde_describe_page(copied_doc, 0)).find("TAIL_ONLY") != std::string::npos, "partial copying preserves the original flow");
+  Require(pde_register_pdf_resource(copied_doc, "flow-import", complete_bytes.data(), complete_bytes.size()) != nullptr, "register full flow for partial import");
+  const char* import_ids[] = {"0", "partial-import-page"};
+  PdeEditCommand page_import{}; page_import.type = 13; page_import.resource_id = "flow-import"; page_import.target_id = "partial-copy-page";
+  page_import.ids = import_ids; page_import.id_count = 2;
+  Require(pde_apply_commands(copied_doc, 1, "import-one-flow-page", &page_import, 1) != nullptr, "import only one flow page");
+  Require(std::string(pde_describe_page(copied_doc, count + 1)).find("\"flow\"") == std::string::npos, "partial page imports do not retain unselected text");
+  pde_close(copied_doc);
+  const auto without_root = pde_open_memory(complete_bytes.data(), complete_bytes.size(), "deleted-root-page", "deleted-root-source", nullptr);
+  const auto old_root_page = PageIdFromDescription(pde_describe_page(without_root, 0));
+  const char* removed_root[] = {old_root_page.c_str()};
+  PdeEditCommand delete_root{}; delete_root.type = 7; delete_root.ids = removed_root; delete_root.id_count = 1;
+  Require(pde_apply_commands(without_root, 0, "delete-first-flow-page", &delete_root, 1) != nullptr, "delete the first flow page");
+  const auto surviving = RequireResult(pde_describe_page(without_root, 0), "former continuation becomes first page");
+  Require(surviving.find("\"flow\"") == std::string::npos, "page deletion leaves no missing-root association");
+  const auto surviving_block = TextBlockIds(surviving).front();
+  PdeTextEdit surviving_edit{0, surviving_block.c_str(), 0, 1, "Q", font_id.c_str()};
+  Require(pde_apply_text(without_root, 1, "edit-after-root-page-delete", &surviving_edit, 1) != nullptr, "edit a continuation after deleting its root page");
+  pde_close(without_root);
+
+  const char* tail[] = {pages.back().c_str()};
+  PdeEditCommand remove{}; remove.type = 7; remove.ids = tail; remove.id_count = 1;
+  Require(pde_apply_commands(doc, 1, "delete-tail-page", &remove, 1) != nullptr, "delete a flow continuation page");
+  Require(std::string(pde_describe_page(doc, 0)).find("\"flow\"") == std::string::npos, "partial page deletion detaches the incomplete logical flow");
+  PdeTextEdit edit{0, root_block.c_str(), 0, 1, "Z", nullptr};
+  Require(pde_apply_text(doc, 2, "edit-after-page-delete", &edit, 1) != nullptr, "edit after deleting a continuation");
+  Require(std::string(pde_describe_page(doc, 0)).find("TAIL_ONLY") == std::string::npos, "editing does not resurrect deleted continuation text");
+  Require(pde_undo(doc) != nullptr && pde_undo(doc) != nullptr, "undo edit and page deletion");
+  const auto root_object = FirstObjectId(pde_describe_page(doc, 0));
+  const char* root_ids[] = {root_object.c_str()};
+  remove = {}; remove.type = 5; remove.page_id = pages.front().c_str(); remove.ids = root_ids; remove.id_count = 1;
+  Require(pde_apply_commands(doc, 5, "delete-root-object", &remove, 1) != nullptr, "delete only the root flow object");
+  const auto tail_description = RequireResult(pde_describe_page(doc, 1), "surviving continuation");
+  Require(tail_description.find("\"flow\"") == std::string::npos, "surviving fragments no longer require the deleted root");
+  const auto tail_block = TextBlockIds(tail_description).front();
+  PdeTextEdit tail_edit{1, tail_block.c_str(), 0, 1, "Q", nullptr};
+  Require(pde_apply_text(doc, 6, "edit-orphan-fragment", &tail_edit, 1) != nullptr, "surviving continuation remains independently editable");
+  pde_close(doc);
+
+  const auto moving = pde_open_memory(reinterpret_cast<const uint8_t*>(source.data()), source.size(), "moving-flow", "moving-source", nullptr);
+  const auto moving_page = PageIdFromDescription(pde_describe_page(moving, 0));
+  insert.page_id = moving_page.c_str(); insert.target_id = "moving-root"; insert.text_utf8 = "AB CD";
+  insert.values[1] = 140; insert.values[3] = 15; insert.values[4] = 10;
+  Require(pde_apply_commands(moving, 0, "insert-moving-paragraph", &insert, 1) != nullptr, "insert bottom paragraph");
+  const auto moving_block = TextBlockIds(pde_describe_page(moving, 0)).front();
+  const char* moving_ids[] = {moving_block.c_str()};
+  PdeEditCommand styles[2]{};
+  for (auto& style : styles) { style.type = 2; style.page_id = moving_page.c_str(); style.ids = moving_ids; style.id_count = 1; }
+  styles[0].flags = 2 | 16; styles[0].start_utf16 = 0; styles[0].end_utf16 = 2; styles[0].values[0] = 30;
+  styles[1].flags = 4 | 16; styles[1].start_utf16 = 3; styles[1].end_utf16 = 5; styles[1].values[1] = 1;
+  Require(pde_apply_commands(moving, 1, "style-and-relocate", styles, 2) != nullptr, "later style runs follow the root to its new page atomically");
+  const auto moved = RequireResult(pde_describe_page(moving, 1), "styled moved root");
+  Require(moved.find("\"color\":[1,0,0]") != std::string::npos && moved.find("\"fontSize\":30") != std::string::npos, "both run formats survive root relocation");
+  Require(pde_undo(moving) != nullptr && std::string(pde_describe_page(moving, 0)).find("AB CD") != std::string::npos, "one undo restores pre-relocation paragraph");
+  pde_close(moving);
+}
+
 void TestParagraphRangeStyles(const std::string& base_font,
                               const std::string& latin_font,
                               const std::vector<uint8_t>& latin_bytes) {
@@ -3831,6 +4074,8 @@ void TestFontRuntime(const FontTestOptions& options) {
               otf_info.find("\"editableEmbedding\":true") != std::string::npos,
           "register OpenType CFF face info");
   TestTrackingAndParagraphFormatting("runtime-ttf");
+  TestParagraphFlow("runtime-ttf");
+  TestParagraphFlowBoundaries("runtime-ttf");
   TestParagraphRangeStyles("runtime-otf", "runtime-ttf", ttf);
   TestParagraphJustify("runtime-ttf", "runtime-otf");
   TestParagraphEditing("runtime-otf");
@@ -3900,7 +4145,7 @@ int main(int argc, char** argv) {
       "<< /FT /Sig /T (Unsigned field) >>",
   });
 
-  Require(pde_abi_version() == 3, "ABI version");
+  Require(pde_abi_version() == 4, "ABI version");
   Require(pde_initialize() == 1, "initialize");
   Require(pde_initialize() == 1, "idempotent initialize");
 
@@ -4062,6 +4307,7 @@ int main(int argc, char** argv) {
 
   RemoveUnicodeFixture();
   TestTextTransactions();
+  TestDeletePreservesFontIdentity();
   TestNativeLongPath();
   TestRangeFormatting();
   TestRecoveryHistory();
@@ -4098,7 +4344,7 @@ int main(int argc, char** argv) {
   pde_shutdown();
   Require(pde_binary_size() == 0, "shutdown releases result buffers");
   std::puts(
-      "PASS pdf_editor_api ABI3: metadata, render, exact export, generic mixed "
+      "PASS pdf_editor_api ABI4: metadata, render, exact export, generic mixed "
       "transactions, immutable resources, stable IDs, page duplicate/import, "
       "image replace/crop, object copy, save confirmation, preview, undo, "
       "redo, range formatting, complete recovery history and failed-batch atomicity");

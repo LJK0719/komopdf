@@ -29,10 +29,14 @@ export type PdfAnnotationInfo = {
 };
 export type SourceObjectLocator = { pageId: string; containerPath: number[]; objectIndex: number };
 export type StyledTextRun = { text: string; style: TextStyle; sourceObjectIds: string[] };
+// Logical UTF-16 ranges with actual page-space geometry, not browser font metrics.
+export type TextCharacter = { range: TextRange; bounds: Rect; angle: number; rtl: boolean };
 export type TextBlock = {
   id: string; pageId: string; sourceId?: string; sourceObjectIds: string[]; runs: StyledTextRun[];
   bounds: Rect; transform: Matrix; editability: 'direct' | 'font-replacement' | 'geometry-only'; isOcr?: boolean;
   isParagraph?: boolean;
+  characters?: TextCharacter[];
+  flow?: { id: string; start: number; end: number; runs?: StyledTextRun[] };
 };
 export type EditableObject = {
   id: string; pageId: string; type: 'text' | 'image' | 'path' | 'form' | 'group' | 'shading';
@@ -70,7 +74,7 @@ export type RegisterResourceRequest = { docId: string; resourceId: string; sourc
 export type ResourceInfo = { id: string; kind: 'image' | 'pdf'; width?: number; height?: number; pageCount?: number };
 export type TransactionPreviewResult = { docId: string; baseRevision: number; pageOrder: string[]; changedPageIds: string[] };
 export type SaveConfirmation = { docId: string; savedRevision: number };
-export type SaveOutcome = { status: 'written' | 'download-started' };
+export type SaveOutcome = { status: 'written' | 'download-started' | 'cancelled'; name?: string };
 export type FontSource = { kind: 'bytes'; bytes: ArrayBuffer } | { kind: 'native-file'; handle: string };
 export type FontFaceInfo = { index: number; family: string; style: string; format: 'ttf' | 'otf';
   weight: number; italic: boolean; fsType: number; editableEmbedding: boolean };
@@ -120,12 +124,22 @@ export interface EngineAdapter {
 export const WEB_LIMITS = Object.freeze({ inputBytes: 50 * 1024 * 1024, pagesPerDocument: 200,
   openDocuments: 2, retainedSourceBytes: 100 * 1024 * 1024, totalPages: 400,
   bitmapCacheBytes: 96 * 1024 * 1024, renderPixels: 8_000_000 });
+export type ConversionFormat = 'docx' | 'png' | 'jpeg' | 'txt' | 'html';
+export type ConversionRequest = { jobId: string; format: ConversionFormat; pageIndices: number[]; dpi: number; quality: number };
+export type ConversionWarning = { code: string; message: string; pageIndices: number[] };
+export type ConversionProgress = { jobId: string; progress: number; stage: string; completed: number; total: number };
+export type ConvertedDocument = { jobId: string; extension: string; mimeType: string; warnings: ConversionWarning[]; pageIndices: number[] } & (
+  | { kind: 'bytes'; bytes: ArrayBuffer } | { kind: 'native-file'; handle: string }
+);
 export type HostCapabilities = { platform: 'web' | 'windows' | 'macos'; nativeFiles: boolean; ocr: boolean; systemFonts: boolean };
 export interface HostAdapter {
   readonly capabilities: HostCapabilities;
   pickDocument(): Promise<DocumentSource | null>;
-  saveDocument(result: SaveResult, suggestedName: string): Promise<SaveOutcome | void>;
-  printDocument?(result: SaveResult, pageIds: string[]): Promise<void>;
+  saveDocument(result: SaveResult, suggestedName: string, options?: { mode: 'save' | 'save-as' }): Promise<SaveOutcome | void>;
+  saveExport?(result: ConvertedDocument, suggestedName: string): Promise<SaveOutcome | void>;
+  convertDocument?(snapshot: SaveResult, request: ConversionRequest, onProgress: (progress: ConversionProgress) => void, signal: AbortSignal): Promise<ConvertedDocument>;
+  releaseExport?(result: ConvertedDocument): Promise<void>;
+  printDocument?(result: SaveResult, pageIds: string[], options?: { copies: number }): Promise<void>;
   pickResource?(kind: 'image' | 'pdf'): Promise<ResourceSource | null>;
   pickFont?(): Promise<FontSelection | null>;
   listSystemFonts?(): Promise<SystemFontEntry[]>;

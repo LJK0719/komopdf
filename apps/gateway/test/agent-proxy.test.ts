@@ -75,7 +75,7 @@ describe('restricted Anthropic agent proxy', () => {
   it('forwards SDK messages, tool results, SSE events, and count_tokens while fixing model and auth', async () => {
     const received: Array<{ path: string; headers: IncomingMessage['headers']; body: Record<string, unknown> }> = [];
     const stream = [
-      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":7}}}\n\n',
+      'event: message_start\ndata: {"type":"message_start","message":{"model":"gemini-3.8-flash-high","usage":{"input_tokens":7}}}\n\n',
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"inspect_page","input":{}}}\n\n',
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
@@ -115,7 +115,8 @@ describe('restricted Anthropic agent proxy', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/event-stream');
-    expect(response.body).toBe(stream);
+    expect(response.body).toBe(stream.replace('gemini-3.8-flash-high', 'komo'));
+    expect(response.body).not.toContain('gemini-3.8-flash-high');
     expect(received[0]?.path).toBe('/v1/messages');
     expect(received[0]?.body).toMatchObject({
       model: 'gemini-3.8-flash-high', max_tokens: 4096, stream: true, system: 'system', tools: [tool], messages,

@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AI_LIMITS, AI_MODEL } from '@pdf-editor/contracts';
+import { AI_LIMITS } from '@pdf-editor/contracts';
+
+// Deployment-only model identity; never export it through the browser contracts.
+const AI_MODEL = 'gemini-3.8-flash-high';
 
 export type GatewayLimits = {
   inFlight: number;

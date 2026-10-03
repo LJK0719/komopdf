@@ -45,7 +45,7 @@ void WriteRecoveryTransactions(pdf_editor::RecoveryWriter& out,
   }
 }
 
-std::vector<EditTransaction> ReadRecoveryTransactions(pdf_editor::RecoveryReader& in) {
+std::vector<EditTransaction> ReadRecoveryTransactions(pdf_editor::RecoveryReader& in, uint32_t abi) {
   std::vector<EditTransaction> transactions;
   const size_t count = in.Count();
   for (size_t index = 0; index < count; ++index) {
@@ -67,7 +67,7 @@ std::vector<EditTransaction> ReadRecoveryTransactions(pdf_editor::RecoveryReader
       for (size_t id = 0; id < ids; ++id) stored.ids.push_back(in.String());
       raw.start_utf16 = in.Uint32(); raw.end_utf16 = in.Uint32();
       raw.flags = in.Uint32(); raw.resource_page_index = in.Uint32();
-      for (double& value : raw.values) value = in.Number();
+      for (size_t i = 0; i < (abi >= 4 ? 14U : 10U); ++i) raw.values[i] = in.Number();
       raw.page_id = stored.page_id.c_str(); raw.target_id = stored.target_id.c_str();
       raw.resource_id = stored.resource_id.c_str(); raw.text_utf8 = stored.text.c_str();
       raw.font_id = stored.font_id.c_str();
@@ -151,8 +151,9 @@ std::string RecoverySnapshotInfo(const Document& document, const char* kind) {
 uint32_t RestoreRecoverySnapshot(std::span<const uint8_t> bytes, const char* password) {
   try {
     pdf_editor::RecoveryReader in(bytes);
-    if (in.String() != "KOMOPDF-RECOVERY" || in.Integer() != 1 ||
-        in.Integer() != kAbiVersion) pdf_editor::RecoveryReader::Invalid();
+    if (in.String() != "KOMOPDF-RECOVERY" || in.Integer() != 1) pdf_editor::RecoveryReader::Invalid();
+    const uint32_t abi = in.Uint32();
+    if (abi != 3 && abi != kAbiVersion) pdf_editor::RecoveryReader::Invalid();
     auto document = std::make_unique<Document>();
     document->document_id = in.String(); document->source_id = in.String();
     if (!ValidateId(document->document_id.c_str(), "Recovered document ID") ||
@@ -195,8 +196,8 @@ uint32_t RestoreRecoverySnapshot(std::span<const uint8_t> bytes, const char* pas
         page.objects.push_back(ReadRecoveryIdentity(in, 0));
       document->source_metadata.pages.push_back(std::move(page));
     }
-    document->transactions = ReadRecoveryTransactions(in);
-    document->redo_transactions = ReadRecoveryTransactions(in);
+    document->transactions = ReadRecoveryTransactions(in, abi);
+    document->redo_transactions = ReadRecoveryTransactions(in, abi);
     if (document->undoable_count > document->transactions.size())
       pdf_editor::RecoveryReader::Invalid();
     for (const auto* transactions : {&document->transactions, &document->redo_transactions}) {

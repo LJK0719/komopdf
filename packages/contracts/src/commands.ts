@@ -14,6 +14,10 @@ export const textStyleSchema = z.object({
   italic: z.boolean().optional(), underline: z.boolean().optional(),
   characterSpacing: z.number().optional(), lineHeight: z.number().positive().optional(),
   alignment: z.enum(['left', 'center', 'right', 'justify']).optional(),
+  firstLineIndent: z.number().min(-1000).max(1000).optional(),
+  lineSpacing: z.number().nonnegative().max(2000).optional(),
+  spaceBefore: z.number().nonnegative().max(2000).optional(),
+  spaceAfter: z.number().nonnegative().max(2000).optional(),
 }).strict();
 
 export const reflowTextStyleSchema = z.object({
@@ -24,6 +28,10 @@ export const reflowTextStyleSchema = z.object({
   lineHeight: z.number().positive().optional(),
   underline: z.boolean().optional(),
   alignment: z.enum(['left', 'center', 'right', 'justify']).optional(),
+  firstLineIndent: z.number().min(-1000).max(1000).optional(),
+  lineSpacing: z.number().nonnegative().max(2000).optional(),
+  spaceBefore: z.number().nonnegative().max(2000).optional(),
+  spaceAfter: z.number().nonnegative().max(2000).optional(),
 }).strict();
 export type ReflowTextStyle = z.infer<typeof reflowTextStyleSchema>;
 

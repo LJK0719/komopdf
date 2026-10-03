@@ -4,7 +4,7 @@ import {
   type DocumentSource,
   type HostAdapter,
   type HostCapabilities,
-  type SaveResult, type SaveOutcome, type ResourceSource, type FontSelection, type SystemFontEntry,
+  type SaveResult, type SaveOutcome, type ResourceSource, type FontSelection, type SystemFontEntry, type ConvertedDocument,
   type RecoverySource,
 } from '@pdf-editor/contracts';
 
@@ -45,11 +45,19 @@ export class WebHostAdapter implements HostAdapter {
       throw new EngineError('SAVE_FAILED', 'Web version cannot save native file handles');
     }
 
-    const url = URL.createObjectURL(new Blob([result.bytes], { type: 'application/pdf' }));
+    return this.download(result.bytes, 'application/pdf', normalizePdfName(suggestedName));
+  }
+
+  async saveExport(result: ConvertedDocument, suggestedName: string): Promise<SaveOutcome> {
+    if (result.kind !== 'bytes') throw new EngineError('SAVE_FAILED', 'Web export requires bytes');
+    const name = suggestedName.toLowerCase().endsWith(`.${result.extension}`) ? suggestedName : `${suggestedName}.${result.extension}`;
+    return this.download(result.bytes, result.mimeType, name);
+  }
+
+  private download(bytes: ArrayBuffer, mimeType: string, name: string): SaveOutcome {
+    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
     const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = normalizePdfName(suggestedName);
-    anchor.click();
+    anchor.href = url; anchor.download = name; anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     return { status: 'download-started' };
   }

@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { idSchema, proposedCommandSchema, rangeSchema, revisionSchema, textStyleSchema } from './commands.js';
 
 export const PROTOCOL_VERSION = 1 as const;
-export const AI_MODEL = 'gemini-3.8-flash-high';
+// Public service identity; the gateway owns the actual provider/model choice.
+export const AI_MODEL = 'komo';
 export const AI_TEMPLATE_VERSION = '1';
 export const featureSchema = z.enum([
   'text.translate', 'text.proofread', 'text.rewrite', 'text.fit', 'commands.plan',
