@@ -4,19 +4,39 @@ import type { Rect, TextRange } from '@pdf-editor/contracts';
 import type { LoadedDocument } from './EditorShell.js';
 import { useI18n } from './i18n.js';
 import { caretAt, domTextPoint, hitText, mergeTextRects, selectionRects, textClusters } from './text-geometry.js';
-import { readingRegions } from './reading-order.js';
+import { readingRegions, type ReadingRegion } from './reading-order.js';
+import { logicalTextBlock, logicalTextRange, sourceTextOffset } from './source-text.js';
 
-export type TextSelectionTarget = { objectId: string; blockId: string; range: TextRange; text: string; rects: Rect[] };
+export type TextSelectionTarget = { objectId: string; blockId: string; range: TextRange; logicalRange?: TextRange; text: string; rects: Rect[] };
 export type ReadingAction = 'highlight' | 'underline';
 type Props = {
   document: LoadedDocument; zoom: number; disabled: boolean;
-  onEdit(document: LoadedDocument, objectId: string, range: TextRange): void;
+  onEdit(document: LoadedDocument, objectId: string, range: TextRange, rangeIsLogical?: boolean): void;
   onInsert(document: LoadedDocument, point: { x: number; y: number }): void;
   onAnnotate(document: LoadedDocument, targets: TextSelectionTarget[], action: ReadingAction): Promise<void>;
   onError(message: string): void;
 };
 type DomPoint = { node: Node; offset: number };
 const pageHitTests = new WeakMap<Element, (x: number, y: number) => DomPoint | null>();
+
+// Editor ranges are logical offsets relative to the seed's paragraph position.
+// Native annotation/style targets keep their separate per-object source ranges.
+export function paragraphEditRange(region: ReadingRegion, targets: readonly TextSelectionTarget[]): TextRange | null {
+  const first = targets[0];
+  const seed = first && region.objects.find(object => object.id === first.objectId)?.textBlock;
+  const origin = first && region.sourceRanges[first.objectId]?.[0];
+  if (!seed || origin === undefined) return null;
+  let start = Infinity, end = -Infinity;
+  for (const target of targets) {
+    const block = region.objects.find(object => object.id === target.objectId)?.textBlock;
+    const range = region.sourceRanges[target.objectId];
+    if (!range || !block || block.editability === 'geometry-only') return null;
+    const logical = target.logicalRange ?? logicalTextRange(block, target.range);
+    start = Math.min(start, range[0] + logical[0]);
+    end = Math.max(end, range[0] + logical[1]);
+  }
+  return [start - origin, end - origin];
+}
 
 export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert, onAnnotate, onError }: Props) {
   const { t } = useI18n();
@@ -31,7 +51,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
   const contextTargets = useRef<TextSelectionTarget[]>([]);
   const menuOpen = useRef(false);
   const canEdit = shown.info.permissions.modify && shown.info.capabilities.includes('text.replace');
-  const { objects, prefixes, byId } = useMemo(() => {
+  const { objects, prefixes, byId, sourceById } = useMemo(() => {
     const regions = readingRegions(shown.page), prefixes = new Map<string, string>();
     regions.forEach((region, index) => {
       let end = 0;
@@ -41,8 +61,10 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         end = range[1];
       });
     });
-    const objects = regions.flatMap(region => region.objects);
-    return { objects, prefixes, byId: new Map(objects.map(object => [object.id, object])) };
+    const sources = regions.flatMap(region => region.objects);
+    const objects = sources.map(object => ({ ...object, textBlock: logicalTextBlock(object.textBlock!) }));
+    return { objects, prefixes, byId: new Map(objects.map(object => [object.id, object])),
+      sourceById: new Map(sources.map(object => [object.id, object.textBlock!])) };
   }, [shown.page]);
   const text = targets.map(target => target.text).join('\n');
   const editTarget = (() => {
@@ -50,14 +72,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     if (!first || !localSelection) return null;
     const region = readingRegions(shown.page).find(region => region.sourceRanges[first.objectId]);
     if (!region) return null;
-    let start = Infinity, end = -Infinity;
-    for (const target of targets) {
-      const range = region.sourceRanges[target.objectId];
-      if (!range || byId.get(target.objectId)?.textBlock?.editability === 'geometry-only') return null;
-      start = Math.min(start, range[0] + target.range[0]); end = Math.max(end, range[0] + target.range[1]);
-    }
-    const origin = region.sourceRanges[first.objectId]![0];
-    return { objectId: first.objectId, range: [start - origin, end - origin] as TextRange };
+    const range = paragraphEditRange(region, targets);
+    return range ? { objectId: first.objectId, range } : null;
   })();
 
   const readSelection = (): TextSelectionTarget[] => {
@@ -86,7 +102,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
           x: (rect.left - root.left) / zoom, y: (rect.top - root.top) / zoom, width: rect.width / zoom, height: rect.height / zoom,
         }));
       }
-      result.push({ objectId: object.id, blockId: block.id, range: [start, end], text: value.slice(start, end), rects });
+      const source = sourceById.get(object.id)!;
+      result.push({ objectId: object.id, blockId: block.id, range: [sourceTextOffset(source, start), sourceTextOffset(source, end)], logicalRange: [start, end], text: value.slice(start, end), rects });
     }
     return result;
   };
@@ -97,8 +114,10 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     setLocalSelection(Boolean(range && layer.current?.contains(range.startContainer) && layer.current.contains(range.endContainer)));
     if (selection?.isCollapsed && next.length && layer.current && layer.current.contains(selection.focusNode)) {
       const target = next[0]!, block = byId.get(target.objectId)?.textBlock;
-      const hit = block && caretAt(textClusters(block), target.range[0]);
-      if (affinity.current?.objectId === target.objectId && affinity.current.offset === target.range[0]) setCaret(affinity.current.bounds);
+      const source = sourceById.get(target.objectId);
+      const offset = target.logicalRange?.[0] ?? (source ? logicalTextRange(source, target.range)[0] : target.range[0]);
+      const hit = block && caretAt(textClusters(block), offset);
+      if (affinity.current?.objectId === target.objectId && affinity.current.offset === offset) setCaret(affinity.current.bounds);
       else if (hit) setCaret(hit.bounds);
       else {
         const rect = selection.getRangeAt(0).getClientRects()[0], root = layer.current.getBoundingClientRect();
@@ -168,8 +187,9 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         const target = readSelection()[0];
         if (!span || !target) return;
         const value = span.textContent ?? '';
+        const offset = target.logicalRange?.[0] ?? logicalTextRange(sourceById.get(target.objectId)!, target.range)[0];
         const segment = [...new Intl.Segmenter(undefined, { granularity: 'word' }).segment(value)]
-          .find(part => part.index <= target.range[0] && part.index + part.segment.length > target.range[0]);
+          .find(part => part.index <= offset && part.index + part.segment.length > offset);
         if (segment) {
           const start = domTextPoint(span, segment.index), end = domTextPoint(span, segment.index + segment.segment.length);
           selection.setBaseAndExtent(start.node, start.offset, end.node, end.offset); showSelection();
@@ -189,7 +209,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
           const object = byId.get(id ?? '');
           if (object?.textBlock) {
             const value = object.textBlock.runs.map(run => run.text).join('');
-            next = [{ objectId: object.id, blockId: object.textBlock.id, range: [0, value.length], text: value, rects: [object.bounds] }];
+            const source = sourceById.get(object.id)!;
+            next = [{ objectId: object.id, blockId: object.textBlock.id, range: [0, sourceTextOffset(source, value.length)], logicalRange: [0, value.length], text: value, rects: [object.bounds] }];
           } else next = [];
           copied = next.map(target => target.text).join('\n'); local = true;
         }
@@ -208,7 +229,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
           event.preventDefault(); window.getSelection()?.selectAllChildren(layer.current); showSelection(); return;
         }
         if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') affinity.current = null;
-        if (event.key === 'Enter' && editTarget && canEdit && !disabled) { event.preventDefault(); onEdit(shown, editTarget.objectId, editTarget.range); }
+        if (event.key === 'Enter' && editTarget && canEdit && !disabled) { event.preventDefault(); onEdit(shown, editTarget.objectId, editTarget.range, true); }
       }}>
       {objects.map((item, objectIndex) => {
         const block = item.textBlock!, clusters = textClusters(block), value = block.runs.map(run => run.text).join('');
@@ -245,7 +266,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu">
       {targets.length > 0 && <>
         <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !shown.info.permissions.copy} onClick={() => void copy()}>{t('Copy text')}<kbd>Ctrl/Cmd C</kbd></ContextMenu.Item>
-        {editTarget && <ContextMenu.Item className="ui-menu-item" disabled={!canEdit || disabled} onClick={() => onEdit(shown, editTarget.objectId, editTarget.range)}>{t(text ? 'Edit selected text' : 'Insert text at cursor')}</ContextMenu.Item>}
+        {editTarget && <ContextMenu.Item className="ui-menu-item" disabled={!canEdit || disabled} onClick={() => onEdit(shown, editTarget.objectId, editTarget.range, true)}>{t(text ? 'Edit selected text' : 'Insert text at cursor')}</ContextMenu.Item>}
         <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !localSelection || !shown.info.permissions.annotate || !shown.info.capabilities.includes('annotation.add')}
           onClick={() => void onAnnotate(shown, contextTargets.current, 'highlight')}>{t('Highlight selection')}</ContextMenu.Item>
         <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !localSelection || !canEdit || !shown.info.capabilities.includes('text.style')}

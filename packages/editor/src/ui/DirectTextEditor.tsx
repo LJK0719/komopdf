@@ -7,7 +7,9 @@ import type { CommitResult, DocumentInfo, EngineAdapter, PageModel, RenderResult
 import { useFontResources, findSelectionFontInfo, loadFontPreview } from './font-resources.js';
 import { resolveSelectionFormatRuns, type SelectionFormatOptions } from './TextEditPanel.js';
 import { useI18n } from './i18n.js';
-import { detectParagraph } from './paragraph-detection.js';
+import { detectParagraph, selectedTextObject } from './paragraph-detection.js';
+import { paragraphInputRange, sourceTextOffset } from './source-text.js';
+import { applyParagraphFormats, canFormatSourceParagraph, paragraphProperties, resolveParagraphRunFont, sourceParagraphLayout, sourceParagraphStyles } from './source-paragraph-edit.js';
 import { changedBlock, textChange } from './text-change.js';
 import type { ParagraphInputHandle } from './ParagraphInput.js';
 const ParagraphInput = lazy(() => import('./ParagraphInput.js').then(module => ({ default: module.ParagraphInput })));
@@ -16,7 +18,7 @@ export type TextEditorHandle = { finish(): Promise<boolean>; cancel(): void };
 type Props = {
   document: DocumentInfo; page: PageModel; selectedIds: string[]; inlineId: string | null;
   host: HTMLElement | null; render: RenderResult; engine: EngineAdapter; disabled: boolean;
-  handle: RefObject<TextEditorHandle | null>; initialRange?: TextRange | null; onClose(): void; onEdit(): void; onManageFonts(): void;
+  handle: RefObject<TextEditorHandle | null>; initialRange?: TextRange | null; initialRangeIsLogical?: boolean; onClose(): void; onEdit(): void; onManageFonts(): void;
   onParagraph(id: string): void;
   copiedFormat: TextStyle | null; onCopyFormat(style: TextStyle): void;
   onDraftChange(dirty: boolean): void; onBusyChange(busy: boolean): void; onCommitted(result: CommitResult): Promise<void>;
@@ -25,17 +27,21 @@ type Props = {
 export function DirectTextEditor(props: Props) {
   const { document, page, engine, selectedIds, inlineId, host, render, handle, onClose, onEdit, onManageFonts, onDraftChange, onBusyChange, onCommitted, disabled } = props;
   const { t } = useI18n();
-  const object = selectedIds.length === 1 ? page.objects.find(item => item.id === selectedIds[0]) : undefined;
+  const selected = selectedTextObject(page, selectedIds);
+  const object = selected && inlineId && selectedIds.includes(inlineId) ? page.objects.find(item => item.id === inlineId) : selected;
   const sourceBlock = object?.textBlock;
-  const editing = Boolean(sourceBlock && object?.id === inlineId);
+  const editing = Boolean(sourceBlock && inlineId && selectedIds.includes(inlineId));
   const paragraph = object ? detectParagraph(page, object.id) ?? detectParagraph(page, object.id, true) : null;
-  const virtual = editing && paragraph && !sourceBlock?.isParagraph ? paragraph : null;
+  const virtual = paragraph && !sourceBlock?.isParagraph ? paragraph : null;
   const block: TextBlock | undefined = virtual && sourceBlock ? { ...sourceBlock, isParagraph: true, bounds: virtual.bounds, runs: virtual.runs }
     : sourceBlock?.flow?.start === 0 && sourceBlock.flow.runs ? { ...sourceBlock, runs: sourceBlock.flow.runs } : sourceBlock;
   const original = block?.runs.map(run => run.text).join('') ?? '';
   const sourceOffset = virtual && object ? virtual.sourceRanges[object.id]?.[0] ?? 0 : 0;
-  const initialRange: TextRange | null = props.initialRange ? [props.initialRange[0] + sourceOffset, props.initialRange[1] + sourceOffset]
-    : original === t('New text') ? [0, original.length] : null;
+  let initialRange: TextRange | null = props.initialRange ?? (original === t('New text') ? [0, original.length] : null);
+  if (initialRange && sourceBlock) {
+    if (virtual) initialRange = paragraphInputRange(sourceBlock, initialRange, sourceOffset, props.initialRangeIsLogical);
+    else if (props.initialRangeIsLogical) initialRange = [sourceTextOffset(sourceBlock, initialRange[0]), sourceTextOffset(sourceBlock, initialRange[1])];
+  }
   const key = `${document.id}:${document.revision}:${block?.id}:${editing}`;
   const [text, setText] = useState(original);
   const [draftRuns, setDraftRuns] = useState<StyledTextRun[] | null>(null);
@@ -57,8 +63,8 @@ export function DirectTextEditor(props: Props) {
   let offset = 0;
   const activeRuns = draftRuns ?? block?.runs;
   const activeRun = activeRuns?.find(run => { offset += run.text.length; return offset > selectionRange[0]; }) ?? activeRuns?.at(-1);
-  const base = { ...activeRun?.style, ...draftStyle };
-  const paragraphStyle: TextStyle = { ...block?.runs[0]?.style, lineHeight: block?.runs[0]?.style.lineHeight ?? virtual?.lineHeight ?? 1.2,
+  const base = { ...activeRun?.style, ...(virtual ? { alignment: virtual.style.alignment ?? 'left' } : {}), ...draftStyle };
+  const paragraphStyle: TextStyle = { ...block?.runs[0]?.style, ...(virtual ? { alignment: virtual.style.alignment ?? 'left' } : {}), lineHeight: block?.runs[0]?.style.lineHeight ?? virtual?.lineHeight ?? 1.2,
     firstLineIndent: block?.runs[0]?.style.firstLineIndent ?? virtual?.firstLineIndent ?? 0, ...draftStyle };
   const fontInfo = block ? findSelectionFontInfo({ ...block, runs: activeRuns ?? block.runs }, selectionRange, fonts) : null;
   const currentFamily = fontInfo?.family ?? (/\p{Script=Han}/u.test(original) ? 'Noto Sans CJK SC' : 'Liberation Sans');
@@ -85,7 +91,7 @@ export function DirectTextEditor(props: Props) {
   useEffect(() => {
     if (!editing) return;
     input.current?.focus();
-    const selected = props.initialRange ?? [original === t('New text') ? 0 : original.length, original.length];
+    const selected = initialRange ?? [original === t('New text') ? 0 : original.length, original.length];
     input.current?.setSelectionRange(selected[0]!, selected[1]!);
   }, [inlineId, host]);
 
@@ -109,22 +115,33 @@ export function DirectTextEditor(props: Props) {
       } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); return Promise.resolve(false); }
     }
     if (!dirty && !format) { if (close) onClose(); return Promise.resolve(true); }
+    if (virtual && format && !editing) {
+      try {
+        const style = resolveSelectionFormatRuns({ block, range: [0, original.length], fonts, ...format })[0]!.style;
+        if (!canFormatSourceParagraph(page, virtual, style)) return convertParagraph(undefined, style.alignment, style).then(() => true);
+      } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); return Promise.resolve(false); }
+    }
     const perform = async () => {
       onBusyChange(true); setFormatting(Boolean(format)); setError('');
       try {
         const commands: import('@pdf-editor/contracts').EditCommand[] = [];
         const fontIds = new Set<string>();
         let convertedId: string | null = null;
-        if (dirty) {
+        const sourceFormats = virtual && format && !editing
+          ? resolveSelectionFormatRuns({ block, range: [0, original.length], fonts, ...format }) : [];
+        const sourceStyle = Object.assign({}, draftStyle, ...sourceFormats.map(item => paragraphProperties(item.style))) as TextStyle;
+        const sourceEdit = virtual && text === original && canFormatSourceParagraph(page, virtual, sourceStyle);
+        if (sourceEdit) {
+          const runs = applyParagraphFormats(draftRuns ?? block.runs, sourceFormats);
+          commands.push(...sourceParagraphLayout(page, virtual, sourceStyle), ...sourceParagraphStyles(page, virtual, runs, fonts));
+          for (const command of commands) if (command.type === 'text.style' && command.style.fontId) fontIds.add(command.style.fontId);
+        } else if (dirty && !virtual && text === original && !draftRuns) {
+          commands.push({ type: 'text.style', pageId: page.id, blockIds: [block.id], style: draftStyle });
+        } else if (dirty) {
           let target = block.id;
           const runs = draftRuns ?? changedBlock(block, text).runs;
           const resolved = runs.filter(run => run.text).map(run => {
-            const source = { ...block, runs: [run] };
-            const loaded = fonts.find(font => font.id === run.style.fontId);
-            const font = resolveSelectionFormatRuns({ block: source, range: [0, run.text.length], fonts,
-              ...(loaded ? { formatFontId: loaded.id } : {}),
-              formatWeight: run.style.weight ?? loaded?.weight ?? 400,
-              formatItalic: (run.style.italic ?? loaded?.italic ?? false) ? 'on' : 'off' })[0]!.resolvedFontId!;
+            const font = resolveParagraphRunFont(run, fonts);
             fontIds.add(font);
             const { weight: _weight, italic: _italic, lineHeight: _height, alignment: _alignment,
               firstLineIndent: _indent, lineSpacing: _spacing, spaceBefore: _before, spaceAfter: _after, ...inline } = run.style;
@@ -132,10 +149,8 @@ export function DirectTextEditor(props: Props) {
           });
           if (virtual && text.length) {
             const id = crypto.randomUUID(); target = id + ':text'; convertedId = id;
-            const first = resolved[0]!, face = fonts.find(font => font.id === first.style.fontId);
-            const seedFont = resolveSelectionFormatRuns({ block: { ...block, runs: [{ text, style: first.style, sourceObjectIds: [] }] },
-              range: [0, text.length], fonts, formatFontId: first.style.fontId,
-              formatWeight: face?.weight ?? 400, formatItalic: face?.italic ? 'on' : 'off' })[0]!.resolvedFontId!;
+            const first = resolved[0]!;
+            const seedFont = first.style.fontId;
             fontIds.add(seedFont);
             commands.push({ type: 'text.reflow', pageId: page.id, objectId: id,
               blockIds: virtual.objects.map(item => item.textBlock!.id), text, bounds: virtual.bounds,
@@ -172,7 +187,7 @@ export function DirectTextEditor(props: Props) {
               commands.push({ type: 'text.style', pageId: page.id, blockIds: [target], style: draftStyle });
           }
         }
-        if (format && (dirty ? text : original).length) {
+        if (format && !sourceEdit && (dirty ? text : original).length) {
           const length = dirty ? text.length : original.length;
           const paragraphFormat = format.formatLineHeight !== undefined || format.formatAlignment !== undefined;
           const part: TextRange = paragraphFormat || range.current[0] === range.current[1] ? [0, length] : range.current;
@@ -182,6 +197,7 @@ export function DirectTextEditor(props: Props) {
             commands.push({ type: 'text.style', pageId: page.id, blockIds: [block.id], range: item.range, style: item.style });
           }
         }
+        if (!commands.length) { onDraftChange(false); if (close) onClose(); return true; }
         const transaction = { id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision, source: 'manual' as const, commands };
         // Apply already validates atomically; a second full-document preview doubles the work.
         const result = await new CommandRegistry(engine).execute(transaction, { document, pages: new Map([[page.id, page]]), fontIds });
@@ -196,7 +212,7 @@ export function DirectTextEditor(props: Props) {
         return false;
       } finally { onBusyChange(false); setFormatting(false); setPendingFamily(null); pending.current = null; }
     };
-    pending.current = perform();
+    pending.current = Promise.resolve().then(perform);
     return pending.current;
   };
   const convertParagraph = async (height?: string, alignment?: TextStyle['alignment'], metrics: TextStyle = {}) => {
@@ -205,30 +221,23 @@ export function DirectTextEditor(props: Props) {
     if (!candidate) return;
     onBusyChange(true); setError('');
     try {
-      const requestedFace = fonts.find(font => font.id === metrics.fontId);
-      const resolved = resolveSelectionFormatRuns({ block: { ...block, isParagraph: false,
-        runs: [{ text: candidate.text, style: candidate.style, sourceObjectIds: [] }] }, range: [0, candidate.text.length], fonts,
-        formatFontId: metrics.fontId ?? '', formatWeight: requestedFace?.weight ?? currentWeight,
-        formatItalic: (requestedFace?.italic ?? currentItalic) ? 'on' : 'off' })[0]!;
-      const fontId = resolved.resolvedFontId!;
+      const fontId = resolveParagraphRunFont(metrics.fontId
+        ? { text: candidate.text, style: { ...candidate.style, ...metrics }, sourceObjectIds: [] }
+        : candidate.runs[0]!, fonts);
       const id = crypto.randomUUID();
       const command = { type: 'text.reflow' as const, pageId: page.id, objectId: id,
         blockIds: candidate.objects.map(item => item.textBlock!.id), text: candidate.text, bounds: candidate.bounds,
         style: { characterSpacing: candidate.style.characterSpacing ?? 0,
           color: candidate.style.color ?? [0, 0, 0] as [number, number, number],
           underline: Boolean(candidate.style.underline), lineHeight: Number(height ?? candidate.lineHeight),
-          alignment: alignment ?? 'left' as const, firstLineIndent: candidate.firstLineIndent, ...metrics,
+          alignment: alignment ?? candidate.style.alignment ?? 'left' as const, firstLineIndent: candidate.firstLineIndent, ...metrics,
           fontId, fontSize: metrics.fontSize ?? candidate.style.fontSize ?? 12 } };
       const commands: import('@pdf-editor/contracts').EditCommand[] = [command];
       const fontIds = new Set([fontId]);
       if (!metrics.fontId) {
         let start = 0;
         for (const run of candidate.runs) {
-          const source = { ...block, runs: [run] };
-          const loaded = fonts.find(font => font.id === run.style.fontId);
-          const face = resolveSelectionFormatRuns({ block: source, range: [0, run.text.length], fonts,
-            ...(loaded ? { formatFontId: loaded.id } : {}), formatWeight: run.style.weight ?? loaded?.weight ?? 400,
-            formatItalic: (run.style.italic ?? loaded?.italic ?? false) ? 'on' : 'off' })[0]!.resolvedFontId!;
+          const face = resolveParagraphRunFont(run, fonts);
           fontIds.add(face);
           commands.push({ type: 'text.style', pageId: page.id, blockIds: [id + ':text'], range: [start, start + run.text.length],
             style: { fontId: face, fontSize: run.style.fontSize ?? 12, color: run.style.color ?? [0, 0, 0],
@@ -315,14 +324,14 @@ export function DirectTextEditor(props: Props) {
         ['Fixed line spacing (pt)', 'lineSpacing', 'formatLineSpacing'],
         ['Space before (pt)', 'spaceBefore', 'formatSpaceBefore'],
         ['Space after (pt)', 'spaceAfter', 'formatSpaceAfter'],
-      ] as const).map(([label, field, option]) => <label key={field}>{t(label)}<input key={`${key}:${base[field] ?? 0}`}
+      ] as const).map(([label, field, option]) => <label key={field}>{t(label)}<input key={`${key}:${paragraphStyle[field] ?? 0}`}
         type="number" aria-label={t(label)} min={field === 'firstLineIndent' ? -1000 : 0} max={field === 'firstLineIndent' ? 1000 : 2000}
-        step="0.5" defaultValue={base[field] ?? (field === 'firstLineIndent' ? paragraph?.firstLineIndent : 0) ?? 0}
+        step="0.5" defaultValue={paragraphStyle[field] ?? 0}
         disabled={disabled || !canEdit || (!block.isParagraph && !paragraph)}
         onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }}
         onBlur={event => {
           const value = Number(event.currentTarget.value);
-          if (!event.currentTarget.validity.valid || !Number.isFinite(value) || value === (base[field] ?? 0)) return;
+          if (!event.currentTarget.validity.valid || !Number.isFinite(value) || value === (paragraphStyle[field] ?? 0)) return;
           if (block.isParagraph) void save({ [option]: String(value) });
           else void convertParagraph(undefined, undefined, { [field]: value });
         }} /></label>)}

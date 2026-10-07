@@ -26,13 +26,6 @@ bool CreateParagraphObject(FPDF_DOCUMENT pdf,
   return true;
 }
 
-bool CreateParagraphObject(FPDF_DOCUMENT pdf, const FontResource& font,
-                           const pdf_editor::ParagraphRequest& request,
-                           pdf_editor::ParagraphResult* result) {
-  auto borrowed = std::shared_ptr<const FontResource>(&font, [](const FontResource*) {});
-  return CreateParagraphObject(pdf, {borrowed}, request, result);
-}
-
 bool ParagraphIdentity(const Document& document, FPDF_PAGEOBJECT object,
                        const std::string& seed, const ObjectIdentity* retained,
                        ObjectIdentity* identity) {
@@ -230,15 +223,82 @@ void RemapParagraphStyles(pdf_editor::ParagraphRequest* request,
   }
 }
 
+bool UpdateParagraphStyles(pdf_editor::ParagraphRequest* request,
+    std::vector<std::shared_ptr<const FontResource>>* fonts,
+    const EditCommand& command, uint32_t start, uint32_t end, uint32_t length,
+    const std::map<std::string, std::shared_ptr<const FontResource>>& resources) {
+  ApplyParagraphMetrics(request, command);
+  if (command.flags & kTextStyleLineHeightFlag) request->line_height = static_cast<float>(command.values[6]);
+  if (command.flags & kTextStyleAlignmentFlag) {
+    request->alignment = command.values[7] == 3 ? pdf_editor::ParagraphAlignment::kJustify :
+        command.values[7] == 2 ? pdf_editor::ParagraphAlignment::kRight :
+        command.values[7] == 1 ? pdf_editor::ParagraphAlignment::kCenter : pdf_editor::ParagraphAlignment::kLeft;
+  }
+  if (request->styles.empty()) request->styles.push_back(
+      {{0, length}, 0, request->font_size, request->letter_spacing, request->color, request->underline});
+  // A full-range size change also replaces the paragraph's default metrics.
+  // Otherwise line layout keeps the old font size as its minimum line step.
+  if (start == 0 && end == length && (command.flags & 2U))
+    request->font_size = static_cast<float>(command.values[0]);
+  uint32_t selected_font = 0;
+  if (command.flags & 1U) {
+    const auto selected = resources.find(command.font_id);
+    if (selected == resources.end()) {
+      SetError("INVALID_REQUEST", "The requested paragraph font is not registered.");
+      return false;
+    }
+    selected_font = static_cast<uint32_t>(fonts->size());
+    for (uint32_t index = 0; index < fonts->size(); ++index) {
+      if ((*fonts)[index]->id == command.font_id) { selected_font = index; break; }
+    }
+    if (selected_font == fonts->size()) fonts->push_back(selected->second);
+  }
+  std::vector<pdf_editor::ParagraphStyleRun> updated;
+  auto append = [&](pdf_editor::ParagraphStyleRun run) {
+    if (run.range.start >= run.range.end) return;
+    if (!updated.empty()) {
+      auto& back = updated.back();
+      if (back.range.end == run.range.start && back.font_index == run.font_index &&
+          back.font_size == run.font_size && back.letter_spacing == run.letter_spacing &&
+          back.underline == run.underline && back.color.red == run.color.red &&
+          back.color.green == run.color.green && back.color.blue == run.color.blue) {
+        back.range.end = run.range.end; return;
+      }
+    }
+    updated.push_back(run);
+  };
+  for (const auto& old : request->styles) {
+    if (old.range.start < start) {
+      auto left = old; left.range.end = std::min(old.range.end, start); append(left);
+    }
+    if (old.range.start < end && old.range.end > start) {
+      auto middle = old;
+      middle.range.start = std::max(old.range.start, start);
+      middle.range.end = std::min(old.range.end, end);
+      if (command.flags & 1U) middle.font_index = selected_font;
+      if (command.flags & 2U) middle.font_size = static_cast<float>(command.values[0]);
+      if (command.flags & 4U) middle.color = {static_cast<float>(command.values[1]),
+          static_cast<float>(command.values[2]), static_cast<float>(command.values[3])};
+      if (command.flags & 8U) middle.letter_spacing = static_cast<float>(command.values[4]);
+      if (command.flags & kTextStyleUnderlineFlag) middle.underline = command.values[5] != 0;
+      append(middle);
+    }
+    if (old.range.end > end) {
+      auto right = old; right.range.start = std::max(old.range.start, end); append(right);
+    }
+  }
+  request->styles = std::move(updated);
+  return true;
+}
+
 bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
     CandidateMetadata* metadata, const EditCommand& command,
     const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
     const std::set<std::string>* batch_new_ids, TextInsertLayoutResult* layout,
-    bool allow_overflow) {
+    bool allow_overflow, std::span<const EditCommand> initial_styles = {}) {
   size_t page_index = 0;
   ScopedPage page(nullptr);
   if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) return false;
-  const bool justify = (command.flags & (32U | 64U)) == (32U | 64U);
   const auto font = resources.find(command.font_id);
   if (font == resources.end()) { SetError("INVALID_REQUEST", "Select a registered paragraph font."); return false; }
   pdf_editor::ParagraphRequest request;
@@ -255,8 +315,26 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
       : (command.flags & 32U) ? pdf_editor::ParagraphAlignment::kCenter
       : (command.flags & 64U) ? pdf_editor::ParagraphAlignment::kRight
                               : pdf_editor::ParagraphAlignment::kLeft;
+  std::vector<std::shared_ptr<const FontResource>> fonts{font->second};
+  if (!initial_styles.empty()) {
+    LayoutText decoded;
+    std::vector<bool> boundaries;
+    if (!DecodeLayoutText(request.utf8, &decoded) ||
+        !CollectUnicodeBreaks(UBRK_CHARACTER, decoded.utf16, &boundaries)) return false;
+    const uint32_t length = static_cast<uint32_t>(decoded.utf16.size());
+    for (const auto& style : initial_styles) {
+      const uint32_t start = (style.flags & kTextStyleRangeFlag) ? style.start_utf16 : 0;
+      const uint32_t end = (style.flags & kTextStyleRangeFlag) ? style.end_utf16 : length;
+      if (start >= end || end > length || !boundaries[start] || !boundaries[end]) {
+        SetError("INVALID_REQUEST", "Paragraph style ranges must preserve complete graphemes.");
+        return false;
+      }
+      if (!UpdateParagraphStyles(&request, &fonts, style, start, end, length, resources)) return false;
+    }
+    CompactParagraphFonts(&request, &fonts);
+  }
   pdf_editor::ParagraphResult paragraph;
-  if (!CreateParagraphObject(pdf, *font->second, request, &paragraph)) return false;
+  if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;
   std::unique_ptr<CPDF_PageObject> object(CPDFPageObjectFromFPDFPageObject(paragraph.object));
   if (!SetObjectMatrix(page.get(), paragraph.object,
       Matrix{1, 0, 0, -1, command.values[0], command.values[1] + command.values[3]})) return false;
@@ -280,6 +358,7 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   std::set<CPDF_Dictionary*> reflow_elements;
   std::optional<pdf_editor::tagged::ParagraphLeafMerge> leaf_merge;
   size_t insertion = identities.size();
+  const bool justify = request.alignment == pdf_editor::ParagraphAlignment::kJustify;
   if (command.type == EditType::kTextReflow) {
     std::vector<size_t> positions;
     for (const auto& block_id : command.ids) {
@@ -430,7 +509,7 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   if (!FPDFPage_GenerateContent(page.get())) { SetError("CORE_UNAVAILABLE", "The paragraph content could not be saved."); return false; }
   if (!allow_overflow && paragraph.overflow) {
     return ReflowParagraphAcrossPages(document, pdf, metadata, command, command.target_id,
-        {font->second}, request, layout);
+        fonts, request, layout);
   }
   if (layout) {
     layout->overflow = paragraph.overflow;
@@ -527,66 +606,8 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
                            resources, &fonts, &request)) return false;
   request.height = info->GetFloatFor("Height");
   request.utf8 = original;
-  ApplyParagraphMetrics(&request, command);
-  if (command.flags & kTextStyleLineHeightFlag) request.line_height = static_cast<float>(command.values[6]);
-  if (command.flags & kTextStyleAlignmentFlag) {
-    request.alignment = command.values[7] == 3 ? pdf_editor::ParagraphAlignment::kJustify :
-        command.values[7] == 2 ? pdf_editor::ParagraphAlignment::kRight :
-        command.values[7] == 1 ? pdf_editor::ParagraphAlignment::kCenter : pdf_editor::ParagraphAlignment::kLeft;
-  }
-  if (request.styles.empty()) request.styles.push_back(
-      {{0, static_cast<uint32_t>(decoded.utf16.size())}, 0,
-       request.font_size, request.letter_spacing, request.color, request.underline});
-  uint32_t selected_font = 0;
-  if (command.flags & 1U) {
-    const auto selected = resources.find(command.font_id);
-    if (selected == resources.end()) {
-      SetError("INVALID_REQUEST", "The requested paragraph font is not registered.");
-      return false;
-    }
-    selected_font = static_cast<uint32_t>(fonts.size());
-    for (uint32_t index = 0; index < fonts.size(); ++index) {
-      if (fonts[index]->id == command.font_id) { selected_font = index; break; }
-    }
-    if (selected_font == fonts.size()) fonts.push_back(selected->second);
-  }
-  std::vector<pdf_editor::ParagraphStyleRun> updated;
-  for (const auto& old : request.styles) {
-    auto append = [&](pdf_editor::ParagraphStyleRun run) {
-      if (run.range.start >= run.range.end) return;
-      if (!updated.empty()) {
-        auto& back = updated.back();
-        if (back.range.end == run.range.start && back.font_index == run.font_index &&
-            back.font_size == run.font_size && back.letter_spacing == run.letter_spacing &&
-            back.underline == run.underline && back.color.red == run.color.red &&
-            back.color.green == run.color.green && back.color.blue == run.color.blue) {
-          back.range.end = run.range.end;
-          return;
-        }
-      }
-      updated.push_back(run);
-    };
-    if (old.range.start < start) {
-      auto left = old; left.range.end = std::min(old.range.end, start); append(left);
-    }
-    if (old.range.start < end && old.range.end > start) {
-      auto middle = old;
-      middle.range.start = std::max(old.range.start, start);
-      middle.range.end = std::min(old.range.end, end);
-      if (command.flags & 1U) middle.font_index = selected_font;
-      if (command.flags & 2U) middle.font_size = static_cast<float>(command.values[0]);
-      if (command.flags & 4U) middle.color = {
-          static_cast<float>(command.values[1]), static_cast<float>(command.values[2]),
-          static_cast<float>(command.values[3])};
-      if (command.flags & 8U) middle.letter_spacing = static_cast<float>(command.values[4]);
-      if (command.flags & kTextStyleUnderlineFlag) middle.underline = command.values[5] != 0;
-      append(middle);
-    }
-    if (old.range.end > end) {
-      auto right = old; right.range.start = std::max(old.range.start, end); append(right);
-    }
-  }
-  request.styles = std::move(updated);
+  if (!UpdateParagraphStyles(&request, &fonts, command, start, end,
+      static_cast<uint32_t>(decoded.utf16.size()), resources)) return false;
   CompactParagraphFonts(&request, &fonts);
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;

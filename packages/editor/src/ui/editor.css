@@ -88,7 +88,7 @@
     border: 1px solid transparent;
     cursor: default;
   }
-  .object-hitbox:hover { border-color: rgb(255 98 61 / 65%); background: rgb(255 98 61 / 7%); }
+  .object-hitbox-hovered { border-color: rgb(255 98 61 / 65%); background: rgb(255 98 61 / 7%); }
   .object-hitbox-selected {
     border: 2px solid var(--signal);
     background: rgb(255 98 61 / 9%);

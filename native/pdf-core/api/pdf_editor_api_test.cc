@@ -3021,6 +3021,113 @@ void TestTrackingAndParagraphFormatting(const std::string& font_id) {
   pde_close(reopened); pde_close(doc);
 }
 
+void TestParagraphWordGapsAndInitialStyles(const std::string& latin_font,
+                                          const std::string& cjk_font) {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("BT /F1 18 Tf 1 0 0 1 30 250 Tm [(Alpha) -350 (Beta) -350 (Gamma)] TJ 0 -24 Td (Next line) Tj 1 0 0 1 30 100 Tm (Two  explicit   spaces) Tj ET"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"});
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "word-gaps", "word-gap-source", nullptr);
+  Require(doc != 0, "open inferred TJ word gap fixture");
+  const std::string description = RequireResult(pde_describe_page(doc, 0), "describe word gap source");
+  Require(description.find("\"text\":\"AlphaBetaGamma\"") != std::string::npos &&
+          description.find("\"inferredSpaces\":[5,9]") != std::string::npos &&
+          Count(description, "\"inferredSpaces\"") == 1 &&
+          description.find("\"text\":\"Two  explicit   spaces\"") != std::string::npos,
+          "internal TJ gaps and consecutive explicit spaces survive extraction without changing native glyph ranges");
+  const std::string page = PageIdFromDescription(description);
+  const auto blocks = TextBlockIds(description);
+  const char* sources[] = {blocks[0].c_str(), blocks[1].c_str()};
+  const char* target[] = {"mixed-initial:text"};
+  const std::string text = "Alpha Beta Gamma \xE4\xB8\xAD\xE6\x96\x87";
+  PdeEditCommand commands[2]{};
+  auto& reflow = commands[0];
+  reflow.type = 20; reflow.page_id = page.c_str(); reflow.target_id = "mixed-initial";
+  reflow.ids = sources; reflow.id_count = 2; reflow.text_utf8 = text.c_str(); reflow.font_id = latin_font.c_str();
+  reflow.flags = 3 | 16 | 32 | 1024; reflow.values[0] = 30; reflow.values[1] = 30;
+  reflow.values[2] = 260; reflow.values[3] = 120; reflow.values[4] = 18; reflow.values[9] = 1.3;
+  auto& style = commands[1];
+  style.type = 2; style.page_id = page.c_str(); style.ids = target; style.id_count = 1;
+  style.flags = 1 | 16; style.font_id = cjk_font.c_str(); style.start_utf16 = 17; style.end_utf16 = 19;
+  Require(pde_preview_commands(doc, 0, commands, 2) != nullptr &&
+          std::string(pde_describe_page(doc, 0)) == description,
+          "mixed reflow previews all initial fonts before shaping, without mutating source");
+  Require(pde_apply_commands(doc, 0, "word-gap-mixed-reflow", commands, 2) != nullptr,
+          "reflow does not require the Latin seed font to contain Chinese run glyphs");
+  const auto edited = RequireResult(pde_describe_page(doc, 0), "mixed reflow result");
+  Require(edited.find("Alpha Beta Gamma ") != std::string::npos &&
+          edited.find("\"alignment\":\"center\"") != std::string::npos &&
+          edited.find("\"fontId\":\"" + cjk_font + "\"") != std::string::npos,
+          "reflow retains spaces, requested alignment and initial mixed font runs");
+  const auto pixels = RenderPixels(doc, 0, 400, 300);
+  Require(pde_save_memory(doc) != nullptr, "save mixed reflow word gaps");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const uint32_t reopened = pde_open_memory(saved.data(), static_cast<uint32_t>(saved.size()),
+      "word-gap-reopen", "word-gap-saved", nullptr);
+  Require(reopened != 0 && RenderPixels(reopened, 0, 400, 300) == pixels &&
+          std::string(pde_extract_page(reopened, 0)).find("Alpha Beta Gamma ") != std::string::npos,
+          "saved mixed reflow preserves real glyph rendering and searchable word spaces");
+  Require(pde_undo(doc) != nullptr && std::string(pde_describe_page(doc, 0)) == description &&
+          pde_redo(doc) != nullptr && RenderPixels(doc, 0, 400, 300) == pixels,
+          "mixed initial paragraph styles and word spaces undo and redo atomically");
+  pde_close(reopened); pde_close(doc);
+
+  const uint32_t scaled = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "scaled-paragraph", "scaled-source", nullptr);
+  Require(scaled != 0, "open full-range paragraph metric fixture");
+  const std::string scaled_page = PageIdFromDescription(pde_describe_page(scaled, 0));
+  const char* scaled_targets[] = {"scaled-paragraph:text"};
+  PdeEditCommand scaled_commands[2]{};
+  auto& scaled_insert = scaled_commands[0];
+  scaled_insert.type = 3; scaled_insert.page_id = scaled_page.c_str();
+  scaled_insert.target_id = "scaled-paragraph"; scaled_insert.text_utf8 = "Alpha\nBeta";
+  scaled_insert.font_id = latin_font.c_str(); scaled_insert.flags = 3 | 16 | 1024;
+  scaled_insert.values[0] = 20; scaled_insert.values[1] = 20;
+  scaled_insert.values[2] = 180; scaled_insert.values[3] = 80;
+  scaled_insert.values[4] = 24; scaled_insert.values[9] = 1.2;
+  auto& scaled_style = scaled_commands[1];
+  scaled_style.type = 2; scaled_style.page_id = scaled_page.c_str();
+  scaled_style.ids = scaled_targets; scaled_style.id_count = 1;
+  scaled_style.flags = 2; scaled_style.values[0] = 12;
+  auto require_base_size = [&](float expected) {
+    Require(pde_save_memory(scaled) != nullptr, "save full-range paragraph metrics");
+    FPDF_DOCUMENT saved_pdf = FPDF_LoadMemDocument64(pde_binary_data(), pde_binary_size(), nullptr);
+    Require(saved_pdf != nullptr, "open saved paragraph metrics");
+    FPDF_PAGE saved_page = FPDF_LoadPage(saved_pdf, 0);
+    bool found = false;
+    for (int index = 0; index < FPDFPage_CountObjects(saved_page); ++index) {
+      auto* object = CPDFPageObjectFromFPDFPageObject(FPDFPage_GetObject(saved_page, index));
+      if (!object->AsForm()) continue;
+      const auto info = object->AsForm()->form()->GetDict()->GetDictFor("KomoParagraph");
+      if (!info || info->GetUnicodeTextFor("Text").ToUTF8() != "Alpha\nBeta") continue;
+      found = true;
+      Require(std::abs(info->GetFloatFor("FontSize") - expected) < 0.01,
+              "whole-range font size updates the default line metrics as well as runs");
+    }
+    FPDF_ClosePage(saved_page); FPDF_CloseDocument(saved_pdf);
+    Require(found, "saved full-range paragraph metadata exists");
+  };
+  Require(pde_apply_commands(scaled, 0, "initial-small-size", scaled_commands, 2) != nullptr,
+          "fused initial style can shrink the whole paragraph");
+  require_base_size(12);
+  scaled_style.values[0] = 6;
+  Require(pde_apply_commands(scaled, 1, "smaller-whole-size", &scaled_style, 1) != nullptr,
+          "later whole-range style can shrink the paragraph again");
+  require_base_size(6);
+  const auto small_pixels = RenderPixels(scaled, 0, 400, 300);
+  Require(pde_undo(scaled) != nullptr, "undo full-range size change");
+  require_base_size(12);
+  PdeEditCommand split_sizes[2] = {scaled_style, scaled_style};
+  split_sizes[0].flags |= 16; split_sizes[0].start_utf16 = 0; split_sizes[0].end_utf16 = 5;
+  split_sizes[1].flags |= 16; split_sizes[1].start_utf16 = 5; split_sizes[1].end_utf16 = 10;
+  Require(pde_apply_commands(scaled, 3, "small-size-per-run", split_sizes, 2) != nullptr &&
+          RenderPixels(scaled, 0, 400, 300) == small_pixels,
+          "shrinking all styled runs gives the same line spacing as one full-range command");
+  pde_close(scaled);
+}
+
 void TestParagraphFlow(const std::string& font_id) {
   const std::string source = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -4074,6 +4181,7 @@ void TestFontRuntime(const FontTestOptions& options) {
               otf_info.find("\"editableEmbedding\":true") != std::string::npos,
           "register OpenType CFF face info");
   TestTrackingAndParagraphFormatting("runtime-ttf");
+  TestParagraphWordGapsAndInitialStyles("runtime-ttf", "runtime-otf");
   TestParagraphFlow("runtime-ttf");
   TestParagraphFlowBoundaries("runtime-ttf");
   TestParagraphRangeStyles("runtime-otf", "runtime-ttf", ttf);

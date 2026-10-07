@@ -1,22 +1,29 @@
 import type { EditableObject, PageModel, Rect, StyledTextRun, TextStyle } from '@pdf-editor/contracts';
 import { unionBounds } from './text-geometry.js';
+import { logicalTextBlock } from './source-text.js';
 
 export type ParagraphCandidate = {
-  objects: EditableObject[]; text: string; runs: StyledTextRun[]; bounds: Rect; style: TextStyle;
-  lineHeight: number; firstLineIndent: number; confidence: 'high' | 'low'; sourceRanges: Record<string, [number, number]>;
+  objects: EditableObject[]; text: string; runs: StyledTextRun[]; bounds: Rect; contentBounds: Rect; style: TextStyle;
+  lines: ParagraphLine[]; lineHeight: number; firstLineIndent: number; confidence: 'high' | 'low'; sourceRanges: Record<string, [number, number]>;
 };
-type Line = { objects: EditableObject[]; bounds: Rect; size: number; baseline: number };
+export type ParagraphLine = { objects: EditableObject[]; bounds: Rect; size: number; baseline: number };
+type Line = ParagraphLine;
 const cache = new WeakMap<PageModel, Map<string, ParagraphCandidate>>();
 const geometry = new WeakMap<EditableObject, EditableObject>();
 function withTextGeometry(object: EditableObject): EditableObject {
   const cached = geometry.get(object);
   if (cached) return cached;
-  const characters = object.textBlock?.characters;
-  const result = characters?.length ? { ...object, bounds: unionBounds(characters.map(character => character.bounds)) } : object;
+  const block = object.textBlock, characters = block?.characters;
+  const scale = Math.abs(object.transform[3]);
+  const result = { ...object,
+    bounds: characters?.length ? unionBounds(characters.map(character => character.bounds)) : object.bounds,
+    ...(block && Math.abs(scale - 1) > 0.001 ? { textBlock: { ...block, runs: block.runs.map(run => ({ ...run,
+      style: { ...run.style, fontSize: (run.style.fontSize ?? object.bounds.height / scale) * scale,
+        characterSpacing: (run.style.characterSpacing ?? 0) * scale } })) } } : {}) };
   geometry.set(object, result);
   return result;
 }
-const textOf = (object: EditableObject) => object.textBlock!.runs.map(run => run.text).join('');
+const textOf = (object: EditableObject) => logicalTextBlock(object.textBlock!).runs.map(run => run.text).join('');
 const styleOf = (object: EditableObject) => object.textBlock!.runs[0]!.style;
 const sizeOf = (object: EditableObject) => styleOf(object).fontSize ?? object.bounds.height;
 const right = (bounds: Rect) => bounds.x + bounds.width;
@@ -31,7 +38,8 @@ function eligible(object: EditableObject): boolean {
     !object.locator.containerPath.length && block.runs.length && textOf(object).length &&
     (textOf(object).trim() || block.characters?.some(character => character.bounds.width > 0)) &&
     !/[\r\n]|\p{Script=Arabic}|\p{Script=Hebrew}/u.test(textOf(object)) &&
-    Math.abs(b) <= Math.abs(a) * 0.02 && Math.abs(c) <= Math.abs(d) * 0.02 && a > 0 && Math.abs(d) > 0);
+    Math.abs(b) <= Math.abs(a) * 0.02 && Math.abs(c) <= Math.abs(d) * 0.02 && a > 0 && Math.abs(d) > 0 &&
+    Math.abs(a - Math.abs(d)) <= a * 0.02);
 }
 
 function separated(page: PageModel, a: Rect, b: Rect, horizontal: boolean, size: number): boolean {
@@ -108,7 +116,7 @@ function candidateFor(page: PageModel, lines: Line[]): ParagraphCandidate {
       length += glue.length;
       sourceRanges[object.id] = [length, length + value.length];
       length += value.length;
-      for (const run of object.textBlock!.runs) appendRun(runs, run);
+      for (const run of logicalTextBlock(object.textBlock!).runs) appendRun(runs, run);
       lineText += glue + value; previous = object;
     }
     precedingLine = lineText;
@@ -116,13 +124,21 @@ function candidateFor(page: PageModel, lines: Line[]): ParagraphCandidate {
   const bounds = unionBounds(objects.map(object => object.bounds));
   const size = median(lines.map(line => line.size));
   const lineHeight = lines.length > 1 ? median(lines.slice(1).map((line, i) => (line.baseline - lines[i]!.baseline) / size)) : 1.2;
-  const bodyLeft = lines.length > 1 ? median(lines.slice(1).map(line => line.bounds.x)) : bounds.x;
-  const firstLineIndent = lines[0]!.bounds.x - bodyLeft;
+  const body = lines.length > 1 ? lines.slice(1) : lines;
+  const spread = (anchor: (line: Line) => number) => {
+    const positions = lines.map(anchor);
+    return Math.max(...positions) - Math.min(...positions);
+  };
+  const alignment: TextStyle['alignment'] = spread(line => line.bounds.x) <= size * 0.35 ? 'left'
+    : spread(line => right(line.bounds)) <= size * 0.35 ? 'right'
+    : spread(line => line.bounds.x + line.bounds.width / 2) <= size * 0.35 ? 'center' : 'left';
+  const bodyLeft = alignment === 'left' ? median(body.map(line => line.bounds.x)) : bounds.x;
+  const firstLineIndent = alignment === 'left' ? lines[0]!.bounds.x - bodyLeft : 0;
   const selected = new Set(objects.map(object => object.id));
   const availableBottom = Math.min(page.heightPt, ...page.objects.filter(object => !selected.has(object.id) &&
     object.bounds.y >= bottom(bounds) && object.bounds.x < right(bounds) && right(object.bounds) > bounds.x).map(object => object.bounds.y));
-  const style = { ...styleOf(objects[0]!) };
-  return { objects, runs, text: runs.map(run => run.text).join(''), style, sourceRanges,
+  const style = { ...styleOf(objects[0]!), alignment };
+  return { objects, runs, text: runs.map(run => run.text).join(''), style, sourceRanges, lines, contentBounds: bounds,
     bounds: { x: Math.min(bounds.x, bodyLeft), y: bounds.y,
       width: Math.min(page.widthPt - bounds.x, bounds.width + size * 0.25),
       height: Math.min(availableBottom - bounds.y, Math.max(bounds.height + size, lines.length * size * lineHeight)) },
@@ -149,17 +165,19 @@ export function detectParagraphs(page: PageModel): ParagraphCandidate[] {
             Math.abs(previous.size - next.size) > size * 0.13 ||
             (expectedStep > 0 && step > expectedStep * 1.25)) continue;
         const indent = next.bounds.x - previous.bounds.x;
-        if (Math.abs(indent) > size * (group.length === 1 ? 3 : 0.7) ||
+        const aligned = Math.abs(right(next.bounds) - right(previous.bounds)) <= size * 0.35 ||
+          Math.abs(next.bounds.x + next.bounds.width / 2 - previous.bounds.x - previous.bounds.width / 2) <= size * 0.35;
+        if ((!aligned && Math.abs(indent) > size * (group.length === 1 ? 3 : 0.7)) ||
             Math.min(right(previous.bounds), right(next.bounds)) - Math.max(previous.bounds.x, next.bounds.x) < size ||
             separated(page, previous.bounds, next.bounds, false, size)) continue;
         const value = next.objects.map(textOf).join('');
-        if (listStart.test(value) || (group.length > 1 && indent > size * 0.7)) continue;
+        if (listStart.test(value) || (!aligned && group.length > 1 && indent > size * 0.7)) continue;
         const typicalWidth = Math.max(...group.map(line => line.bounds.width), next.bounds.width);
         const previousText = previous.objects.map(textOf).join('');
         const heading = previous.objects.every(object => object.textBlock!.runs.every(run => (run.style.weight ?? 400) >= 600));
         const body = next.objects.some(object => object.textBlock!.runs.some(run => (run.style.weight ?? 400) < 600));
         if ((heading && body && previous.bounds.width < next.bounds.width * 0.8) ||
-            (indent > size * 0.7 && !listStart.test(previousText))) continue;
+            (!aligned && indent > size * 0.7 && !listStart.test(previousText))) continue;
         if (previous.bounds.width < typicalWidth * 0.72 && /[.!?。！？：:]\s*$/u.test(previousText)) continue;
         const score = step + Math.abs(indent) * 0.25;
         if (score < bestScore) { best = next; bestScore = score; }
@@ -174,6 +192,14 @@ export function detectParagraphs(page: PageModel): ParagraphCandidate[] {
   for (const group of groups) for (const object of group.objects) index.set(object.id, group);
   cache.set(page, index);
   return groups;
+}
+
+export function selectedTextObject(page: PageModel, ids: string[]): EditableObject | undefined {
+  if (!ids.length) return undefined;
+  if (ids.length === 1) return page.objects.find(object => object.id === ids[0]);
+  const paragraph = detectParagraph(page, ids[0]!);
+  return paragraph && paragraph.objects.length === ids.length && paragraph.objects.every(object => ids.includes(object.id))
+    ? page.objects.find(object => object.id === paragraph.objects[0]!.id) : undefined;
 }
 
 export function detectParagraph(page: PageModel, seedId: string, single = false): ParagraphCandidate | null {

@@ -1,15 +1,15 @@
 {
   "abiVersion": 4,
-  "coreBuildId": "pdfium-80fccd-abi4-fbee5f539b97112ba32d",
+  "coreBuildId": "pdfium-80fccd-abi4-9c12e7dc7823e824d031",
   "pdfiumCommit": "80fccd7553e5cff9cea6549bc0db2ea93ea6cb2e",
   "files": {
     "pdf-core-runtime.js": {
       "bytes": 207816,
-      "sha256": "77e74ee89ada2445a784f1d6f11fdbe2e2644e09b908050edb215ecc4fa82ce8"
+      "sha256": "6f9e5c58a30804f490e2ec8197aeb9fd9cba05281243bd654a161befd6f95df3"
     },
     "pdf-core-runtime.wasm": {
-      "bytes": 9867684,
-      "sha256": "a66dfaec1ef961ba18457b29c1b9bba0ef42d9bf8b727a081248c09ea3807cb1"
+      "bytes": 9871820,
+      "sha256": "2e7366bb5ee719cf06d82531e995b07d5d62e3785a51568c1a6179cc2962a89c"
     }
   }
 }
