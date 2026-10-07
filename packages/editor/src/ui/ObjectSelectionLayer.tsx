@@ -1,7 +1,7 @@
 import { translate as t, useI18n } from './i18n.js';
 import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { PageModel, RenderResult } from '@pdf-editor/contracts';
-import { containsRect, isContainerInterior, pickObject, selectionScope } from './object-selection.js';
+import { containsRect, isContainerInterior, normalizeSelection, pickObject, selectionScope } from './object-selection.js';
 
 type ScaleHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
@@ -167,10 +167,12 @@ export function ObjectSelectionLayer({
   const gesture = useRef<Gesture | null>(null);
   const moved = useRef(false);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group', shading: 'Gradient' };
-  const selectedObjects = page.objects.filter(object => selectedIds.includes(object.id));
   const objects = selectionScope(page, selectedIds);
+  const idsFor = (object: (typeof objects)[number]) => object.textBlock?.sourceObjectIds ?? [object.id];
+  const selectedObjects = objects.filter(object => idsFor(object).some(id => selectedIds.includes(id)));
   const stacking = new Map(objects.slice().sort((a, b) => b.bounds.width * b.bounds.height - a.bounds.width * a.bounds.height)
     .map((object, index) => [object.id, index]));
   const hitAt = (clientX: number, clientY: number) => {
@@ -333,13 +335,15 @@ export function ObjectSelectionLayer({
         gesture.current = box
           ? { type: 'box', pointerId: event.pointerId, startX, startY, additive, ...(object ? { clickId: object.id } : {}) }
           : { type: 'move', pointerId: event.pointerId, startX, startY, additive, clickId: object.id,
-              ids: selectedIds.includes(object.id) ? selectedIds : [object.id] };
+              ids: idsFor(object).some(id => selectedIds.includes(id)) ? selectedIds : idsFor(object) };
         moved.current = false;
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
+      onPointerLeave={() => setHoveredId(null)}
       onPointerMove={event => {
         const active = gesture.current;
-        if (!active || active.pointerId !== event.pointerId || disabled) return;
+        if (!active) { setHoveredId(disabled ? null : hitAt(event.clientX, event.clientY)?.id ?? null); return; }
+        if (active.pointerId !== event.pointerId || disabled) return;
         const rect = event.currentTarget.getBoundingClientRect();
         const currentX = event.clientX - rect.left;
         const currentY = event.clientY - rect.top;
@@ -403,13 +407,9 @@ export function ObjectSelectionLayer({
             const bottom = top + Math.abs(dy) / scaleY;
             const box = { x: left, y: top, width: right - left, height: bottom - top };
             const enclosed = objects.filter(object => containsRect(box, object.bounds, 1 / scaleX));
-            // A selected Form already owns its children; never transform both twice.
-            const ids = enclosed.filter(object => !enclosed.some(parent => parent.id !== object.id &&
-              ['form', 'group'].includes(parent.type) &&
-              object.locator.containerPath.length > parent.locator.containerPath.length &&
-              [...parent.locator.containerPath, parent.locator.objectIndex].every((part, i) => object.locator.containerPath[i] === part)))
-              .map(object => object.id);
-            onBoxSelect(active.additive ? [...new Set([...selectedIds, ...ids])] : ids);
+            // Normalize after additive selection too: a Form owns its children.
+            const ids = enclosed.flatMap(idsFor);
+            onBoxSelect(normalizeSelection(page, active.additive ? [...new Set([...selectedIds, ...ids])] : ids));
           }
         } else if (active.type === 'move') {
           if (moved.current) {
@@ -435,8 +435,8 @@ export function ObjectSelectionLayer({
       }}
     >
       {objects.map(object => {
-          const selected = selectedIds.includes(object.id);
-          const moving = preview?.type === 'move' && preview.ids.includes(object.id);
+          const selected = idsFor(object).some(id => selectedIds.includes(id));
+          const moving = preview?.type === 'move' && idsFor(object).some(id => preview.ids.includes(id));
           return (
             <button
               type="button"
@@ -444,7 +444,7 @@ export function ObjectSelectionLayer({
               disabled={disabled}
               data-object-id={object.id}
               data-object-type={object.type}
-              className={selected ? 'object-hitbox object-hitbox-selected' : 'object-hitbox'}
+              className={`object-hitbox${selected ? ' object-hitbox-selected' : ''}${!disabled && hoveredId === object.id ? ' object-hitbox-hovered' : ''}`}
               style={{
                 zIndex: stacking.get(object.id),
                 left: object.bounds.x * scaleX,

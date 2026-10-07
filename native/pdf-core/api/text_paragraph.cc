@@ -740,7 +740,7 @@ bool PositionLines(const ParagraphRequest& request,
   float top = 0;
   for (LayoutLine& line : *lines) {
     float ascent = 0, descent = 0;
-    float line_step = request.font_size * request.line_height;
+    float line_step = 0;
     bool has_metrics = false;
     for (const auto& style : styles) {
       if (line.shaped.glyphs.empty()
@@ -758,6 +758,7 @@ bool PositionLines(const ParagraphRequest& request,
       has_metrics = true;
     }
     if (!has_metrics) {
+      line_step = request.font_size * request.line_height;
       if (!FPDFFont_GetAscent(fonts[0], request.font_size, &ascent) ||
           !FPDFFont_GetDescent(fonts[0], request.font_size, &descent)) {
         return Fail("PDFium could not read the paragraph font metrics.", error_message);

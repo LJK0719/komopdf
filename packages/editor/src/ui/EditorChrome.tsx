@@ -27,8 +27,8 @@ export function IconButton({ label, children, ...props }: React.ButtonHTMLAttrib
   </Tooltip.Root>;
 }
 
-export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUndo, canRedo, saving, tool, onTool, onOpen, onClose, onSave, onSaveAs, onUndo, onRedo, extra, showAi = false }: {
-  showAi?: boolean; productName?: string; name: string | undefined; dirty: boolean; busy: boolean; canUndo: boolean; canRedo: boolean; saving: boolean;
+export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUndo, canRedo, saving, tool, onTool, onOpen, onClose, onSave, onSaveAs, onUndo, onRedo, extra, showAi = false, documentActionsDisabled = false }: {
+  showAi?: boolean; documentActionsDisabled?: boolean; productName?: string; name: string | undefined; dirty: boolean; busy: boolean; canUndo: boolean; canRedo: boolean; saving: boolean;
   tool: EditorTool | null; onTool(tool: EditorTool): void; onOpen(): void; onClose(): void; onSave(): void; onSaveAs?(): void; onUndo(): void; onRedo(): void; extra?: ReactNode;
 }) {
   const { t } = useI18n();
@@ -37,22 +37,22 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
       <Menu.Root><Menu.Trigger className="file-menu-trigger">{t('File')}<ChevronDown size={14} /></Menu.Trigger>
         <Menu.Portal><Menu.Positioner sideOffset={8}><Menu.Popup className="ui-menu">
           <Menu.Item className="ui-menu-item" onClick={onOpen} disabled={busy}><FolderOpen size={16} />{t('Open…')}<kbd>Ctrl O</kbd></Menu.Item>
-          <Menu.Item className="ui-menu-item" onClick={onSave} disabled={!name || busy}><Save size={16} />{t('Save')}<kbd>Ctrl S</kbd></Menu.Item>
-          {onSaveAs && <Menu.Item className="ui-menu-item" onClick={onSaveAs} disabled={!name || busy}><Save size={16} />{t('Save as…')}<kbd>Ctrl Shift S</kbd></Menu.Item>}
-          <Menu.Item className="ui-menu-item" onClick={() => onTool('export')} disabled={!name || busy}><ArrowDownToLine size={16} />{t('Export…')}</Menu.Item>
-          <Menu.Item className="ui-menu-item" onClick={() => onTool('print')} disabled={!name || busy}><Printer size={16} />{t('Print…')}<kbd>Ctrl P</kbd></Menu.Item>
+          <Menu.Item className="ui-menu-item" onClick={onSave} disabled={!name || busy || documentActionsDisabled}><Save size={16} />{t('Save')}<kbd>Ctrl S</kbd></Menu.Item>
+          {onSaveAs && <Menu.Item className="ui-menu-item" onClick={onSaveAs} disabled={!name || busy || documentActionsDisabled}><Save size={16} />{t('Save as…')}<kbd>Ctrl Shift S</kbd></Menu.Item>}
+          <Menu.Item className="ui-menu-item" onClick={() => onTool('export')} disabled={!name || busy || documentActionsDisabled}><ArrowDownToLine size={16} />{t('Export…')}</Menu.Item>
+          <Menu.Item className="ui-menu-item" onClick={() => onTool('print')} disabled={!name || busy || documentActionsDisabled}><Printer size={16} />{t('Print…')}<kbd>Ctrl P</kbd></Menu.Item>
           <Menu.Separator className="ui-separator" />
-          <Menu.Item className="ui-menu-item" onClick={onClose} disabled={!name || busy}><X size={16} />{t('Close document')}</Menu.Item>
+          <Menu.Item className="ui-menu-item" onClick={onClose} disabled={!name || busy || documentActionsDisabled}><X size={16} />{t('Close document')}</Menu.Item>
         </Menu.Popup></Menu.Positioner></Menu.Portal>
       </Menu.Root>
       <span className="toolbar-divider" />
-      <IconButton label={t('Undo (Ctrl Z)')} disabled={!canUndo || busy} onClick={onUndo}><Undo2 size={18} /></IconButton>
-      <IconButton label={t('Redo (Ctrl Shift Z)')} disabled={!canRedo || busy} onClick={onRedo}><Redo2 size={18} /></IconButton>
+      <IconButton label={t('Undo (Ctrl Z)')} disabled={!canUndo || busy || documentActionsDisabled} onClick={onUndo}><Undo2 size={18} /></IconButton>
+      <IconButton label={t('Redo (Ctrl Shift Z)')} disabled={!canRedo || busy || documentActionsDisabled} onClick={onRedo}><Redo2 size={18} /></IconButton>
     </div>
     <div className="document-title" title={name}><strong>{name ?? t('Your PDF workspace')}</strong>{name && <span className={dirty ? 'save-state unsaved' : 'save-state'}>{t(dirty ? "Unsaved changes" : "Saved")}</span>}</div>
     <div className="topbar-actions"><LanguageSelect />{extra}
-      <IconButton label={t('Find (Ctrl F)')} disabled={!name} onClick={() => onTool('search')}><Search size={18} /></IconButton>
-      <button className="button button-primary" type="button" onClick={onSave} disabled={!name || busy}><Save size={16} />{t(saving ? "Saving…" : "Save")}</button>
+      <IconButton label={t('Find (Ctrl F)')} disabled={!name || documentActionsDisabled} onClick={() => onTool('search')}><Search size={18} /></IconButton>
+      <button className="button button-primary" type="button" onClick={onSave} disabled={!name || busy || documentActionsDisabled}><Save size={16} />{t(saving ? "Saving…" : "Save")}</button>
       {showAi && <button className={`button assistant-button ${tool === 'ai' ? 'is-active' : ''}`} aria-label={t('Ask komo')} type="button" onClick={() => onTool('ai')}><Sparkles size={16} /><span>{t('Ask komo')}</span></button>}
     </div>
   </header>;

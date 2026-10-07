@@ -212,6 +212,7 @@ struct TextCharacterData {
 struct IndexedObjectText {
   std::string text;
   std::vector<TextCharacterData> characters;
+  std::vector<uint32_t> inferred_spaces;
   uint32_t length = 0;
 };
 using TextGeometryIndex = std::map<FPDF_PAGEOBJECT, IndexedObjectText>;
@@ -225,6 +226,7 @@ struct TextBlockData {
   TextStyleData style;
   std::vector<StyledRunData> runs;
   std::vector<TextCharacterData> characters;
+  std::vector<uint32_t> inferred_spaces;
   std::string flow_id;
   uint32_t flow_start = 0;
   uint32_t flow_end = 0;
@@ -1104,7 +1106,16 @@ TextGeometryIndex BuildTextGeometryIndex(FPDF_TEXTPAGE page,
   for (int index = 0; index < count; ++index) {
     const auto object = FPDFText_GetTextObject(page, index);
     const uint32_t code = FPDFText_GetUnicode(page, index);
-    if (!object || !code || code > 0x10ffff || FPDFText_IsGenerated(page, index) == 1) continue;
+    if (!object || !code || code > 0x10ffff) continue;
+    if (FPDFText_IsGenerated(page, index) == 1) {
+      // PDFium associates internal TJ word gaps with the text object, but
+      // inter-object/line separators have no object. Keep the internal gaps
+      // separately so source glyph ranges and kerning edits remain exact.
+      const auto found = result.find(object);
+      if (code == ' ' && found != result.end() && found->second.length > 0)
+        found->second.inferred_spaces.push_back(found->second.length);
+      continue;
+    }
     auto& entry = result[object];
     auto& text = units[object];
     const uint32_t start = static_cast<uint32_t>(text.size());
@@ -1147,9 +1158,8 @@ void CollectFormText(FPDF_PAGEOBJECT object, const TextGeometryIndex& index,
   }
 }
 
-std::vector<TextCharacterData> MatchTextGeometry(const IndexedObjectText& indexed,
-                                                std::string_view logical) {
-  if (indexed.text == logical) return indexed.characters;
+std::vector<uint32_t> TextGeometryOffsets(const IndexedObjectText& indexed,
+                                          std::string_view logical) {
   LayoutText source, target;
   if (!DecodeLayoutText(indexed.text, &source) || !DecodeLayoutText(logical, &target)) return {};
   // Paragraph metadata contains explicit breaks; generated PDF line separators
@@ -1166,6 +1176,14 @@ std::vector<TextCharacterData> MatchTextGeometry(const IndexedObjectText& indexe
   mapping.back() = static_cast<uint32_t>(next);
   while (next < target.utf16.size() && u_isUWhiteSpace(target.utf16[next])) ++next;
   if (next != target.utf16.size()) return {};
+  return mapping;
+}
+
+std::vector<TextCharacterData> MatchTextGeometry(const IndexedObjectText& indexed,
+                                                std::string_view logical) {
+  if (indexed.text == logical) return indexed.characters;
+  const auto mapping = TextGeometryOffsets(indexed, logical);
+  if (mapping.empty()) return {};
   auto characters = indexed.characters;
   for (auto& character : characters) {
     character.start = mapping[character.start];
@@ -1858,6 +1876,12 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
     std::string text = indexed == context->text_geometry->end() ? std::string() : indexed->second.text;
     auto* holder = HolderAtPath(context->page, std::vector<size_t>(path.begin(), path.end()));
     auto* native_text = CPDFPageObjectFromFPDFPageObject(object)->AsText();
+    if (native_text && !pdf_editor::tagged::ActualMark(native_text)) {
+      // The page reader collapses consecutive spaces. Source editing must use
+      // the complete ToUnicode glyph text, including every explicit space.
+      const auto glyph_text = pdf_editor::tagged::GlyphText(native_text);
+      if (!glyph_text.empty()) text = glyph_text;
+    }
     if (holder && native_text && pdf_editor::tagged::ActualMark(native_text) &&
         pdf_editor::tagged::CanEditTextScope(holder, native_text)) {
       size_t members = 0;
@@ -1874,8 +1898,29 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
       block.source_id = context->source_id;
       block.object_id = data.id;
       block.text = std::move(text);
-      if (indexed != context->text_geometry->end())
+      if (indexed != context->text_geometry->end()) {
         block.characters = MatchTextGeometry(indexed->second, block.text);
+        if (indexed->second.text == block.text) {
+          block.inferred_spaces = indexed->second.inferred_spaces;
+        } else {
+          const auto offsets = TextGeometryOffsets(indexed->second, block.text);
+          for (uint32_t offset : indexed->second.inferred_spaces)
+            if (offset < offsets.size()) block.inferred_spaces.push_back(offsets[offset]);
+        }
+      }
+      if (block.characters.empty() && native_text &&
+          std::all_of(block.text.begin(), block.text.end(), [](char unit) { return unit == ' '; })) {
+        float ascent = 0, descent = 0;
+        const auto font = FPDFTextObj_GetFont(object);
+        const float size = native_text->GetFontSize();
+        if (font && FPDFFont_GetAscent(font, size, &ascent) &&
+            FPDFFont_GetDescent(font, size, &descent)) {
+          const Matrix matrix = MatrixFromCfx(native_text->GetTextMatrix())
+              .Then(parent_to_pdf).Then(context->pdf_to_page);
+          const Rect bounds = TransformBounds(0, descent, native_text->CalcPositionData(1).x, ascent, matrix);
+          block.characters.push_back({0, Utf16Length(block.text), bounds, 0, false});
+        }
+      }
       block.style = GetTextStyle(object);
       block.bounds = data.bounds;
       block.transform = data.transform;
@@ -2105,6 +2150,14 @@ void AppendTextBlock(std::string* output, const TextBlockData& block) {
   AppendJsonString(output, block.editability);
   if (block.is_ocr) output->append(",\"isOcr\":true");
   if (block.is_paragraph) output->append(",\"isParagraph\":true");
+  if (!block.inferred_spaces.empty()) {
+    output->append(",\"inferredSpaces\":[");
+    for (size_t i = 0; i < block.inferred_spaces.size(); ++i) {
+      if (i) output->push_back(',');
+      AppendJsonUnsigned(output, block.inferred_spaces[i]);
+    }
+    output->push_back(']');
+  }
   output->append(",\"characters\":[");
   for (size_t i = 0; i < block.characters.size(); ++i) {
     if (i) output->push_back(',');
@@ -3073,6 +3126,10 @@ bool GetObjectText(FPDF_PAGE page, FPDF_PAGEOBJECT object, std::string* text,
   }
   *text = GetTextForObject(object, text_page.get());
   auto* native_text = CPDFPageObjectFromFPDFPageObject(object)->AsText();
+  if (native_text && !pdf_editor::tagged::ActualMark(native_text)) {
+    const auto glyph_text = pdf_editor::tagged::GlyphText(native_text);
+    if (!glyph_text.empty()) *text = glyph_text;
+  }
   if (holder && native_text && pdf_editor::tagged::ActualMark(native_text) &&
       pdf_editor::tagged::CanEditTextScope(holder, native_text)) {
     size_t members = 0;
@@ -5756,7 +5813,8 @@ bool ApplyCommand(
     Rect* layout_bounds,
     bool* overflow,
     TextInsertLayoutResult* text_insert_layout,
-    bool allow_text_insert_overflow) {
+    bool allow_text_insert_overflow,
+    std::span<const EditCommand> initial_paragraph_styles = {}) {
   switch (command.type) {
     case EditType::kTextReplace:
       return ApplyTextReplace(document, pdf, metadata, command, resources,
@@ -5766,11 +5824,11 @@ bool ApplyCommand(
                             font_cache, batch_new_ids);
     case EditType::kTextReflow:
       return ApplyParagraphInsert(document, pdf, metadata, command, resources,
-                                  batch_new_ids, text_insert_layout, allow_text_insert_overflow);
+                                  batch_new_ids, text_insert_layout, allow_text_insert_overflow, initial_paragraph_styles);
     case EditType::kTextInsert:
       if (command.flags & kTextParagraphFlag)
         return ApplyParagraphInsert(document, pdf, metadata, command, resources,
-                                    batch_new_ids, text_insert_layout, allow_text_insert_overflow);
+                                    batch_new_ids, text_insert_layout, allow_text_insert_overflow, initial_paragraph_styles);
       return ApplyTextInsert(document, pdf, metadata, command, resources,
                              font_cache, batch_new_ids, text_insert_layout,
                              allow_text_insert_overflow);
@@ -5863,6 +5921,20 @@ bool ApplyTransactionToPdf(
     TextInsertLayoutResult* command_insert_layout =
         text_insert_layout && single_command ? text_insert_layout : nullptr;
     const auto& original = transaction.commands[index];
+    size_t style_count = 0;
+    if (original.type == EditType::kTextReflow ||
+        (original.type == EditType::kTextInsert && (original.flags & kTextParagraphFlag))) {
+      // Reflow and its initial range styles are one paragraph construction.
+      // A temporary single-font paragraph may not cover the mixed text at all,
+      // and can paginate before the actual sizes/fonts have been applied.
+      for (size_t next = index + 1; next < transaction.commands.size(); ++next) {
+        const auto& style = transaction.commands[next];
+        if (style.type != EditType::kTextStyle || style.page_id != original.page_id ||
+            style.ids.size() != 1 || style.ids[0] != original.target_id + ":text") break;
+        ++style_count;
+      }
+    }
+    const auto initial_styles = std::span<const EditCommand>(transaction.commands).subspan(index + 1, style_count);
     const auto current_page = [&](const std::string& block) {
       const auto moved = metadata->paragraph_relocations.find(block);
       return moved != metadata->paragraph_relocations.end() && moved->second.first == original.page_id
@@ -5885,10 +5957,11 @@ bool ApplyTransactionToPdf(
       if (!ApplyCommand(document, pdf, metadata, command,
                         resources, font_cache, &batch_new_ids, command_bounds,
                         command_overflow, command_insert_layout,
-                        command_insert_layout && allow_text_insert_overflow)) return false;
+                        command_insert_layout && allow_text_insert_overflow, initial_styles)) return false;
       if ((command.type == EditType::kPagesDelete || command.type == EditType::kObjectsDelete) &&
           !ReconcileParagraphFlows(pdf, metadata)) return false;
     }
+    index += style_count;
   }
   std::set<std::string> decorated_pages = metadata->flow_changed_pages;
   for (const auto& command : transaction.commands) if (!command.page_id.empty()) decorated_pages.insert(command.page_id);

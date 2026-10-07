@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { EditableObject, PageModel } from '@pdf-editor/contracts';
-import { containsRect, isContainerInterior, pickObject, selectionScope } from '../src/ui/object-selection.js';
-import { detectParagraph } from '../src/ui/paragraph-detection.js';
+import { containsRect, isContainerInterior, normalizeSelection, objectSelectionIds, pickObject, selectionScope } from '../src/ui/object-selection.js';
+import { detectParagraph, selectedTextObject } from '../src/ui/paragraph-detection.js';
+import { logicalTextBlock, logicalTextOffset, logicalTextRange, paragraphInputRange, sourceTextOffset } from '../src/ui/source-text.js';
+import { applyParagraphFormats, canFormatSourceParagraph, resolveParagraphRunFont, sourceParagraphLayout, sourceParagraphStyles } from '../src/ui/source-paragraph-edit.js';
+import { paragraphEditRange, PdfTextLayer, type TextSelectionTarget } from '../src/ui/PdfTextLayer.js';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { changedBlock, textChange } from '../src/ui/text-change.js';
 
 function object(id: string, x: number, y: number, width: number, height: number, index = 0): EditableObject {
@@ -71,6 +76,111 @@ describe('spatial paragraph detection', () => {
     const next = object('next', 30, 95, 100, 20, 2);
     const candidate = detectParagraph(page([a, b, next]), 'a')!;
     expect(candidate.bounds.y + candidate.bounds.height).toBe(95);
+  });
+});
+
+describe('paragraph selection and source-preserving formatting', () => {
+  it('uses the same whole paragraph for hover, click, edit and transforms', () => {
+    const a = text('a', 30, 40, 0, 'Hello world'), b = text('b', 30, 68, 1, 'Second line');
+    b.bounds.width = 60;
+    const model = page([b, a]);
+    const scope = selectionScope(model, []);
+    expect(scope).toHaveLength(1);
+    expect(scope[0]!.bounds).toEqual(detectParagraph(model, 'b')!.bounds);
+    expect(pickObject(scope, 50, 75, 0)?.id).toBe('a');
+    expect(objectSelectionIds(model, 'b')).toEqual(['a', 'b']);
+    expect(selectedTextObject(model, ['a', 'b'])?.id).toBe('a');
+    const paragraph = detectParagraph(model, 'a')!;
+    const commands = sourceParagraphLayout(model, paragraph, { alignment: 'center' });
+    expect(commands).toEqual([{ type: 'objects.transform', pageId: 'p', objectIds: ['b'], matrix: [1, 0, 0, 1, 25, 0] }]);
+    expect(a.textBlock!.runs[0]!.text).toBe('Hello world');
+    expect(sourceParagraphStyles(model, paragraph, paragraph.runs, [])).toEqual([]);
+    const centered = { ...b, bounds: { ...b.bounds, x: 55 } };
+    const centeredModel = page([centered, a]);
+    expect(detectParagraph(centeredModel, 'b')!.style.alignment).toBe('center');
+    expect(objectSelectionIds(centeredModel, 'b')).toEqual(['a', 'b']);
+    expect(sourceParagraphLayout(centeredModel, detectParagraph(centeredModel, 'a')!, { alignment: 'left' })[0])
+      .toMatchObject({ objectIds: ['b'], matrix: [1, 0, 0, 1, -25, 0] });
+  });
+  it('retains explicit/multiple spaces and restores internal TJ word gaps without changing native ranges', () => {
+    const a = text('a', 30, 40, 0, 'AlphaBeta  Gamma'), b = text('b', 30, 68, 1, 'Second line');
+    a.textBlock!.inferredSpaces = [5];
+    a.textBlock!.characters = [{ range: [5, 6], bounds: a.bounds, angle: 0, rtl: false }];
+    const block = logicalTextBlock(a.textBlock!);
+    expect(block.runs[0]!.text).toBe('Alpha Beta  Gamma');
+    expect(block.characters![0]!.range).toEqual([6, 7]);
+    expect(logicalTextOffset(a.textBlock!, 9)).toBe(10);
+    expect(sourceTextOffset(a.textBlock!, 10)).toBe(9);
+    const model = page([a, b]), paragraph = detectParagraph(model, 'a')!;
+    expect(paragraph.text).toBe('Alpha Beta  Gamma Second line');
+    const runs = applyParagraphFormats(paragraph.runs, [{ range: [6, 10], style: { color: [1, 0, 0] } }]);
+    expect(sourceParagraphStyles(model, paragraph, runs, [])).toEqual([{ type: 'text.style', pageId: 'p', blockIds: ['a-text'],
+      range: [5, 9], style: { color: [1, 0, 0] } }]);
+    expect(a.textBlock!.runs[0]!.text).toBe('AlphaBeta  Gamma');
+  });
+  it('falls back to native reflow when source layout leaves its frame/page or loses the paragraph group', () => {
+    const model = page([text('a', 30, 40, 0), text('b', 30, 68, 1)]);
+    const paragraph = detectParagraph(model, 'a')!;
+    expect(canFormatSourceParagraph(model, paragraph, { lineHeight: 1.6 })).toBe(true);
+    expect(canFormatSourceParagraph(model, paragraph, { lineHeight: 2 })).toBe(false);
+    expect(canFormatSourceParagraph(model, paragraph, { lineSpacing: 100 })).toBe(false);
+    expect(canFormatSourceParagraph(model, paragraph, { firstLineIndent: 1000 })).toBe(false);
+    expect(canFormatSourceParagraph(model, paragraph, { firstLineIndent: -1000 })).toBe(false);
+    const short = { ...model, heightPt: 95 };
+    expect(canFormatSourceParagraph(short, detectParagraph(short, 'a')!, { lineHeight: 1.9 })).toBe(false);
+  });
+  it('renders TJ spaces and maps cross-block edits without counting seed gaps twice', () => {
+    const a = text('a', 30, 40, 0, 'Intro'), b = text('b', 30, 68, 1, 'AlphaBeta'), c = text('c', 30, 96, 2, 'GammaDelta');
+    b.textBlock!.inferredSpaces = [5]; c.textBlock!.inferredSpaces = [5];
+    const model = page([a, b, c]), paragraph = detectParagraph(model, 'a')!;
+    expect(paragraph.text).toBe('Intro Alpha Beta Gamma Delta');
+    const target = (object: EditableObject, range: [number, number], logicalRange?: [number, number]): TextSelectionTarget => ({
+      objectId: object.id, blockId: object.textBlock!.id, range, ...(logicalRange ? { logicalRange } : {}), text: '', rects: [],
+    });
+    const selection = paragraphEditRange(paragraph, [target(b, [5, 9], [6, 10]), target(c, [0, 5], [0, 5])])!;
+    expect(selection).toEqual([6, 16]);
+    const inputRange = paragraphInputRange(b.textBlock!, selection, paragraph.sourceRanges.b![0], true);
+    expect(inputRange).toEqual([12, 22]);
+    expect(paragraph.text.slice(...inputRange)).toBe('Beta Gamma');
+    for (const caret of [5, 6]) {
+      const selected = paragraphEditRange(paragraph, [target(b, [5, 5], [caret, caret])])!;
+      expect(paragraphInputRange(b.textBlock!, selected, paragraph.sourceRanges.b![0], true)).toEqual([6 + caret, 6 + caret]);
+    }
+    const gap = paragraphEditRange(paragraph, [target(b, [5, 5], [5, 6])])!;
+    expect(paragraphInputRange(b.textBlock!, gap, paragraph.sourceRanges.b![0], true)).toEqual([11, 12]);
+    expect(paragraph.text.slice(...paragraphInputRange(b.textBlock!, gap, 6, true))).toBe(' ');
+    expect(logicalTextRange(b.textBlock!, [0, 5])).toEqual([0, 5]);
+    expect(paragraphInputRange(b.textBlock!, [5, 9], 6)).toEqual([12, 16]);
+    expect(sourceTextOffset(b.textBlock!, 6)).toBe(5);
+    expect(sourceTextOffset(b.textBlock!, 10)).toBe(9);
+    const shown = { page: model, info: { revision: 0, permissions: { modify: true }, capabilities: ['text.replace'] } } as Parameters<typeof PdfTextLayer>[0]['document'];
+    const markup = renderToStaticMarkup(createElement(PdfTextLayer, { document: shown, zoom: 1, disabled: false,
+      onEdit() {}, onInsert() {}, onAnnotate: async () => {}, onError() {} }));
+    expect(markup).toContain('Alpha Beta');
+    expect(markup).toContain('Gamma Delta');
+  });
+  it('uses visible font metrics when materializing uniformly scaled source text', () => {
+    const a = text('a', 30, 40, 0), b = text('b', 30, 68, 1);
+    for (const item of [a, b]) { item.transform = [2, 0, 0, -2, 30, item.bounds.y]; item.textBlock!.runs[0]!.style.fontSize = 10; }
+    const result = detectParagraph(page([a, b]), 'a')!;
+    expect(result.style.fontSize).toBe(20);
+    expect(result.style.characterSpacing).toBe(4);
+    expect(result.lineHeight).toBe(1.4);
+    expect(a.textBlock!.runs[0]!.style.fontSize).toBe(10);
+    const stretched = { ...a, transform: [3, 0, 0, -2, 30, 40] as [number, number, number, number, number, number] };
+    expect(detectParagraph(page([stretched, b]), 'a', true)).toBeNull();
+  });
+  it('preserves exact loaded faces and infers missing bold/italic metadata from PDF names', () => {
+    const fonts = [{ id: 'regular', family: 'Liberation Sans', style: 'Regular', weight: 400, italic: false, format: 'ttf' as const },
+      { id: 'bold-italic', family: 'Liberation Sans', style: 'Bold Italic', weight: 700, italic: true, format: 'ttf' as const },
+      { id: 'imported', family: 'Liberation Sans', style: 'Regular', weight: 400, italic: false, format: 'ttf' as const }];
+    expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'pdf:Helvetica-BoldOblique' }, sourceObjectIds: [] }, fonts)).toBe('bold-italic');
+    expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'imported' }, sourceObjectIds: [] }, fonts)).toBe('imported');
+  });
+  it('removes parent/child double selection after additive selection too', () => {
+    const parent = { ...object('parent', 0, 0, 200, 200), type: 'form' as const }, child = object('child', 20, 20, 20, 20);
+    child.locator.containerPath = [0];
+    expect(normalizeSelection(page([parent, child]), ['child', 'parent'])).toEqual(['parent']);
   });
 });
 

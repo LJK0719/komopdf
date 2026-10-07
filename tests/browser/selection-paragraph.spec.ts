@@ -10,7 +10,7 @@ async function open(page: Page, bytes = fixture()) {
   await expect(page.getByRole('button', { name: 'Edit content', exact: true })).toBeEnabled({ timeout: 60_000 });
   await expect(page.getByRole('button', { name: 'Merge PDFs', exact: true })).toHaveCount(0);
   await page.locator('.ribbon-tabs').getByRole('button', { name: 'Edit', exact: true }).click();
-  await expect(page.locator('.object-hitbox')).toHaveCount(4);
+  await expect(page.locator('.object-hitbox')).toHaveCount(3);
 }
 
 test('container interiors start a marquee, borders move, and nearby small objects win', async ({ page }) => {
@@ -21,7 +21,7 @@ test('container interiors start a marquee, borders move, and nearby small object
   const at = (x: number, y: number) => page.mouse.move(rect.x + x * scale, rect.y + y * scale);
   await at(30, 30); await page.mouse.down();
   await at(300, 180); await page.mouse.up();
-  await expect(page.locator('.object-hitbox-selected')).toHaveCount(3);
+  await expect(page.locator('.object-hitbox-selected')).toHaveCount(2);
   const frame = page.locator('.object-hitbox[data-object-type="path"]').last();
   await expect(frame).toHaveAttribute('aria-pressed', 'false');
   const text = page.locator('.object-hitbox[data-object-type="text"]').first();
@@ -33,7 +33,7 @@ test('container interiors start a marquee, borders move, and nearby small object
   await expect(frame).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await text.dblclick();
-  await expect(page.getByRole('textbox', { name: 'Page text', exact: true })).toHaveValue('Alpha text.');
+  await expect(page.getByRole('textbox', { name: 'Page text', exact: true })).toHaveText('Alpha text. Bravo text.');
   await page.getByRole('textbox', { name: 'Page text', exact: true }).press('Escape');
   await page.screenshot({ path: 'tmp/browser/nested-selection.png' });
 });
@@ -46,12 +46,12 @@ test('tracking survives typing and bold; recognized paragraphs keep line spacing
   await expect(spacing).toHaveValue('3');
   await text.dblclick();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });
-  await input.fill('Alto text.');
+  await input.fill('Alto text.\nBravo text.');
   await input.press('Control+Enter');
   await expect(input).toHaveCount(0);
   await expect(spacing).toHaveValue('3');
-  await page.getByRole('button', { name: 'Edit paragraph', exact: true }).click();
-  await expect(input).toHaveValue('Alto text.\nBravo text.');
+  await text.dblclick();
+  await expect.poll(() => input.locator('p').allTextContents()).toEqual(['Alto text.', 'Bravo text.']);
   await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(1);
   await expect(spacing).toHaveValue('3');
   const line = page.getByRole('spinbutton', { name: 'Line spacing', exact: true });
@@ -74,7 +74,7 @@ test('tracking survives typing and bold; recognized paragraphs keep line spacing
   await (await chooser).setFiles({ name: 'paragraph-saved.pdf', mimeType: 'application/pdf', buffer: bytes });
   await page.locator('.ribbon-tabs').getByRole('button', { name: 'Edit', exact: true }).click();
   await text.dblclick();
-  await expect(input).toHaveValue('Alto text.\nBrave text.');
+  await expect.poll(() => input.locator('p').allTextContents()).toEqual(['Alto text.', 'Brave text.']);
   await expect(line).toHaveValue('1.6');
   await expect(spacing).toHaveValue('3');
   await expect(page.getByRole('combobox', { name: 'Paragraph alignment', exact: true })).toHaveValue('center');
@@ -83,7 +83,7 @@ test('tracking survives typing and bold; recognized paragraphs keep line spacing
   await expect(input).toHaveCount(0);
   await expect(page.locator('.property-error')).toHaveCount(0);
   await text.dblclick();
-  await expect(input).toHaveValue('Alto text.\nZebra text.');
+  await expect.poll(() => input.locator('p').allTextContents()).toEqual(['Alto text.', 'Zebra text.']);
   await page.getByRole('combobox', { name: 'Language' }).selectOption('zh-CN');
   await page.screenshot({ path: 'tmp/browser/paragraph-properties-zh.png' });
 });

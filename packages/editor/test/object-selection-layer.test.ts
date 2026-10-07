@@ -51,7 +51,7 @@ describe('ObjectSelectionLayer', () => {
       { ...dummyPage.objects[0]!, id: 'outer', type: 'group' },
       { ...dummyPage.objects[0]!, id: 'inner', type: 'group',
         locator: { pageId: 'page-1', containerPath: [0], objectIndex: 0 } },
-      { ...dummyPage.objects[1]!, id: 'leaf',
+      { ...dummyPage.objects[0]!, id: 'leaf',
         locator: { pageId: 'page-1', containerPath: [0, 0], objectIndex: 0 } },
     ] };
     const render = (selectedIds: string[]) => renderToString(React.createElement(ObjectSelectionLayer, {

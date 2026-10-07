@@ -1,4 +1,5 @@
 import type { EditableObject, PageModel, Rect } from '@pdf-editor/contracts';
+import { detectParagraph, detectParagraphs } from './paragraph-detection.js';
 
 export function containsRect(outer: Rect, inner: Rect, tolerance = 0): boolean {
   return inner.x >= outer.x - tolerance && inner.y >= outer.y - tolerance &&
@@ -11,9 +12,32 @@ export function selectionScope(page: PageModel, selectedIds: string[]): Editable
     .map(object => [...object.locator.containerPath, object.locator.objectIndex]);
   const parent = page.objects.find(object => selectedIds.includes(object.id))?.locator.containerPath;
   const editing = parent && groups.find(path => path.length === parent.length && path.every((part, i) => parent[i] === part));
-  return page.objects.filter(object => editing
+  const visible = page.objects.filter(object => editing
     ? object.locator.containerPath.length === editing.length && editing.every((part, i) => object.locator.containerPath[i] === part)
     : !groups.some(path => path.length <= object.locator.containerPath.length && path.every((part, i) => object.locator.containerPath[i] === part)));
+  const paragraphs = detectParagraphs(page);
+  const byId = new Map(paragraphs.flatMap(paragraph => paragraph.objects.map(object => [object.id, paragraph] as const)));
+  return visible.flatMap(object => {
+    if (object.type === 'text' && (!object.textBlock || !object.textBlock.runs.some(run => run.text.trim()))) return [];
+    const paragraph = byId.get(object.id);
+    if (!paragraph) return [object];
+    const representative = paragraph.objects.find(item => item.textBlock!.runs.some(run => run.text.trim()));
+    if (representative?.id !== object.id) return [];
+    return [{ ...object, bounds: paragraph.bounds, textBlock: { ...object.textBlock!,
+      bounds: paragraph.bounds, runs: paragraph.runs, sourceObjectIds: paragraph.objects.map(item => item.id) } }];
+  });
+}
+
+export function objectSelectionIds(page: PageModel, id: string): string[] {
+  return detectParagraph(page, id)?.objects.map(object => object.id) ?? [id];
+}
+
+export function normalizeSelection(page: PageModel, ids: string[]): string[] {
+  const objects = page.objects.filter(object => ids.includes(object.id));
+  return objects.filter(object => !objects.some(parent => parent.id !== object.id &&
+    ['form', 'group'].includes(parent.type) && object.locator.containerPath.length > parent.locator.containerPath.length &&
+    [...parent.locator.containerPath, parent.locator.objectIndex].every((part, i) => object.locator.containerPath[i] === part)))
+    .map(object => object.id);
 }
 
 // Geometry, not DOM paint order, decides which nested hitbox receives the click.
