@@ -50,7 +50,7 @@ function ConnectedAccount({ children }: { children: ReactNode }) {
   const request = useCallback(async (path: string, body?: unknown) => {
     const response = await authenticatedFetch(path, body === undefined ? undefined : {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await response.json();
+    const data = await response.json().catch(() => { throw new Error('Account service is unavailable. Please try again.'); });
     if (!response.ok) throw new Error(data.error?.message || 'Account request failed.');
     return data;
   }, [authenticatedFetch]);
@@ -72,13 +72,13 @@ function ConnectedAccount({ children }: { children: ReactNode }) {
     login: () => { clerk.openSignIn(); }, profile: () => { clerk.openUserProfile(); }, logout: async () => { await clerk.signOut(); setAccount(null); }, authenticatedFetch }}>{children}</Context.Provider>;
 }
 export function AccountStrip() {
-  const { account, signedIn, login, error } = useKomoAccount();
+  const { account, ready, signedIn, login, error } = useKomoAccount();
   const { t } = useI18n();
   return <div className="komo-account-strip">
-    <span>{account ? account.plan === 'plus' ? 'KOMO Plus' : t('{count} credits left', { count: Math.floor(account.remainingCredits).toLocaleString() })
+    <span>{account ? account.plan === 'plus' ? 'KOMO Plus' : t('{count} credits left', { count: account.remainingCredits.toLocaleString(undefined, { maximumFractionDigits: 4 }) })
       : t(signedIn ? 'Loading credits…' : '1,000 free credits · PDF tools always free')}</span>
     {signedIn ? <a href="/account/" target="_blank" rel="noreferrer">{t(account?.plan === 'plus' ? 'Account' : 'Plus · $4.99/mo')}</a>
-      : <button type="button" disabled={Boolean(error)} onClick={login}>{t('Sign in')}</button>}
+      : <button type="button" disabled={!ready || Boolean(error)} onClick={login}>{t('Sign in')}</button>}
     {error ? <p role="status">{t(error)}</p> : null}
   </div>;
 }

@@ -108,22 +108,19 @@ function errorBody(code: string, message: string): { error: { code: string; mess
 }
 
 type AnthropicErrorType = 'invalid_request_error' | 'rate_limit_error' | 'api_error' | 'overloaded_error';
-type PreparedAgentRequest = { body: Buffer; stream: boolean; hasImage: boolean };
+type PreparedAgentRequest = { body: Buffer; stream: boolean; hasImage: boolean; inputBound: number };
 
-function inputTokenBound(value: unknown): number {
-  let images = 0;
-  const imageSources = new WeakSet<object>();
+function inputTokenBound(value: unknown, validatedImageSources: readonly object[]): number {
+  const imageSources = new WeakSet(validatedImageSources);
   const json = JSON.stringify(value, function (key, item) {
+    // Only attachment sources collected by request validation may omit their payload.
+    // Image-shaped objects in tool inputs, schemas, and metadata remain ordinary JSON.
     if (key === 'data' && typeof item === 'string' && imageSources.has(this)) return '';
-    if (item && typeof item === 'object') {
-      if (item.type === 'image' && item.source?.type === 'base64') { imageSources.add(item.source); images += 1; }
-      else if (typeof item.mimeType === 'string' && item.mimeType.startsWith('image/')) { imageSources.add(item); images += 1; }
-    }
     return item;
   });
   // UTF-8 bytes upper-bound ordinary text tokens; image payload bytes are not tokens.
   // Include template overhead and a conservative per-image allowance instead.
-  return Buffer.byteLength(json, 'utf8') + 8192 + images * 8192;
+  return Buffer.byteLength(json, 'utf8') + 8192 + validatedImageSources.length * 8192;
 }
 
 function anthropicErrorBody(type: AnthropicErrorType, message: string): { type: 'error'; error: { type: AnthropicErrorType; message: string } } {
@@ -176,7 +173,7 @@ function base64Bytes(data: string): number {
   return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
 }
 
-function scanAgentContent(value: unknown, config: GatewayConfig, state: { images: number; totalBytes: number }): void {
+function scanAgentContent(value: unknown, config: GatewayConfig, state: { images: number; totalBytes: number; imageSources: object[] }): void {
   if (typeof value === 'string' || value === null || value === undefined) return;
   if (Array.isArray(value)) {
     for (const item of value) scanAgentContent(item, config, state);
@@ -199,9 +196,10 @@ function scanAgentContent(value: unknown, config: GatewayConfig, state: { images
     if (bytes > config.limits.imageFileBytes) throw new AgentRequestError('Image attachment exceeds size limit');
     state.totalBytes += bytes;
     if (state.totalBytes > config.limits.imageFileBytes) throw new AgentRequestError('Total image attachments exceed size limit');
+    state.imageSources.push(source);
     return;
   }
-  if (block.type === 'tool_result') scanAgentContent(block.content, config, state);
+  if (block.type === 'tool_result' && Array.isArray(block.content)) scanAgentContent(block.content, config, state);
 }
 
 function prepareAgentRequest(body: unknown, endpoint: AnthropicEndpoint, config: GatewayConfig): PreparedAgentRequest {
@@ -225,7 +223,7 @@ function prepareAgentRequest(body: unknown, endpoint: AnthropicEndpoint, config:
     }
     if (source.stream !== undefined && typeof source.stream !== 'boolean') throw new AgentRequestError('stream must be a boolean');
   }
-  const scan = { images: 0, totalBytes: 0 };
+  const scan = { images: 0, totalBytes: 0, imageSources: [] as object[] };
   const messages = Array.isArray(source.messages) ? source.messages : [];
   for (const message of messages) scanAgentContent(record(message)?.content, config, scan);
   scanAgentContent(source.system, config, scan);
@@ -234,6 +232,7 @@ function prepareAgentRequest(body: unknown, endpoint: AnthropicEndpoint, config:
     body: Buffer.from(JSON.stringify(forwarded), 'utf8'),
     stream: endpoint === 'messages' && source.stream === true,
     hasImage: scan.images > 0,
+    inputBound: inputTokenBound(forwarded, scan.imageSources),
   };
 }
 
@@ -420,7 +419,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
 
     let outputTokens: number;
     try {
-      outputTokens = reserve(fastifyRequest, inputTokenBound(request), options.config.limits.maxOutputTokens);
+      outputTokens = reserve(fastifyRequest, inputTokenBound(request, request.context.images ?? []), options.config.limits.maxOutputTokens);
     } catch (error) {
       if (!(error instanceof AccountError)) throw error;
       await reply.code(error.statusCode).send(errorBody(error.code, error.message)); return;
@@ -552,7 +551,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       if (endpoint === 'messages') {
         const body = JSON.parse(prepared.body.toString('utf8'));
         const thinkingBudget = body.thinking?.type === 'enabled' && Number.isSafeInteger(body.thinking.budget_tokens) ? body.thinking.budget_tokens : 0;
-        body.max_tokens = reserve(fastifyRequest, inputTokenBound(body), body.max_tokens, Math.max(1, thinkingBudget + 1));
+        body.max_tokens = reserve(fastifyRequest, prepared.inputBound, body.max_tokens, Math.max(1, thinkingBudget + 1));
         prepared.body = Buffer.from(JSON.stringify(body));
       }
     } catch (error) {

@@ -10,7 +10,7 @@ export type AccountConfig = { publishableKey: string; secretKey: string; publicO
 export class AccountService {
   readonly stripe: Stripe | undefined;
   readonly clerk: ReturnType<typeof createClerkClient>;
-  private readonly checkouts = new Map<string, Promise<string>>();
+  private readonly checkouts = new Map<string, Promise<{ url: string; kind: 'checkout' | 'portal'; sessionId?: string }>>();
   private readonly profiles = new Map<string, { expires: number; data: Promise<{ name: string; email: string; imageUrl: string }> }>();
   constructor(readonly store: AccountStore, readonly config: AccountConfig) {
     this.stripe = config.stripeKey ? new Stripe(config.stripeKey) : undefined;
@@ -66,14 +66,15 @@ export class AccountService {
     if (current.subscription && current.subscription !== subscription.id && subscription.status !== 'active') return;
     this.store.setSubscription(id, subscription.id, subscription.status, item.current_period_end, subscription.cancel_at_period_end);
   }
-  checkout(id: string): Promise<string> {
+  async checkout(id: string): Promise<string> { return (await this.checkoutDestination(id)).url; }
+  checkoutDestination(id: string): Promise<{ url: string; kind: 'checkout' | 'portal'; sessionId?: string }> {
     const pending = this.checkouts.get(id);
     if (pending) return pending;
     const checkout = this.createCheckout(id).finally(() => this.checkouts.delete(id));
     this.checkouts.set(id, checkout);
     return checkout;
   }
-  private async createCheckout(id: string): Promise<string> {
+  private async createCheckout(id: string): Promise<{ url: string; kind: 'checkout' | 'portal'; sessionId?: string }> {
     const stripe = this.billing();
     const price = await stripe.prices.retrieve(this.config.stripePriceId!);
     if (!price.active || price.currency !== 'usd' || price.unit_amount !== 499 || price.recurring?.interval !== 'month' || price.recurring.interval_count !== 1) {
@@ -90,11 +91,11 @@ export class AccountService {
     // Check Stripe too: a delayed webhook must not cause a duplicate subscription.
     const existing = await stripe.subscriptions.list({ customer: user.customer!, status: 'all', limit: 100 });
     if (existing.data.some(sub => ['active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'paused'].includes(sub.status)
-      && sub.items.data.some(item => item.price.id === this.config.stripePriceId))) return this.portal(id);
+      && sub.items.data.some(item => item.price.id === this.config.stripePriceId))) return { url: await this.portal(id), kind: 'portal' };
     const openSessions = await stripe.checkout.sessions.list({ customer: user.customer!, status: 'open', limit: 100 });
     const pending = openSessions.data.find(session => session.mode === 'subscription' && session.client_reference_id === id
       && session.metadata?.komoPriceId === this.config.stripePriceId && session.url);
-    if (pending?.url) return pending.url;
+    if (pending?.url) return { url: pending.url, kind: 'checkout', sessionId: pending.id };
     const session = await stripe.checkout.sessions.create({ mode: 'subscription', customer: user.customer!,
       line_items: [{ price: this.config.stripePriceId!, quantity: 1 }], client_reference_id: id,
       metadata: { komoUserId: id, komoPriceId: this.config.stripePriceId! }, subscription_data: { metadata: { komoUserId: id, product: 'komopdf' } },
@@ -103,7 +104,7 @@ export class AccountService {
       cancel_url: `${this.config.publicOrigin}/account/?checkout=cancelled`,
     }, { idempotencyKey: `komopdf-checkout-${id}-${randomUUID()}` });
     if (!session.url) throw new AccountError('CHECKOUT_UNAVAILABLE', 503, 'Checkout is unavailable.');
-    return session.url;
+    return { url: session.url, kind: 'checkout', sessionId: session.id };
   }
   async portal(id: string): Promise<string> {
     const customer = this.store.user(id).customer;
@@ -154,7 +155,7 @@ export class AccountService {
       else await this.authenticate(request);
       return { ok: true };
     }));
-    app.post('/api/account/checkout', route(async request => ({ url: await this.checkout(await this.authenticate(request)) })));
+    app.post('/api/account/checkout', route(async request => this.checkoutDestination(await this.authenticate(request))));
     app.post('/api/account/portal', route(async request => ({ url: await this.portal(await this.authenticate(request)) })));
     app.post('/api/account/checkout/confirm', route(async request => {
       const id = await this.authenticate(request);

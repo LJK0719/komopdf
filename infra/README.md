@@ -23,7 +23,7 @@
 将模板包含在 `http {}` 内。先准备真实证书和站点目录，再启用 TLS 配置；不能在证书路径尚不存在时先 reload。
 
 - 网页两条 AI 路由分别 512 KiB / 3 MiB；桌面 SDK 的 `/api/agent/v1/messages` 和 `/api/agent/v1/messages/count_tokens` 使用 3 MiB 上限并共用网关预算。请求与响应关闭缓存/缓冲，禁止代理响应临时文件。HTTP/1.1 支持请求流式传递。
-- 桌面发行资源可由 `node scripts/prepare-desktop-runtime.mjs --service-url https://<已绑定域名>/api/agent` 生成公开 `agent-service.json`，只含URL/model；SDK使用公开占位值，不向安装包下发上游密钥。这不是账号鉴权，公共服务仍需服务端预算限制。当前配置模板未据此自动部署。
+- 桌面发行资源可由 `node scripts/prepare-desktop-runtime.mjs --service-url https://<已绑定域名>/api/agent` 生成公开 `agent-service.json`，只含URL/model；SDK使用用户的可撤销账户会话，不向安装包下发上游密钥。网关对模型请求执行账户鉴权、额度预占和实际 usage 结算；PDF 编辑不经过账户计费。
 - 200 秒反代读写超时大于应用的 180 秒总时限。真实 IP 用 `$remote_addr` 覆盖，不透传客户端自报地址。
 - `/editor/` 才可 SPA 回退；缺失 WASM、字体、JS 和 JSON 返回真实 404。
 - 仅 `name.<16–64 位 SHA-256 前缀>.ext` 的约定资源长期 immutable；其他名称重新验证，不因位于 assets/engines/fonts 目录就当作内容哈希。

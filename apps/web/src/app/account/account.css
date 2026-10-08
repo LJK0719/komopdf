@@ -13,6 +13,7 @@
 .account-page button { background: #25382f; color: #fffefa; padding: 10px 16px; border-radius: 5px; font-size: 13px; cursor: pointer; }
 .account-page .account-signout { background: transparent; border: 1px solid #d4d6ca; color: inherit; }
 .account-page button:disabled { opacity: .5; cursor: not-allowed; }
+.account-return-button { display: inline-block; background: #25382f; color: #fffefa; padding: 12px 20px; border-radius: 5px; font-size: 14px; }
 .account-page button:focus-visible, .account-page a:focus-visible { outline: 3px solid #9aa773; outline-offset: 3px; }
 .account-page .account-fine-print { font-size: 12px; color: #62685e; }
 .account-message { padding: 14px; border-radius: 5px; background: #e5ebd5; margin: 20px 0; }
