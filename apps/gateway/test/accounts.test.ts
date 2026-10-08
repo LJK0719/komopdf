@@ -75,6 +75,20 @@ describe('KOMO accounts and token ledger (isolated in-memory database)', () => {
     expect(create).toHaveBeenCalledTimes(2);
     expect(create.mock.calls[1]![1]?.idempotencyKey).not.toBe(firstKey);
   });
+  it('prefills Checkout customer identity from the signed-in account', async () => {
+    const service = new AccountService(store(), { publishableKey: 'pk_test_placeholder', secretKey: 'sk_test_placeholder',
+      publicOrigin: 'https://komopdf.com', stripeKey: 'rk_test_placeholder', stripePriceId: 'price_test' });
+    vi.spyOn(service.clerk.users, 'getUser').mockResolvedValue({ fullName: 'Reader', primaryEmailAddressId: 'email-1',
+      emailAddresses: [{ id: 'email-1', emailAddress: 'reader@example.com' }], imageUrl: '' } as never);
+    vi.spyOn(service.stripe!.prices, 'retrieve').mockResolvedValue({ active: true, currency: 'usd', unit_amount: 499,
+      recurring: { interval: 'month', interval_count: 1 } } as never);
+    const create = vi.spyOn(service.stripe!.customers, 'create').mockResolvedValue({ id: 'cus_reader' } as never);
+    vi.spyOn(service.stripe!.subscriptions, 'list').mockResolvedValue({ data: [] } as never);
+    vi.spyOn(service.stripe!.checkout.sessions, 'list').mockResolvedValue({ data: [] } as never);
+    vi.spyOn(service.stripe!.checkout.sessions, 'create').mockResolvedValue({ url: 'https://checkout.stripe.com/test' } as never);
+    await service.checkout('reader');
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ email: 'reader@example.com', name: 'Reader' }), expect.anything());
+  });
   it('removes Plus access when the current subscription no longer contains the KOMO price', async () => {
     const db = store(); db.setCustomer('u', 'cus_test');
     db.setSubscription('u', 'sub_test', 'active', Date.now() / 1000 + 3600, false);

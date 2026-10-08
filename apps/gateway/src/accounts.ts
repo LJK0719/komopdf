@@ -81,7 +81,10 @@ export class AccountService {
     }
     let user = this.store.user(id);
     if (!user.customer) {
-      const customer = await stripe.customers.create({ metadata: { komoUserId: id, product: 'komopdf' } }, { idempotencyKey: `komopdf-customer-${id}` });
+      const { profile } = await this.account(id);
+      const customer = await stripe.customers.create({ ...(profile.email ? { email: profile.email } : {}),
+        ...(profile.name ? { name: profile.name } : {}), metadata: { komoUserId: id, product: 'komopdf' } },
+        { idempotencyKey: `komopdf-customer-${id}` });
       this.store.setCustomer(id, customer.id); user = this.store.user(id);
     }
     // Check Stripe too: a delayed webhook must not cause a duplicate subscription.
