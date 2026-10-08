@@ -21,23 +21,25 @@ describe('KOMO accounts and token ledger (isolated in-memory database)', () => {
     const { lease } = db.reserve('user-a', 5000, 1000);
     db.settle(lease, { promptTokenCount: 110, candidatesTokenCount: 90, totalTokenCount: 200 }, true);
     db.settle(lease, { totalTokenCount: 200 }, true);
-    expect(db.snapshot('user-a').remainingCredits).toBe(998);
+    expect(db.snapshot('user-a').remainingCredits).toBe(999.98);
+    expect(db.snapshot('user-a').tokensPerCredit).toBe(10_000);
+    expect(FREE_TOKENS).toBe(10_000_000);
     expect(db.snapshot('user-b').remainingCredits).toBe(1000);
     expect(db.user('user-a').spent).toBe(200);
   });
   it('reserves concurrent requests and clamps output to remaining free tokens', () => {
-    const db = store(); const first = db.reserve('u', 60_000, 30_000);
+    const db = store(); const first = db.reserve('u', FREE_TOKENS - 40_000, 30_000);
     expect(() => db.reserve('u', 10_000, 100)).toThrow('Not enough credits');
     expect(db.reserve('u', 9900, 1000).maxOutput).toBe(100);
     db.settle(first.lease, null, false);
-    expect(db.snapshot('u').remainingCredits).toBe(900);
+    expect(db.snapshot('u').remainingCredits).toBe(999);
   });
   it('charges partial observed usage on cancellation, not a failed request without usage', () => {
     const db = store();
     const partial = db.reserve('u', 10_000, 1000);
     db.settle(partial.lease, { promptTokenCount: 500, candidatesTokenCount: 100, totalTokenCount: 600 }, false);
     const failed = db.reserve('u', 10_000, 1000); db.settle(failed.lease, null, false);
-    expect(db.snapshot('u').remainingCredits).toBe(994);
+    expect(db.snapshot('u').remainingCredits).toBe(999.94);
   });
   it('removes the ceiling only for a paid active subscription, and keeps end-of-period access after cancellation', () => {
     const db = store(); db.user('u');
