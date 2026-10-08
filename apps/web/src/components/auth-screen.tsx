@@ -43,7 +43,7 @@ function AuthContent({ signup }: { signup: boolean }) {
       onChange={event => setLocale(event.target.value as 'en' | 'zh-CN')}><option value="en">English</option><option value="zh-CN">简体中文</option></select></nav>
     <section className="auth-card" aria-label={t(signup ? 'Create your account' : 'Sign in to komopdf')}>
       {failure || error ? <><h1>{t('Unable to sign in. Please try again.')}</h1><p role="alert">{t(failure || error)}</p>
-        <a href={params?.get('desktop') ? '/sign-in/' : complete}>{t('Sign in')}</a>
+        {!params?.get('desktop') ? <a href={complete}>{t('Sign in')}</a> : null}
         {params?.get('desktop') ? <p>{t('Return to the app and start sign-in again.')}</p> : null}</>
         : !ready || !params ? <p role="status">{t('Loading…')}</p>
           : signedIn ? <><h1>{t('Signing you in…')}</h1><p role="status">{t(params.get('desktop') ? 'Returning to komopdf…' : 'Opening your account…')}</p></>

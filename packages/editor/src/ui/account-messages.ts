@@ -58,7 +58,6 @@ export const accountMessages: Record<string, string> = {
   'Manage your name, email and sign-in methods.': '管理姓名、邮箱和登录方式。',
   'Disconnecting…': '正在断开…', 'KolmoPDF disconnected.': 'KolmoPDF 已断开。',
   'Extensions add tools to KOMO.': '为 KOMO 添加扩展工具。', 'About': '关于', 'Version {version}': '版本 {version}',
-  'KOMO files': 'KOMO 生成的文件', 'Files created by KOMO for this document or folder.': 'KOMO 为当前文档或文件夹生成的文件。',
   'Open containing folder': '打开所在文件夹', 'Open containing folder for {name}': '打开 {name} 所在文件夹',
   'Open output folder': '打开生成文件夹', 'Open previous document files': '查看以往文档的生成文件',
   'No files generated yet.': '尚未生成文件。', 'Open a document or folder to view its generated files.': '打开文档或文件夹后，可查看相应的生成文件。',

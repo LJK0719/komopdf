@@ -2,8 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { AiUsage } from '@pdf-editor/contracts';
 
-export const FREE_TOKENS = 100_000;
-export const TOKENS_PER_CREDIT = 100;
+export const TOKENS_PER_CREDIT = 10_000;
+export const FREE_TOKENS = 1_000 * TOKENS_PER_CREDIT;
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 export class AccountError extends Error {
   constructor(public code: string, public statusCode: number, message: string) { super(message); }
