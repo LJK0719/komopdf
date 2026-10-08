@@ -11,8 +11,10 @@
     "test": "vitest run test"
   },
   "dependencies": {
+    "@clerk/backend": "^3.23.0",
     "@pdf-editor/contracts": "workspace:*",
     "fastify": "5.12.5",
+    "stripe": "^23.0.0",
     "tsx": "4.23.15"
   },
   "devDependencies": {

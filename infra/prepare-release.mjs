@@ -50,7 +50,7 @@ const gateway = JSON.parse(await readFile(path.join(root, 'apps/gateway/package.
 await writeFile(path.join(stageDir, 'release-manifest.json'), JSON.stringify({
   version, buildTime: new Date().toISOString(), targetPlatform: 'linux',
   gateway: { runtime: 'node24', entry: 'apps/gateway/dist/cli.mjs', dependencies: gateway.dependencies },
-  web: { framework: 'nextjs-app-router', exportPath: 'apps/web/dist', routes: ['/', '/editor/', '/download/', '/help/', '/privacy/'] },
+  web: { framework: 'nextjs-app-router', exportPath: 'apps/web/dist', routes: ['/', '/editor/', '/download/', '/help/', '/privacy/', '/account/'] },
 }, null, 2) + '\n');
 console.log('[4/4] Packaging the self-contained production tree, preserving internal links...');
 run('python3', ['infra/package-tar.py', stageDir, tarPath]);

@@ -8,7 +8,7 @@ import { CHAT_COPY_RESTRICTED, ChatContextError, prepareChatContext, SCAN_RECOMM
 import { chatFailure, chatHistory, type ChatExchange, type ChatCitation } from './komo-chat-state.js';
 import './komo-chat.css';
 
-type Props = { context: EditorAiContext; endpoint?: string };
+type Props = { context: EditorAiContext; endpoint?: string; fetch?: typeof fetch; onComplete?(): void };
 const scopeLabels = { document: 'Whole document', page: 'Current page', selection: 'Selected text objects' };
 const visualLabels = { auto: 'Automatic images', always: 'Include page images', text: 'Text only' };
 
@@ -17,7 +17,7 @@ export function KomoChatPanel(props: Props) {
   return <Chat key={`${props.context.document?.id ?? 'empty'}:${props.context.document?.revision ?? 0}:${props.context.document?.permissions.copy === true}`} {...props} />;
 }
 
-function Chat({ context, endpoint = '/api/v1/ai/requests' }: Props) {
+function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, onComplete }: Props) {
   const { t } = useI18n();
   const latest = useRef(context); latest.current = context;
   const controller = useRef<AbortController | null>(null);
@@ -75,7 +75,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests' }: Props) {
       setScanned(prepared.scanned);
       update(id, { progress: 'komo is preparing an answer…', pages: prepared.pageNumbers, images: prepared.imagePageNumbers });
       const workflow = new AiWorkflow({
-        endpoint, authorization,
+        endpoint, authorization, ...(fetch ? { fetch } : {}),
         getCurrentDocument: () => latest.current.document ?? { id: '', revision: -1 },
         nextTransactionId: () => crypto.randomUUID(),
         apply: async () => { throw new Error('Web komo is read-only'); },
@@ -104,7 +104,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests' }: Props) {
         if (caught instanceof ChatContextError) setScanned(caught.scanned);
         update(id, { status: 'failed', failure: chatFailure(caught) });
       }
-    } finally { controller.current = null; setBusy(false); }
+    } finally { controller.current = null; setBusy(false); onComplete?.(); }
   };
   const editQuestion = (prompt: string) => { setInstruction(prompt); input.current?.focus(); };
   const locate = (citation: ChatCitation) => {
@@ -163,10 +163,11 @@ function Chat({ context, endpoint = '/api/v1/ai/requests' }: Props) {
               : <><p className={exchange.status === 'failed' ? 'komo-chat-error' : ''} role={exchange.status === 'failed' ? 'alert' : 'status'}>
                 {t(exchange.failure?.message ?? 'Stopped. You can edit your question and send it again.')}</p>
                 <div className="komo-chat-actions">
-                  <button type="button" disabled={!canRun} onClick={() => void send(exchange.prompt)}>{t('Retry question')}</button>
+                  {exchange.failure?.retryable !== false ? <button type="button" disabled={!canRun} onClick={() => void send(exchange.prompt)}>{t('Retry question')}</button> : null}
                   <button type="button" onClick={() => editQuestion(exchange.prompt)}>{t('Edit question')}</button>
                   {exchange.failure?.action === 'page' ? <button type="button" disabled={!canRun} onClick={() => void send(exchange.prompt, 'page')}>{t('Ask about current page')}</button> : null}
                   {exchange.failure?.action === 'image' ? <button type="button" disabled={!canRun} onClick={() => void send(exchange.prompt, 'page', 'always')}>{t('Ask with page image')}</button> : null}
+                  {exchange.failure?.action === 'clear' ? <button type="button" disabled={busy} onClick={() => { setExchanges([]); setScanned(false); setNewAnswer(false); editQuestion(exchange.prompt); }}>{t('Clear conversation')}</button> : null}
                 </div>
               </>}
           </article>

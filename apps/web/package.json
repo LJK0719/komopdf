@@ -10,6 +10,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@clerk/localizations": "4.22.0",
+    "@clerk/react": "^6.17.6",
     "@pdf-editor/contracts": "workspace:*",
     "@pdf-editor/editor": "workspace:*",
     "class-variance-authority": "0.7.1",

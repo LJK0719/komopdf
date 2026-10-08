@@ -1,4 +1,15 @@
 import { buildGateway } from './server.js';
+import { mkdir, readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { AccountStore } from './account-store.js';
+import { AccountService } from './accounts.js';
+
+async function secret(name: string): Promise<string | undefined> {
+  if (process.env[name]) return process.env[name];
+  if (!process.env.CREDENTIALS_DIRECTORY) return undefined;
+  try { return (await readFile(join(process.env.CREDENTIALS_DIRECTORY, name), 'utf8')).trim() || undefined; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+}
 import { DEFAULT_CONFIG_PATH, loadGatewayConfig, readCredential } from './config.js';
 
 type CliOptions = { host: string; port: number; configPath: string; credentialFile?: string };
@@ -39,7 +50,21 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const config = await loadGatewayConfig(options.configPath);
   const apiKey = await readCredential(config, options.credentialFile);
-  const app = buildGateway({ config, apiKey });
+  let accounts: AccountService | undefined;
+  const clerkSecret = await secret('CLERK_SECRET_KEY');
+  const publishableKey = process.env.CLERK_PUBLISHABLE_KEY;
+  if (clerkSecret && publishableKey) {
+    const path = process.env.KOMO_ACCOUNT_DB;
+    if (!path) throw new Error('KOMO_ACCOUNT_DB must point to a persistent SQLite file outside release directories');
+    await mkdir(dirname(path), { recursive: true });
+    const publicOrigin = new URL(process.env.KOMO_PUBLIC_ORIGIN ?? 'https://komopdf.com').origin;
+    accounts = new AccountService(new AccountStore(path), { secretKey: clerkSecret, publishableKey, publicOrigin,
+      stripeKey: await secret('STRIPE_RESTRICTED_KEY'), stripePriceId: process.env.STRIPE_KOMO_PRICE_ID,
+      stripePortalConfigurationId: process.env.STRIPE_KOMO_PORTAL_CONFIG_ID,
+      webhookSecret: await secret('STRIPE_WEBHOOK_SECRET'), automaticTax: process.env.STRIPE_AUTOMATIC_TAX !== 'false' });
+  }
+  const app = buildGateway({ config, apiKey, ...(accounts ? { accounts } : {}) });
+  app.addHook('onClose', async () => accounts?.store.close());
   const close = async (): Promise<void> => {
     await app.close();
     process.exit(0);

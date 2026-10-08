@@ -2,7 +2,15 @@
 
 import * as React from 'react';
 import { EditorLoading } from './editor-loading';
-import { EditorShell, KomoChatPanel, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient } from '@pdf-editor/editor';
+import { EditorShell, KomoChatPanel, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient, type EditorAiContext } from '@pdf-editor/editor';
+import { AccountProvider, AccountStrip, useKomoAccount } from './account-provider';
+import '../app/account/account.css';
+
+function AccountChat({ context }: { context: EditorAiContext }) {
+  const { account, signedIn, authenticatedFetch, refresh } = useKomoAccount();
+  return <><AccountStrip /><KomoChatPanel key={signedIn ? account?.userId ?? 'loading-account' : 'signed-out'} context={{ ...context, disabled: context.disabled || !signedIn || !account || (account.plan === 'free' && account.remainingCredits <= 0) }}
+    fetch={authenticatedFetch} onComplete={() => void refresh()} /></>;
+}
 
 export default function EditorClient() {
   const [instances, setInstances] = React.useState<{
@@ -38,5 +46,5 @@ export default function EditorClient() {
   if (!instances) return <EditorLoading />;
 
   return <EditorShell engine={instances.engine} host={instances.host}
-    renderAiPanel={context => <KomoChatPanel context={context} />} />;
+    renderAiPanel={context => <AccountProvider><AccountChat context={context} /></AccountProvider>} />;
 }

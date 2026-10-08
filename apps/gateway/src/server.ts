@@ -6,6 +6,8 @@ import {
   type AiRequest, type AiUsage,
 } from '@pdf-editor/contracts';
 import { AdmissionController, type AdmissionLease } from './admission.js';
+import { AccountError, type AccountLease } from './account-store.js';
+import type { AccountService } from './accounts.js';
 import {
   AnthropicMessagesProxy, AnthropicProxyError,
   type AnthropicEndpoint, type AnthropicForwarder,
@@ -52,6 +54,9 @@ export type BuildGatewayOptions = {
   provider?: ProviderAdapter;
   agentProxy?: AnthropicForwarder;
   runtimeLogger?: GatewayRuntimeLogger;
+  accounts?: AccountService;
+  /** Only injected test fixtures may bypass account enforcement; CLI never sets this. */
+  allowUnauthenticatedForTests?: boolean;
 };
 
 class RequestTimeoutError extends Error {
@@ -104,6 +109,22 @@ function errorBody(code: string, message: string): { error: { code: string; mess
 
 type AnthropicErrorType = 'invalid_request_error' | 'rate_limit_error' | 'api_error' | 'overloaded_error';
 type PreparedAgentRequest = { body: Buffer; stream: boolean; hasImage: boolean };
+
+function inputTokenBound(value: unknown): number {
+  let images = 0;
+  const imageSources = new WeakSet<object>();
+  const json = JSON.stringify(value, function (key, item) {
+    if (key === 'data' && typeof item === 'string' && imageSources.has(this)) return '';
+    if (item && typeof item === 'object') {
+      if (item.type === 'image' && item.source?.type === 'base64') { imageSources.add(item.source); images += 1; }
+      else if (typeof item.mimeType === 'string' && item.mimeType.startsWith('image/')) { imageSources.add(item); images += 1; }
+    }
+    return item;
+  });
+  // UTF-8 bytes upper-bound ordinary text tokens; image payload bytes are not tokens.
+  // Include template overhead and a conservative per-image allowance instead.
+  return Buffer.byteLength(json, 'utf8') + 8192 + images * 8192;
+}
 
 function anthropicErrorBody(type: AnthropicErrorType, message: string): { type: 'error'; error: { type: AnthropicErrorType; message: string } } {
   return { type: 'error', error: { type, message } };
@@ -276,6 +297,22 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
   const admission = new AdmissionController(options.config.limits);
   const leases = new WeakMap<FastifyRequest, AdmissionLease>();
   const admittedAt = new WeakMap<FastifyRequest, number>();
+  const users = new WeakMap<FastifyRequest, string>();
+  const charges = new WeakMap<FastifyRequest, AccountLease>();
+  const reserve = (request: FastifyRequest, inputBytes: number, output: number, minimumOutput = 1): number => {
+    const id = users.get(request);
+    if (!id || !options.accounts) return output;
+    const result = options.accounts.reserve(id, inputBytes, output, minimumOutput);
+    charges.set(request, result.lease);
+    return result.maxOutput;
+  };
+  const settle = (request: FastifyRequest, usage: AiUsage | null, completed: boolean): void => {
+    const charge = charges.get(request);
+    if (charge && options.accounts) {
+      options.accounts.store.settle(charge, usage, completed);
+      charges.delete(request);
+    }
+  };
   const app = Fastify({
     logger: false,
     bodyLimit: Math.max(options.config.limits.imageBodyBytes, options.config.limits.agentBodyBytes),
@@ -306,7 +343,26 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       : errorBody(statusCode === 415 ? 'UNSUPPORTED_MEDIA_TYPE' : 'INVALID_REQUEST', 'Invalid request content'));
   });
 
+  if (options.accounts) {
+    options.accounts.register(app);
+    app.addHook('onRequest', async (request, reply) => {
+      if (!request.url.startsWith('/api/account') || request.url.startsWith('/api/account/webhook')) return;
+      const result = admission.acquire(request.ip, false);
+      if (!result.ok) { await reply.code(result.statusCode).send(errorBody(result.code, result.message)); return; }
+      leases.set(request, result);
+    });
+  }
   const admissionHook = (image: boolean, agent = false) => async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    if (!options.allowUnauthenticatedForTests) {
+      try {
+        if (!options.accounts) throw new AccountError('ACCOUNTS_NOT_CONFIGURED', 503, 'KOMO account service is not configured. PDF editing remains free.');
+        users.set(request, await options.accounts.authenticate(request));
+      } catch (error) {
+        const known = error instanceof AccountError;
+        await reply.code(known ? error.statusCode : 503).send(errorBody(known ? error.code : 'ACCOUNT_UNAVAILABLE', known ? error.message : 'Account service unavailable'));
+        return;
+      }
+    }
     if (agent) {
       const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
       if (contentType !== 'application/json') {
@@ -358,7 +414,14 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       return;
     }
 
-    const prepared = prepareProviderInput(request, options.config.limits.maxOutputTokens);
+    let outputTokens: number;
+    try {
+      outputTokens = reserve(fastifyRequest, inputTokenBound(request), options.config.limits.maxOutputTokens);
+    } catch (error) {
+      if (!(error instanceof AccountError)) throw error;
+      await reply.code(error.statusCode).send(errorBody(error.code, error.message)); return;
+    }
+    const prepared = prepareProviderInput(request, outputTokens);
     const controller = new AbortController();
     let clientCancelled = false;
     let finishReason: string | null = null;
@@ -416,6 +479,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       }
       await sendEvent(reply.raw, { type: 'result', response: createEnvelope(request, result) }, controller.signal);
       await usageEvent(reply.raw, observedUsage, 'Upstream did not return usage', controller.signal);
+      settle(fastifyRequest, observedUsage, true);
       await sendEvent(reply.raw, { type: 'done', requestId: request.requestId }, controller.signal);
       status = 'ok';
     } catch (error) {
@@ -439,6 +503,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
         }
       }
     } finally {
+      settle(fastifyRequest, observedUsage, false);
       try {
         await finishSse(reply.raw, controller.signal);
       } catch {
@@ -480,13 +545,21 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
     try {
       prepared = prepareAgentRequest(fastifyRequest.body, endpoint, options.config);
       headers = forwardedAnthropicHeaders(fastifyRequest);
+      if (endpoint === 'messages') {
+        const body = JSON.parse(prepared.body.toString('utf8'));
+        const thinkingBudget = body.thinking?.type === 'enabled' && Number.isSafeInteger(body.thinking.budget_tokens) ? body.thinking.budget_tokens : 0;
+        body.max_tokens = reserve(fastifyRequest, inputTokenBound(body), body.max_tokens, Math.max(1, thinkingBudget + 1));
+        prepared.body = Buffer.from(JSON.stringify(body));
+      }
     } catch (error) {
+      if (error instanceof AccountError) { await reply.code(error.statusCode).send(errorBody(error.code, error.message)); return; }
       const message = error instanceof AgentRequestError ? error.message : 'Invalid request content';
       await reply.code(400).send(anthropicErrorBody('invalid_request_error', message));
       return;
     }
     const remainingMs = options.config.limits.requestTimeoutMs - (Date.now() - startedAt);
     if (remainingMs <= 0) {
+      settle(fastifyRequest, null, false);
       await reply.code(504).send(anthropicErrorBody('overloaded_error', 'AI request processing timed out'));
       return;
     }
@@ -515,6 +588,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
         stream: prepared.stream,
         signal: controller.signal,
         response: reply.raw,
+        onUsage: usage => { observedUsage = usage; },
       });
       observedUsage = result.usage;
       finishReason = result.finishReason;
@@ -539,6 +613,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
         rawJson(reply.raw, safe.statusCode, anthropicErrorBody(safe.type, safe.message));
       }
     } finally {
+      settle(fastifyRequest, observedUsage, status === 'ok');
       clearTimeout(timeout);
       fastifyRequest.raw.removeListener('aborted', cancel);
       reply.raw.removeListener('close', cancel);

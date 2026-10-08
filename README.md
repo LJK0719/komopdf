@@ -50,7 +50,7 @@ Interaction references: the user's WPS PDF screenshots and PDFgear's official [t
 ## Source layout
 
 - `apps/web`: Next.js static site and browser host.
-- `apps/gateway`: stateless, resource-limited AI gateway, including the shared desktop service protocol; no user Agent or PDF processing runs here.
+- `apps/gateway`: resource-limited AI gateway, including the shared desktop service protocol, Clerk authentication, Stripe subscriptions and a persistent SQLite token ledger; no user Agent or PDF processing runs here.
 - `packages/{contracts,commands,ai-client,editor}`: shared contracts, transaction UI and web AI.
 - `native/pdf-core`: the actual C++ editing core and PDFium bridges.
 - `native/wasm`, `native/vendor/patches`: fixed toolchain metadata, project patches, and current WASM artifacts.
@@ -58,6 +58,12 @@ Interaction references: the user's WPS PDF screenshots and PDFgear's official [t
 - `distribution/release-manifest.ts`: public desktop download format; never embed a GitHub token in the website.
 
 Native source builds use the pinned PDFium revision, patches and Emscripten version in the native manifests. The current bootstrap scripts target Windows build tools; install the required compiler/SDK before rebuilding with `python scripts/build-core-api.py --target wasm`. Other native build hosts require their corresponding toolchain setup; the presence of source does not claim a tested one-command bootstrap on every OS. All source needed for the web runtime is included or referenced by pinned upstream revision.
+
+## KOMO accounts and billing
+
+All non-AI PDF tools remain free without an account. KOMO requires Clerk sign-in, with a one-time allowance of 1,000 credits (100,000 input/output tokens). KOMO Plus is $4.99 USD/month and has no credit ceiling while the paid subscription is active; normal request-size/concurrency limits still apply. `/account/` supports profiles, Checkout, billing management and explicit desktop login approval. KolmoPDF parsing uses the user's own API key and separate KolmoPDF balance, not the Plus subscription.
+
+To enable the gateway, configure a dedicated Clerk app (`CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`), a persistent `KOMO_ACCOUNT_DB`, `KOMO_PUBLIC_ORIGIN`, and Stripe (`STRIPE_RESTRICTED_KEY`, `STRIPE_KOMO_PRICE_ID`, `STRIPE_KOMO_PORTAL_CONFIG_ID`, `STRIPE_WEBHOOK_SECRET`). The Price must be active USD 499 cents per month. Use server credential storage, not committed environment files. The webhook endpoint is `/api/account/webhook`; configure subscription created/updated/deleted and Checkout completion/async-payment-success events. Complete Stripe Tax and Customer Portal configuration before live billing. See `infra/pdf-editor-gateway.service.example` and `infra/nginx.conf.example`. Without account configuration, AI endpoints fail closed; PDF tools continue to work.
 
 ## Scope and releases
 
