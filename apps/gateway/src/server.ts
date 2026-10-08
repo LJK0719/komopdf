@@ -295,6 +295,9 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
   const agentProxy = options.agentProxy ?? (options.apiKey ? new AnthropicMessagesProxy(options.config, options.apiKey) : undefined);
   const runtimeLogger = options.runtimeLogger ?? stdoutLogger;
   const admission = new AdmissionController(options.config.limits);
+  const accountAdmission = new AdmissionController({ ...options.config.limits,
+    inFlight: Math.max(32, options.config.limits.inFlight), perIpInFlight: Math.max(8, options.config.limits.perIpInFlight),
+    perIpPerMinute: Math.max(120, options.config.limits.perIpPerMinute) });
   const leases = new WeakMap<FastifyRequest, AdmissionLease>();
   const admittedAt = new WeakMap<FastifyRequest, number>();
   const users = new WeakMap<FastifyRequest, string>();
@@ -347,9 +350,10 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
     options.accounts.register(app);
     app.addHook('onRequest', async (request, reply) => {
       if (!request.url.startsWith('/api/account') || request.url.startsWith('/api/account/webhook')) return;
-      const result = admission.acquire(request.ip, false);
+      const result = accountAdmission.acquire(request.ip, false);
       if (!result.ok) { await reply.code(result.statusCode).send(errorBody(result.code, result.message)); return; }
       leases.set(request, result);
+      reply.raw.once('close', () => release(request));
     });
   }
   const admissionHook = (image: boolean, agent = false) => async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {

@@ -154,6 +154,36 @@ describe('KOMO accounts and token ledger (isolated in-memory database)', () => {
       code: callback.searchParams.get('code'), codeVerifier: verifier, redirectUri } });
     expect(replay.statusCode).toBe(400);
   });
+  it('coalesces profile reads but keeps credit balances fresh', async () => {
+    const db = store(); const service = new AccountService(db, { publishableKey: 'pk_test_placeholder', secretKey: 'sk_test_placeholder', publicOrigin: 'https://komopdf.com' });
+    const getUser = vi.spyOn(service.clerk.users, 'getUser').mockResolvedValue({ fullName: 'Reader', emailAddresses: [], imageUrl: '' } as never);
+    await Promise.all([service.account('u'), service.account('u'), service.account('u')]);
+    expect(getUser).toHaveBeenCalledOnce();
+    const { lease } = db.reserve('u', 100, 100);
+    db.settle(lease, { totalTokenCount: 200 }, true);
+    expect((await service.account('u')).remainingCredits).toBe(999.98);
+    expect(getUser).toHaveBeenCalledOnce();
+  });
+  it('does not let a running model request block account status from the same client', async () => {
+    const db = store(); const token = db.createSession('u');
+    const service = new AccountService(db, { publishableKey: 'pk_test_placeholder', secretKey: 'sk_test_placeholder', publicOrigin: 'https://komopdf.com' });
+    vi.spyOn(service.clerk.users, 'getUser').mockResolvedValue({ fullName: 'Reader', emailAddresses: [], imageUrl: '' } as never);
+    let started!: () => void; const ready = new Promise<void>(resolve => { started = resolve; });
+    let finish!: () => void; const waiting = new Promise<void>(resolve => { finish = resolve; });
+    const app = buildGateway({ config: { ...config, limits: { ...config.limits, perIpInFlight: 1 } }, accounts: service,
+      provider: { generate: async () => { throw new Error('unused'); }, async *stream() {} },
+      agentProxy: { forward: async request => {
+        started(); await waiting; request.response.writeHead(200, { 'content-type': 'application/json' }); request.response.end('{}');
+        return { usage: { totalTokenCount: 0 }, finishReason: 'end_turn', streamError: false };
+      } } }); apps.push(app);
+    const pending = app.inject({ method: 'POST', url: '/api/agent/v1/messages', headers: { authorization: `Bearer ${token}` },
+      payload: { max_tokens: 100, messages: [] } }).then(response => response);
+    await ready;
+    try {
+      const response = await app.inject({ url: '/api/account', headers: { authorization: `Bearer ${token}` } });
+      expect(response.statusCode).toBe(200); expect(response.json().profile.name).toBe('Reader');
+    } finally { finish(); await pending; }
+  });
   it('fails closed for all paid AI routes, but leaves health and metadata public', async () => {
     const app = buildGateway({ config, provider: { generate: async () => { throw new Error('Must not call provider'); }, async *stream() { throw new Error('Must not call provider'); } } });
     apps.push(app);
