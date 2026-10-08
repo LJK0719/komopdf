@@ -6,7 +6,8 @@ import { useI18n } from '@pdf-editor/editor/i18n';
 
 export type KomoAccount = { userId: string; plan: 'free' | 'plus'; freeCredits: number; usedCredits: number;
   remainingCredits: number; tokensPerCredit: number; subscriptionStatus: string | null;
-  currentPeriodEnd: number | null; cancelAtPeriodEnd: boolean };
+  currentPeriodEnd: number | null; cancelAtPeriodEnd: boolean; billingAvailable: boolean;
+  profile: { name: string; email: string; imageUrl: string } };
 type AccountContextValue = { account: KomoAccount | null; ready: boolean; signedIn: boolean;
   error: string; refresh(): Promise<void>; login(): void; profile(): void; logout(): Promise<void>;
   request(path: string, body?: unknown): Promise<any>; authenticatedFetch: typeof fetch };
