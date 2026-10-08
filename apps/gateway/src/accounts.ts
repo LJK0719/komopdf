@@ -1,4 +1,4 @@
-import { verifyToken } from '@clerk/backend';
+import { createClerkClient, verifyToken } from '@clerk/backend';
 import Stripe from 'stripe';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -9,9 +9,17 @@ export type AccountConfig = { publishableKey: string; secretKey: string; publicO
   webhookSecret?: string | undefined; automaticTax?: boolean };
 export class AccountService {
   readonly stripe: Stripe | undefined;
+  readonly clerk: ReturnType<typeof createClerkClient>;
   private readonly checkouts = new Map<string, Promise<string>>();
   constructor(readonly store: AccountStore, readonly config: AccountConfig) {
     this.stripe = config.stripeKey ? new Stripe(config.stripeKey) : undefined;
+    this.clerk = createClerkClient({ secretKey: config.secretKey, publishableKey: config.publishableKey });
+  }
+  async account(id: string) {
+    const user = await this.clerk.users.getUser(id);
+    return { ...this.store.snapshot(id), billingAvailable: Boolean(this.stripe && this.config.stripePriceId && this.config.webhookSecret),
+      profile: { name: user.fullName || user.firstName || '',
+        email: user.emailAddresses.find(email => email.id === user.primaryEmailAddressId)?.emailAddress || '', imageUrl: user.imageUrl } };
   }
   async authenticate(request: FastifyRequest, clerkOnly = false): Promise<string> {
     const header = request.headers.authorization;
@@ -103,21 +111,32 @@ export class AccountService {
       }
     };
     app.get('/api/account/config', async () => ({ publishableKey: this.config.publishableKey }));
-    app.get('/api/account', route(async request => this.store.snapshot(await this.authenticate(request))));
-    app.post('/api/account/device', { config: { rateLimit: true } }, route(async () => {
-      const device = this.store.createDevice();
-      return { ...device, verificationUrl: `${this.config.publicOrigin}/account/?device=${device.code}` };
+    app.get('/api/account', route(async request => this.account(await this.authenticate(request))));
+    app.post('/api/account/login', route(async request => {
+      const body = request.body as { redirectUri?: unknown; codeChallenge?: unknown; state?: unknown };
+      let redirect: URL;
+      try { redirect = new URL(String(body?.redirectUri)); } catch { throw new AccountError('INVALID_REQUEST', 400, 'Invalid sign-in request.'); }
+      if (redirect.protocol !== 'http:' || redirect.hostname !== '127.0.0.1' || !redirect.port
+        || !/^\/callback\/[a-f0-9-]{36}$/.test(redirect.pathname) || redirect.search || redirect.hash || redirect.username || redirect.password
+        || typeof body?.codeChallenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.codeChallenge)
+        || typeof body?.state !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(body.state)) {
+        throw new AccountError('INVALID_REQUEST', 400, 'Invalid sign-in request.');
+      }
+      const id = this.store.createLogin(body.codeChallenge, redirect.href, body.state);
+      return { authorizationUrl: `${this.config.publicOrigin}/sign-in/?desktop=${id}` };
     }));
-    app.post('/api/account/device/poll', route(async request => {
-      const secret = (request.body as { deviceSecret?: unknown })?.deviceSecret;
-      if (typeof secret !== 'string' || secret.length > 100) throw new AccountError('INVALID_REQUEST', 400, 'Invalid device login.');
-      return this.store.pollDevice(secret);
+    app.post('/api/account/login/complete', route(async request => {
+      const userId = await this.authenticate(request, true);
+      const id = (request.body as { id?: unknown })?.id;
+      if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(id)) throw new AccountError('INVALID_REQUEST', 400, 'Invalid sign-in request.');
+      return { redirectUrl: this.store.completeLogin(id, userId) };
     }));
-    app.post('/api/account/device/approve', route(async request => {
-      const id = await this.authenticate(request, true);
-      const code = (request.body as { code?: unknown })?.code;
-      if (typeof code !== 'string' || !/^[A-F0-9]{16}$/.test(code)) throw new AccountError('INVALID_REQUEST', 400, 'Invalid device code.');
-      this.store.approveDevice(code, id); return { ok: true };
+    app.post('/api/account/login/exchange', route(async request => {
+      const body = request.body as { code?: unknown; codeVerifier?: unknown; redirectUri?: unknown };
+      if (typeof body?.code !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.code)
+        || typeof body.codeVerifier !== 'string' || !/^[A-Za-z0-9._~-]{43,128}$/.test(body.codeVerifier)
+        || typeof body.redirectUri !== 'string') throw new AccountError('INVALID_REQUEST', 400, 'Invalid sign-in request.');
+      return { token: this.store.exchangeLogin(body.code, body.codeVerifier, body.redirectUri) };
     }));
     app.post('/api/account/logout', route(async request => {
       const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';

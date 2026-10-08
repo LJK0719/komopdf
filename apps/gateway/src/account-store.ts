@@ -22,7 +22,8 @@ export class AccountStore {
         customer TEXT UNIQUE, subscription TEXT, status TEXT, paid_until INTEGER NOT NULL DEFAULT 0, cancel_at_end INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS usage (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, tokens INTEGER NOT NULL, created INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS leases (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, reserved INTEGER NOT NULL, expires INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS devices (secret TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, user_id TEXT, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS logins (id TEXT PRIMARY KEY, challenge TEXT NOT NULL, redirect_uri TEXT NOT NULL,
+        state TEXT NOT NULL, user_id TEXT, code_hash TEXT UNIQUE, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (secret TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS leases_user ON leases(user_id);`);
   }
@@ -76,28 +77,40 @@ export class AccountStore {
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  createDevice() {
-    const deviceSecret = randomBytes(32).toString('base64url');
-    const code = randomBytes(8).toString('hex').toUpperCase();
-    this.db.prepare('INSERT INTO devices VALUES (?,?,NULL,?)').run(hash(deviceSecret), code, Date.now() + 10 * 60_000);
-    return { deviceSecret, code, expiresIn: 600, interval: 3 };
-  }
-  approveDevice(code: string, userId: string): void {
+  createSession(userId: string): string {
     this.user(userId);
-    const result = this.db.prepare('UPDATE devices SET user_id = ? WHERE code = ? AND user_id IS NULL AND expires > ?').run(userId, code, Date.now());
-    if (!result.changes) throw new AccountError('DEVICE_EXPIRED', 400, 'This login code is expired or already approved. Start again in the desktop app.');
+    const token = 'komo_' + randomBytes(32).toString('base64url');
+    this.db.prepare('INSERT INTO sessions VALUES (?,?,?)').run(hash(token), userId, Date.now() + 30 * 86400_000);
+    return token;
   }
-  pollDevice(secret: string) {
+  createLogin(challenge: string, redirectUri: string, state: string): string {
+    const id = randomBytes(32).toString('base64url');
+    this.db.prepare('INSERT INTO logins VALUES (?,?,?,?,NULL,NULL,?)').run(id, challenge, redirectUri, state, Date.now() + 10 * 60_000);
+    return id;
+  }
+  completeLogin(id: string, userId: string): string {
+    const login = this.db.prepare('SELECT redirect_uri, state FROM logins WHERE id = ? AND user_id IS NULL AND expires > ?')
+      .get(id, Date.now()) as { redirect_uri: string; state: string } | undefined;
+    if (!login) throw new AccountError('LOGIN_EXPIRED', 400, 'Sign-in expired. Please try again.');
+    const code = randomBytes(32).toString('base64url');
+    this.db.prepare('UPDATE logins SET user_id = ?, code_hash = ? WHERE id = ?').run(userId, hash(code), id);
+    const redirect = new URL(login.redirect_uri);
+    redirect.searchParams.set('code', code); redirect.searchParams.set('state', login.state);
+    return redirect.href;
+  }
+  exchangeLogin(code: string, verifier: string, redirectUri: string): string {
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const device = this.db.prepare('SELECT user_id, expires FROM devices WHERE secret = ?').get(hash(secret)) as { user_id: string | null; expires: number } | undefined;
-      if (!device || device.expires <= Date.now()) throw new AccountError('DEVICE_EXPIRED', 400, 'Desktop login expired. Start again.');
-      if (!device.user_id) { this.db.exec('COMMIT'); return { status: 'pending' }; }
-      const token = 'komo_' + randomBytes(32).toString('base64url');
-      this.db.prepare('INSERT INTO sessions VALUES (?,?,?)').run(hash(token), device.user_id, Date.now() + 30 * 86400_000);
-      this.db.prepare('DELETE FROM devices WHERE secret = ?').run(hash(secret));
+      const login = this.db.prepare('SELECT * FROM logins WHERE code_hash = ? AND expires > ?').get(hash(code), Date.now()) as
+        { id: string; user_id: string; challenge: string; redirect_uri: string } | undefined;
+      const challenge = createHash('sha256').update(verifier).digest('base64url');
+      if (!login || login.challenge !== challenge || login.redirect_uri !== redirectUri) {
+        throw new AccountError('INVALID_LOGIN', 400, 'Unable to sign in. Please try again.');
+      }
+      const token = this.createSession(login.user_id);
+      this.db.prepare('DELETE FROM logins WHERE id = ?').run(login.id);
       this.db.exec('COMMIT');
-      return { status: 'approved', token, account: this.snapshot(device.user_id) };
+      return token;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   session(token: string): string | undefined {
