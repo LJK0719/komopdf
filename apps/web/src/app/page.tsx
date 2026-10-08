@@ -14,7 +14,7 @@ export default function HomePage() {
         <h1>{t('Less paperwork.')}<br /><em>{t('More possibility.')}</em></h1>
         <p>{t('Read without interruptions. Edit directly on the page. Keep your everyday PDF work in one place.')}</p>
         <div className="hero-actions"><Link className="site-button site-button-primary site-button-large" href="/editor/">{t('Open a PDF')}<ArrowUpRight size={18} /></Link><Link className="site-button site-button-outline site-button-large" href="/download/"><Download size={17} />{t('Get the desktop app')}</Link></div>
-        <div className="hero-notes"><span><Check size={14} />{t('Free to use')}</span><span><Check size={14} />{t('No account needed')}</span><span><Check size={14} />{t('Your files stay yours')}</span></div>
+        <div className="hero-notes"><span><Check size={14} />{t('Free PDF tools')}</span><span><Check size={14} />{t('No account for PDF editing')}</span><span><Check size={14} />{t('Your files stay yours')}</span></div>
       </div>
       <div className="product-preview" aria-label={t('Editor preview')}>
         <div className="preview-top"><span className="preview-brand">k</span><span>komopdf</span><span className="preview-filename">{t('A fresh perspective.pdf')}</span><span className="preview-save">{t('Save')}</span></div>

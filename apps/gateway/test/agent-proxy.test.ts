@@ -61,7 +61,7 @@ const provider: ProviderAdapter = {
 };
 
 function appFor(baseUrl: string, overrides: Partial<GatewayConfig['limits']> = {}, logs: RuntimeLogRecord[] = []) {
-  const app = buildGateway({
+  const app = buildGateway({ allowUnauthenticatedForTests: true,
     config: config(baseUrl, overrides),
     provider,
     apiKey: 'server-secret',
@@ -244,7 +244,7 @@ describe('restricted Anthropic agent proxy', () => {
     });
     let cancelled: (() => void) | undefined;
     const cancelledLog = new Promise<void>(resolve => { cancelled = resolve; });
-    const app = buildGateway({
+    const app = buildGateway({ allowUnauthenticatedForTests: true,
       config: config(baseUrl, { imageInFlight: 1 }), provider, apiKey: 'server-secret',
       runtimeLogger: { write(record) { if (record.feature === 'agent.messages' && record.status === 'cancelled') cancelled?.(); } },
     });
@@ -304,7 +304,7 @@ describe('restricted Anthropic agent proxy', () => {
       res.end('{}');
     });
 
-    const app = buildGateway({
+    const app = buildGateway({ allowUnauthenticatedForTests: true,
       config: config(baseUrl, { perIpInFlight: 1 }),
       provider: blockingProvider,
       apiKey: 'server-secret',
@@ -353,7 +353,7 @@ describe('restricted Anthropic agent proxy', () => {
       });
     });
 
-    const app2 = buildGateway({
+    const app2 = buildGateway({ allowUnauthenticatedForTests: true,
       config: config(server2, { perIpInFlight: 1 }),
       provider: blockingProvider,
       apiKey: 'server-secret',

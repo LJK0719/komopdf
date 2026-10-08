@@ -18,6 +18,15 @@ describe('komo conversation state and display', () => {
     expect(chatFailure(new AiClientError('HTTP_ERROR', 'private upstream', 413))).toMatchObject({ action: 'page' });
     expect(chatFailure(new Error('private upstream')).message).not.toContain('private upstream');
   });
+  it('distinguishes expired sessions and credit exhaustion from retryable service failures', () => {
+    const expired = chatFailure(new AiClientError('HTTP_ERROR', 'private upstream', 401));
+    expect(expired).toMatchObject({ retryable: false });
+    expect(expired.message).toContain('Sign in again');
+    const credits = chatFailure(new AiClientError('HTTP_ERROR', 'private upstream', 402));
+    expect(credits).toMatchObject({ retryable: false, action: 'clear' });
+    expect(credits.message).toContain('upgrade to Plus');
+    expect(credits.message).not.toContain('private upstream');
+  });
   it('renders headings and GFM tables without HTML, script URLs or remote images', () => {
     const html = renderToStaticMarkup(createElement(AiMarkdown, { text: '# Heading\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n![tracker](https://example.com/pixel.png)' }));
     expect(html).toContain('<h1>Heading</h1>');

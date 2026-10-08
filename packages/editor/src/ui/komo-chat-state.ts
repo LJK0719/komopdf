@@ -2,7 +2,7 @@ import { AiClientError } from '@pdf-editor/ai-client';
 import { ChatContextError, type ChatTurn } from './komo-chat-context.js';
 
 export type ChatCitation = { pageId: string; pageNumber: number; blockId?: string; range?: { start: number; end: number } };
-export type ChatFailure = { message: string; action?: 'page' | 'image' | 'clear' };
+export type ChatFailure = { message: string; action?: 'page' | 'image' | 'clear'; retryable?: boolean };
 export type ChatExchange = {
   id: string; prompt: string; status: 'pending' | 'complete' | 'failed' | 'cancelled';
   answer?: string; progress?: string; failure?: ChatFailure;
@@ -18,6 +18,8 @@ export function chatFailure(error: unknown): ChatFailure {
   if (error instanceof ChatContextError) return { message: error.message, ...(error.action ? { action: error.action } : {}) };
   if (error instanceof TypeError) return { message: 'Could not connect to komo. Check your connection, then retry this question.' };
   if (error instanceof AiClientError) {
+    if (error.status === 401) return { message: 'Sign in again to continue.', retryable: false };
+    if (error.status === 402) return { message: 'Not enough credits. Start a new conversation or upgrade to Plus.', action: 'clear', retryable: false };
     if (error.status === 429 || /^(IP_RATE_LIMIT|RATE_LIMIT|IP_CONCURRENCY_LIMIT):/.test(error.message)) {
       return { message: 'komo is receiving too many requests. Wait a moment, then retry this question.' };
     }

@@ -88,7 +88,7 @@ server {
     }
 
     # Desktop SDK Agent model traffic only (/api/agent/v1/messages and /count_tokens)
-    # Server only acts as stateless proxy; no Agent processes or PDF rendering on VPS.
+    # Model traffic is proxied with account/usage enforcement; Agent execution stays local.
     location ~ ^/api/agent/v1/messages(/count_tokens)?$ {
         client_max_body_size 3m;
         client_body_buffer_size 3m;
@@ -120,6 +120,18 @@ server {
         proxy_pass http://komopdf_gateway;
     }
 
+    # Clerk browser tokens, desktop pairing and Stripe signature-verified webhooks.
+    location ~ ^/api/account(?:/|$) {
+        client_max_body_size 256k;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache off;
+        access_log off;
+        proxy_pass http://komopdf_gateway;
+    }
     location /api/ {
         return 404;
     }

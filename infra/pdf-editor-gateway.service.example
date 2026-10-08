@@ -9,6 +9,18 @@ Group=pdf-editor
 WorkingDirectory=/opt/pdf-editor/current
 # 宿主凭证文件只允许 root 读取；systemd 为服务提供受限的凭证副本。
 LoadCredential=gemini:/etc/pdf-editor/credentials/gemini
+# Enable accounts using dedicated komopdf keys; never reuse another app's Clerk instance.
+# LoadCredential=CLERK_SECRET_KEY:/etc/pdf-editor/credentials/clerk
+# LoadCredential=STRIPE_RESTRICTED_KEY:/etc/pdf-editor/credentials/stripe
+# LoadCredential=STRIPE_WEBHOOK_SECRET:/etc/pdf-editor/credentials/stripe-webhook
+# Environment=CLERK_PUBLISHABLE_KEY=pk_live_REPLACE_ME
+# Environment=STRIPE_KOMO_PRICE_ID=price_REPLACE_ME
+# Environment=STRIPE_KOMO_PORTAL_CONFIG_ID=bpc_REPLACE_ME
+Environment=KOMO_PUBLIC_ORIGIN=https://komopdf.com
+Environment=KOMO_ACCOUNT_DB=/var/lib/pdf-editor/accounts.sqlite
+StateDirectory=pdf-editor
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/pdf-editor
 ExecStart=/opt/pdf-editor/runtime/node --max-old-space-size=256 apps/gateway/dist/cli.mjs --host 127.0.0.1 --port 8787 --config /etc/pdf-editor/gateway.config.json --credential-file %d/gemini
 MemoryMax=512M
 Restart=on-failure

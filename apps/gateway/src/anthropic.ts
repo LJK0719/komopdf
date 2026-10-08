@@ -20,6 +20,7 @@ export type AnthropicForwardRequest = {
   stream: boolean;
   signal: AbortSignal;
   response: ServerResponse;
+  onUsage?(usage: AiUsage | null): void;
 };
 
 export interface AnthropicForwarder {
@@ -340,7 +341,9 @@ export class AnthropicMessagesProxy implements AnthropicForwarder {
             upstream.destroy();
             throw new AnthropicProxyError('UPSTREAM_LIMIT', 'Upstream SSE frame exceeded size limit');
           }
-          await writeChunk(request.response, publicSseFrame(frame, state), request.signal);
+          const publicFrame = publicSseFrame(frame, state);
+          request.onUsage?.(normalizedUsage(state));
+          await writeChunk(request.response, publicFrame, request.signal);
           boundary = separator(pending);
         }
         if (pending.byteLength > this.config.limits.upstreamFrameBytes) {
@@ -363,6 +366,7 @@ export class AnthropicMessagesProxy implements AnthropicForwarder {
     const state: StreamState = { finishReason: null, streamError: false };
     observePayload(result.value, state);
     if (request.endpoint === 'count_tokens') observeUsage(result.value, state);
+    request.onUsage?.(normalizedUsage(state));
     const body = Buffer.from(JSON.stringify(publicPayload(result.value)));
     startResponse(request.response, statusCode, 'application/json; charset=utf-8', body.byteLength);
     await endResponse(request.response, body, request.signal);

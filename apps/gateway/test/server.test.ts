@@ -60,7 +60,7 @@ afterEach(async () => {
 });
 
 function appWith(provider: ProviderAdapter, overrideConfig = config) {
-  const app = buildGateway({ config: overrideConfig, provider, runtimeLogger: { write() {} } });
+  const app = buildGateway({ allowUnauthenticatedForTests: true, config: overrideConfig, provider, runtimeLogger: { write() {} } });
   openApps.push(app);
   return app;
 }

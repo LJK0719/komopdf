@@ -9,6 +9,6 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node24',
-  external: ['fastify'],
+  external: ['fastify', '@clerk/backend', 'stripe'],
   logLevel: 'info',
 });
