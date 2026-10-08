@@ -11,15 +11,22 @@ export class AccountService {
   readonly stripe: Stripe | undefined;
   readonly clerk: ReturnType<typeof createClerkClient>;
   private readonly checkouts = new Map<string, Promise<string>>();
+  private readonly profiles = new Map<string, { expires: number; data: Promise<{ name: string; email: string; imageUrl: string }> }>();
   constructor(readonly store: AccountStore, readonly config: AccountConfig) {
     this.stripe = config.stripeKey ? new Stripe(config.stripeKey) : undefined;
     this.clerk = createClerkClient({ secretKey: config.secretKey, publishableKey: config.publishableKey });
   }
   async account(id: string) {
-    const user = await this.clerk.users.getUser(id);
-    return { ...this.store.snapshot(id), billingAvailable: Boolean(this.stripe && this.config.stripePriceId && this.config.webhookSecret),
-      profile: { name: user.fullName || user.firstName || '',
-        email: user.emailAddresses.find(email => email.id === user.primaryEmailAddressId)?.emailAddress || '', imageUrl: user.imageUrl } };
+    let cached = this.profiles.get(id);
+    if (!cached || cached.expires <= Date.now()) {
+      const data = this.clerk.users.getUser(id).then(user => ({ name: user.fullName || user.firstName || '',
+        email: user.emailAddresses.find(email => email.id === user.primaryEmailAddressId)?.emailAddress || '', imageUrl: user.imageUrl }));
+      cached = { expires: Date.now() + 60_000, data };
+      this.profiles.set(id, cached);
+      void data.catch(() => { if (this.profiles.get(id)?.data === data) this.profiles.delete(id); });
+    }
+    const profile = await cached.data;
+    return { ...this.store.snapshot(id), billingAvailable: Boolean(this.stripe && this.config.stripePriceId && this.config.webhookSecret), profile };
   }
   async authenticate(request: FastifyRequest, clerkOnly = false): Promise<string> {
     const header = request.headers.authorization;
