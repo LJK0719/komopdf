@@ -25,8 +25,10 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     let active = true;
     fetch('/api/account/config', { cache: 'no-store' }).then(async response => {
       if (!response.ok) throw new Error('KOMO is currently unavailable. Please try again later.');
-      const data = await response.json(); if (active) setKey(data.publishableKey);
-    }).catch(error => { if (active) setError(error.message); });
+      const data = await response.json();
+      if (typeof data.publishableKey !== 'string' || !data.publishableKey) throw new Error('KOMO is currently unavailable. Please try again later.');
+      if (active) setKey(data.publishableKey);
+    }).catch(() => { if (active) setError('KOMO is currently unavailable. Please try again later.'); });
     return () => { active = false; };
   }, []);
   if (!key) return <Context.Provider value={{ account: null, signedIn: false, ready: Boolean(error), error,
@@ -48,10 +50,13 @@ function ConnectedAccount({ children }: { children: ReactNode }) {
     return fetch(input, { ...init, headers, cache: 'no-store' });
   }, [getToken]);
   const request = useCallback(async (path: string, body?: unknown) => {
-    const response = await authenticatedFetch(path, body === undefined ? undefined : {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await response.json().catch(() => { throw new Error('Account service is unavailable. Please try again.'); });
-    if (!response.ok) throw new Error(data.error?.message || 'Account request failed.');
+    let response: Response;
+    try { response = await authenticatedFetch(path, body === undefined ? undefined : {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
+    catch { throw new Error('Account service is unavailable. Please try again.'); }
+    let data;
+    try { data = await response.json(); } catch { throw new Error('Account service is unavailable. Please try again.'); }
+    if (!response.ok) throw new Error(data.error?.message || 'Account service is unavailable. Please try again.');
     return data;
   }, [authenticatedFetch]);
   const refresh = useCallback(async () => {
