@@ -3128,6 +3128,49 @@ void TestParagraphWordGapsAndInitialStyles(const std::string& latin_font,
   pde_close(scaled);
 }
 
+void TestSourceTextFrameResize() {
+  const std::string source = Pdf({"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("BT /F1 18 Tf 20 240 Td [(Original) 20 ( text)] TJ ET"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"});
+  const auto doc = pde_open_memory(reinterpret_cast<const uint8_t*>(source.data()), source.size(), "source-frame", "source-frame-pdf", nullptr);
+  Require(doc != 0, "open original unembedded PDF text frame");
+  const std::string described = RequireResult(pde_describe_page(doc, 0), "describe source text frame");
+  const std::string page = PageIdFromDescription(described);
+  const std::string block = TextBlockIds(described).front();
+  const char* ids[] = {block.c_str()};
+  const auto pixels = RenderPixels(doc, 0, 300, 300);
+  const double width = JsonNumberAfter(described, "\"frame\":{\"width\":");
+  const double height = JsonNumberAfter(described, "\"height\":", Count(described.substr(0, described.find("\"frame\"")), "\"height\":"));
+  PdeEditCommand resize{}; resize.type = 29; resize.page_id = page.c_str(); resize.ids = ids; resize.id_count = 1;
+  resize.values[2] = width; resize.values[3] = height + 80;
+  Require(pde_apply_commands(doc, 0, "resize-original-frame", &resize, 1) != nullptr, "resize source frame without choosing a replacement font");
+  Require(RenderPixels(doc, 0, 300, 300) == pixels, "height-only source resize preserves the original glyph pixels and TJ spacing");
+  auto description = RequireResult(pde_describe_page(doc, 0), "describe fixed source frame");
+  Require(TextBlockIds(description).front() == block && description.find("\"fixedFrame\":true") != std::string::npos,
+      "source materialization retains block identity and fixed sizing");
+  const std::string content = "Original text\nAdded first line\nAdded second line";
+  PdeTextEdit replace{0, block.c_str(), 0, 13, content.c_str(), nullptr};
+  Require(pde_apply_text(doc, 1, "append-source-frame", &replace, 1) != nullptr, "append multiline text using the original PDF font");
+  const auto expanded = RenderPixels(doc, 0, 300, 300);
+  resize.values[3] = height;
+  Require(pde_apply_commands(doc, 2, "shrink-source-frame", &resize, 1) != nullptr, "shrink frame without discarding new text");
+  Require(RenderPixels(doc, 0, 300, 300) != expanded, "small frame clips rather than scales its added lines");
+  description = RequireResult(pde_describe_page(doc, 0), "describe clipped frame");
+  Require(description.find("Added second line") != std::string::npos, "clipped frame retains complete logical text");
+  resize.values[3] = height + 80;
+  Require(pde_apply_commands(doc, 3, "expand-source-frame", &resize, 1) != nullptr, "expand frame to reveal retained lines");
+  Require(RenderPixels(doc, 0, 300, 300) == expanded, "expanding restores the same glyph pixels");
+  Require(pde_undo(doc) != nullptr && pde_redo(doc) != nullptr, "frame resize has ordinary undo and redo");
+  Require(pde_save_memory(doc) != nullptr, "save source text frame");
+  const std::vector<uint8_t> bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const auto reopened = pde_open_memory(bytes.data(), bytes.size(), "source-frame-reopen", "source-frame-saved", nullptr);
+  Require(reopened && RenderPixels(reopened, 0, 300, 300) == expanded, "saved original-font frame reopens with unchanged pixels");
+  description = RequireResult(pde_describe_page(reopened, 0), "describe reopened original-font frame");
+  Require(description.find("Added second line") != std::string::npos, "saved frame preserves full text");
+  pde_close(reopened); pde_close(doc);
+}
+
 void TestParagraphFlow(const std::string& font_id) {
   const std::string source = Pdf({
       "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -3174,6 +3217,30 @@ void TestParagraphFlow(const std::string& font_id) {
     return bytes;
   };
   const auto snapshot = check(doc, text, true);
+  const auto flow_block = TextBlockIds(pde_describe_page(doc, 0)).front();
+  const char* resizing[] = {flow_block.c_str()};
+  PdeEditCommand resize{}; resize.type = 29; resize.page_id = page.c_str(); resize.ids = resizing; resize.id_count = 1;
+  resize.values[2] = 170; resize.values[3] = 100;
+  Require(pde_apply_commands(doc, 1, "resize-logical-flow", &resize, 1) != nullptr, "continued paragraph can become a fixed text frame");
+  const auto resized = RequireResult(pde_describe_page(doc, 0), "describe resized logical flow");
+  Require(resized.find(text) != std::string::npos && resized.find("\"fixedFrame\":true") != std::string::npos &&
+          resized.find("\"flow\":") == std::string::npos, "fixed flow frame retains the full source rather than only the first fragment");
+  Require(pde_save_memory(doc) != nullptr, "save resized flow");
+  std::vector<uint8_t> resized_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  auto external = FPDF_LoadMemDocument64(resized_bytes.data(), resized_bytes.size(), nullptr);
+  int paragraphs = 0;
+  for (int p = 0; p < FPDF_GetPageCount(external); ++p) {
+    auto loaded = FPDF_LoadPage(external, p);
+    for (int i = 0; i < FPDFPage_CountObjects(loaded); ++i) {
+      auto* object = CPDFPageObjectFromFPDFPageObject(FPDFPage_GetObject(loaded, i));
+      if (object->AsForm() && object->AsForm()->form()->GetDict()->GetDictFor("KomoParagraph")) ++paragraphs;
+    }
+    FPDF_ClosePage(loaded);
+  }
+  FPDF_CloseDocument(external);
+  Require(paragraphs == 1, "flow resize removes only old continuation fragments without duplicating text");
+  Require(pde_undo(doc) != nullptr, "one undo restores the whole continued paragraph");
+  check(doc, text, true);
   Require(PixelAt(before, 200, 15, 90) == PixelAt(RenderPixels(doc, 0, 200, 160), 200, 15, 90), "flow does not cover the downstream illustration");
   Require(pde_undo(doc) != nullptr && RenderPixels(doc, 0, 200, 160) == before, "one undo restores original objects and pages");
   Require(pde_redo(doc) != nullptr, "redo whole paragraph flow");
@@ -4256,6 +4323,7 @@ int main(int argc, char** argv) {
   Require(pde_abi_version() == 4, "ABI version");
   Require(pde_initialize() == 1, "initialize");
   Require(pde_initialize() == 1, "idempotent initialize");
+  TestSourceTextFrameResize();
 
   const uint32_t document =
       pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
@@ -4285,7 +4353,7 @@ int main(int argc, char** argv) {
                     "\"pages.rotate\",\"pages.delete\",\"pages.reorder\","
                     "\"pages.insert\",\"image.insert\",\"content.insert\","
                     "\"pages.duplicate\",\"pages.import\",\"image.replace\","
-                    "\"image.crop\",\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\",\"form.update\"]") != std::string::npos,
+                    "\"image.crop\",\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\",\"form.update\",\"text.resize\"]") != std::string::npos,
           "real ABI3 editing capabilities");
   Require(std::string(pde_capabilities()).find("\"objects.copy\"") !=
               std::string::npos,

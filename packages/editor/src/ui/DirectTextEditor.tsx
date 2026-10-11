@@ -45,6 +45,7 @@ export function DirectTextEditor(props: Props) {
   const key = `${document.id}:${document.revision}:${block?.id}:${editing}`;
   const [text, setText] = useState(original);
   const [draftRuns, setDraftRuns] = useState<StyledTextRun[] | null>(null);
+  const [runFormatting, setRunFormatting] = useState(false);
   const [draftStyle, setDraftStyle] = useState<TextStyle>({});
   const richInput = useRef<ParagraphInputHandle | null>(null);
   const [error, setError] = useState('');
@@ -81,7 +82,7 @@ export function DirectTextEditor(props: Props) {
     return () => { active = false; };
   }, [editing, previewFace?.id]);
   const canEdit = Boolean(block && block.editability !== 'geometry-only' && document.permissions.modify && document.capabilities.includes('text.replace'));
-  useEffect(() => { setText(original); setDraftRuns(null); setDraftStyle({}); setError(''); }, [key, original]);
+  useEffect(() => { setText(original); setDraftRuns(null); setRunFormatting(false); setDraftStyle({}); setError(''); }, [key, original]);
   useEffect(() => { setSize(String(base.fontSize ?? 12)); }, [key, base.fontSize]);
   useEffect(() => { setSpacing(String(Math.round((base.characterSpacing ?? 0) * 1000) / 1000)); }, [key, base.characterSpacing]);
   useEffect(() => { setLineHeight(String(Math.round((base.lineHeight ?? paragraph?.lineHeight ?? 1) * 1000) / 1000)); }, [key, base.lineHeight, paragraph?.lineHeight]);
@@ -109,7 +110,7 @@ export function DirectTextEditor(props: Props) {
           const paragraphValues = { lineHeight, alignment, firstLineIndent, lineSpacing, spaceBefore, spaceAfter };
           if (Object.values(paragraphValues).some(value => value !== undefined))
             setDraftStyle(previous => ({ ...previous, ...Object.fromEntries(Object.entries(paragraphValues).filter(([, value]) => value !== undefined)) }));
-          if (Object.keys(inline).length) richInput.current?.format(inline, item.range);
+          if (Object.keys(inline).length) { setRunFormatting(true); richInput.current?.format(inline, item.range); }
         }
         setError(''); return Promise.resolve(true);
       } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); return Promise.resolve(false); }
@@ -178,7 +179,7 @@ export function DirectTextEditor(props: Props) {
           }
           if (text.length && block.isParagraph) {
             let start = 0;
-            if (!virtual || resolved.length > 1) for (const run of resolved) {
+            if (runFormatting || (virtual && resolved.length > 1)) for (const run of resolved) {
               const end = start + run.text.length;
               commands.push({ type: 'text.style', pageId: page.id, blockIds: [target], range: [start, end], style: run.style });
               start = end;

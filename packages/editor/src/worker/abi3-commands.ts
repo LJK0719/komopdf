@@ -10,7 +10,7 @@ export const ABI3_CAPABILITIES: CommandType[] = [...ABI3_BASE_CAPABILITIES,
   'pages.duplicate', 'pages.import', 'image.replace', 'image.crop', 'objects.copy',
   'annotation.add', 'form.fill', 'form.create', 'text.reflow', 'objects.align',
   'annotation.update', 'annotation.delete', 'objects.distribute', 'pages.crop',
-  'objects.group', 'objects.ungroup', 'form.update'];
+  'objects.group', 'objects.ungroup', 'form.update', 'text.resize'];
 
 type Allocator = { string(value: string): number; bytes(value: Uint8Array): number };
 type PackedCommand = { fields: number[]; values: number[] };
@@ -201,6 +201,11 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
         fields[10]! |= 16;
         fields[4] = allocations.string(command.tooltip ?? '');
       }
+      break;
+    case 'text.resize':
+      fields[0] = 29;
+      ids(command.blockIds);
+      bounds(command.frame);
       break;
     default: throw new EngineError('UNSUPPORTED_CAPABILITY', 'Command is not connected to this core');
   }

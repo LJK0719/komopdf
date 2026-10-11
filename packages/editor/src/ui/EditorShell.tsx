@@ -538,7 +538,6 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     };
     const committed = { ...current, info };
     documentRef.current = committed;
-    setDocument(committed);
     setHistory({ canUndo: result.canUndo, canRedo: result.canRedo });
     setNotice(action === 'Undid to' ? 'Undone' : action === 'Redid to' ? 'Redone' : 'Changes applied');
 
@@ -570,6 +569,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         return parent && !current.page.objects.some(object => object.id === parent.id) ? [parent.id] : retained;
       });
     } catch (caught) {
+      setDocument(committed);
       setError(`Changes committed, but page refresh failed: ${formatError(caught)}`);
     } finally {
       setActivity('idle');
@@ -748,6 +748,34 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
   const moveObjects = async (objectIds: string[], dx: number, dy: number): Promise<void> => {
     return transformObjects(objectIds, [1, 0, 0, 1, dx, dy]);
+  };
+
+  const resizeTextFrames = async (objectIds: string[], frame: import('@pdf-editor/contracts').Rect): Promise<void> => {
+    const current = documentRef.current;
+    if (!current || isDraftDirty || activity !== 'idle' || editPending || externalBusy) return;
+    setActivity('editing'); setError(null);
+    let targetPage = current.page;
+    let targets = objectIds.map(id => targetPage.objects.find(object => object.id === id)!);
+    try {
+      const flow = targets[0]?.textBlock?.flow;
+      if (flow && flow.start !== 0) {
+        for (const pageId of current.info.pageOrder) {
+          const page = pageId === current.page.id ? current.page : await engine.describePage(current.info.id, pageId);
+          const anchor = page.objects.find(object => object.textBlock?.flow?.id === flow.id && object.textBlock.flow.start === 0);
+          if (anchor) { targetPage = page; targets = [anchor]; break; }
+        }
+      }
+      const blockIds = targets.map(object => object?.textBlock?.id);
+      if (blockIds.some(id => !id)) throw new Error('The selected text frame is unavailable');
+      const result = await new CommandRegistry(engine).execute({
+        id: crypto.randomUUID(), docId: current.info.id, baseRevision: current.info.revision,
+        source: 'manual', commands: [{ type: 'text.resize', pageId: targetPage.id, blockIds: blockIds as string[], frame }],
+      }, { document: current.info, pages: new Map([[targetPage.id, targetPage]]) });
+      documentRef.current = { ...current, page: targetPage };
+      setSelectedIds([targets[0]!.id]);
+      await handleCommitted(result);
+    } catch (caught) { setError(formatError(caught)); }
+    finally { setActivity('idle'); }
   };
 
   const currentPageIndex = document ? document.info.pageOrder.indexOf(document.page.id) : -1;
@@ -1331,7 +1359,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                       }}
                       onEditText={id => editTextAt(shown, id)}
                       disabled={operationBusy} canTransform={shown.info.permissions.modify && shown.info.capabilities.includes('objects.transform')}
-                      onMove={moveObjects} onTransform={transformObjects} />
+                      onMove={moveObjects} onTransform={transformObjects}
+                      onResizeText={shown.info.capabilities.includes('text.resize') ? resizeTextFrames : undefined} />
                   </ContextMenu.Trigger>
                   <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu">
                     {selectedText && <>

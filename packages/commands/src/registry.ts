@@ -4,7 +4,7 @@ import { editCommandSchema, editTransactionSchema, EngineError, assertTextRange,
 
 const labels: Record<CommandType, string> = {
   'text.replace': 'Replace Text', 'text.style': 'Format Text', 'text.insert': 'Insert Text',
-  'text.reflow': 'Reflow Text',
+  'text.reflow': 'Reflow Text', 'text.resize': 'Resize Text',
   'objects.transform': 'Transform Objects', 'objects.delete': 'Delete Objects', 'objects.align': 'Align Objects',
   'objects.copy': 'Duplicate Objects', 'objects.distribute': 'Distribute Objects', 'pages.import': 'Import PDF Pages',
   'objects.group': 'Group Objects', 'objects.ungroup': 'Ungroup Objects',
@@ -88,7 +88,7 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
       }
       if (command.type === 'objects.delete') targets.forEach(id => deletedObjects.add(id));
     }
-    if (command.type === 'text.replace' || command.type === 'text.style' || command.type === 'text.reflow') {
+    if (command.type === 'text.replace' || command.type === 'text.style' || command.type === 'text.reflow' || command.type === 'text.resize') {
       const targets = command.type === 'text.replace' ? [command.blockId] : command.blockIds;
       const objects = requirePage(context, command.pageId).objects;
       for (const id of targets) {
@@ -119,6 +119,11 @@ export function validateTransaction(input: unknown, context: CommandContext): Ed
           else blockText(context, command.pageId, id);
         }
         if (command.range && command.blockIds.length !== 1) invalid('Range style can only apply to a single block');
+        break;
+      case 'text.resize':
+        for (const id of command.blockIds) {
+          blockText(context, command.pageId, id);
+        }
         break;
       case 'pages.crop':
         if (command.bounds.width <= 0 || command.bounds.height <= 0) invalid('Crop must have positive dimensions');

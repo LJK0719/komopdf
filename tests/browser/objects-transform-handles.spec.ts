@@ -21,11 +21,14 @@ function shapesPdf(): Buffer {
 }
 
 test('selection handles are visible and operational via keyboard and mouse drag with single undo step', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('komopdf.ui.language', 'en'));
   await page.goto('/editor/');
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'transform.pdf', mimeType: 'application/pdf', buffer: shapesPdf() });
 
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
   const shapes = page.locator('.object-hitbox[data-object-type="path"]');
   await expect(shapes).toHaveCount(2, { timeout: 60_000 });
 
@@ -58,7 +61,7 @@ test('selection handles are visible and operational via keyboard and mouse drag 
   await expect.poll(heightFn).toBeGreaterThan(initialHeight);
 
   // Undo should revert scale in one step
-  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await expect.poll(widthFn).toBeCloseTo(initialWidth, 1);
   await expect.poll(heightFn).toBeCloseTo(initialHeight, 1);
 
@@ -73,8 +76,8 @@ test('selection handles are visible and operational via keyboard and mouse drag 
   await page.keyboard.press('ArrowRight');
 
   // Undo reverts the rotation transaction
-  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
 
   // Dragging the scale handle also commits exactly one native transform.
   const widthBeforeDrag = await widthFn();
@@ -87,7 +90,7 @@ test('selection handles are visible and operational via keyboard and mouse drag 
   await page.mouse.move(startX + 30, startY + 20, { steps: 5 });
   await page.mouse.up();
   await expect.poll(widthFn).toBeGreaterThan(widthBeforeDrag);
-  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await expect.poll(widthFn).toBeCloseTo(widthBeforeDrag, 1);
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });

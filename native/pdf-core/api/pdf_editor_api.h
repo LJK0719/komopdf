@@ -143,6 +143,8 @@ const char* pde_apply_text(uint32_t document,
 // Form XObject with target_id=groupId; type 27 ungroups target_id=groupId.
 // Nested Form children, MCIDs and cross-stream members need fuller structural
 // rewriting and are rejected rather than silently changing drawing order.
+// Type 29 resizes a text frame without scaling its glyphs: ids=source block IDs,
+// values[0..3]=x,y,width,height in the old frame's local top-left coordinates.
 typedef struct PdeEditCommand {
   uint32_t type;
   const char* page_id;

@@ -10,6 +10,8 @@
 #include "font_runtime.h"
 #include "text_shaping.h"
 
+class CPDF_Font;
+
 namespace pdf_editor {
 
 enum class ParagraphAlignment {
@@ -52,6 +54,8 @@ struct ParagraphFont {
   std::string id;
   FontFaceInfo info;
   std::span<const uint8_t> sfnt;
+  // Existing PDF resources can be laid out without replacing their font.
+  CPDF_Font* source_font = nullptr;
 };
 
 struct ParagraphRequest {
@@ -76,6 +80,10 @@ struct ParagraphRequest {
   std::vector<ParagraphStyleRun> styles;
   // A page break is not the end of a justified logical paragraph.
   bool continues = false;
+  bool fixed_frame = false;
+  // Source frames keep their first baseline and horizontal origin.
+  float baseline_offset = 0;
+  float text_inset = 0;
 };
 
 struct ParagraphResult {
@@ -111,6 +119,14 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
                          const ParagraphRequest& request,
                          ParagraphResult* result,
                          std::string* error_message);
+
+// Constructs a source-font frame for the caller to fill with preserved glyphs.
+bool CreatePreservedTextFrame(FPDF_DOCUMENT document,
+                              std::span<const ParagraphFont> fonts,
+                              const ParagraphRequest& request,
+                              const std::u16string& logical_text,
+                              ParagraphResult* result,
+                              std::string* error_message);
 
 bool CreateTextParagraph(FPDF_DOCUMENT document,
                          const FontFaceInfo& font_info,

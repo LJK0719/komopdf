@@ -5675,17 +5675,6 @@ function invoke_iifii(index,a1,a2,a3,a4) {
   }
 }
 
-function invoke_iiiiiiiii(index,a1,a2,a3,a4,a5,a6,a7,a8) {
-  var sp = stackSave();
-  try {
-    return getWasmTableEntry(index)(a1,a2,a3,a4,a5,a6,a7,a8);
-  } catch(e) {
-    stackRestore(sp);
-    if (!(e instanceof EmscriptenEH)) throw e;
-    _setThrew(1, 0);
-  }
-}
-
 function invoke_iiiiiiiiii(index,a1,a2,a3,a4,a5,a6,a7,a8,a9) {
   var sp = stackSave();
   try {
@@ -5823,6 +5812,17 @@ function invoke_viiij(index,a1,a2,a3,a4) {
   var sp = stackSave();
   try {
     getWasmTableEntry(index)(a1,a2,a3,a4);
+  } catch(e) {
+    stackRestore(sp);
+    if (!(e instanceof EmscriptenEH)) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_iiiiiiiii(index,a1,a2,a3,a4,a5,a6,a7,a8) {
+  var sp = stackSave();
+  try {
+    return getWasmTableEntry(index)(a1,a2,a3,a4,a5,a6,a7,a8);
   } catch(e) {
     stackRestore(sp);
     if (!(e instanceof EmscriptenEH)) throw e;
@@ -6121,4 +6121,4 @@ for (const prop of Object.keys(Module)) {
 export default Module;
 
 
-export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi4-9c12e7dc7823e824d031";
+export const PDF_CORE_BUILD_ID = "pdfium-80fccd-abi4-98a8046c4b1e34fe88f5";

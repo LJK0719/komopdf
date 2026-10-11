@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EditCommand } from '@pdf-editor/contracts';
-import { EDIT_COMMAND_STRIDE, packCommands } from '../src/worker/abi3-commands.js';
+import { ABI3_CAPABILITIES, EDIT_COMMAND_STRIDE, packCommands } from '../src/worker/abi3-commands.js';
 
 class TestAllocator {
   private next = 1;
@@ -241,5 +241,32 @@ describe('general command encoding', () => {
     expect(rec2.fields[10]).toBe(1);
     expect(rec2.values[0]).toBe(0); // readOnly = false
     expect(rec2.fields[4]).toBe(0); // tooltip omitted (null pointer in ABI3)
+  });
+
+  it('encodes text.resize with opcode 29, block IDs and frame coordinates in values[0..3] without font or text', () => {
+    expect(ABI3_CAPABILITIES).toContain('text.resize');
+    const { bytes, record } = packed([{
+      type: 'text.resize',
+      pageId: 'page-1',
+      blockIds: ['block-a', 'block-b'],
+      frame: { x: 12.5, y: -4.25, width: 200, height: 80 },
+    }]);
+
+    expect(bytes.byteLength).toBe(EDIT_COMMAND_STRIDE);
+    const rec = record(0);
+    expect(rec.fields[0]).toBe(29);
+    expect(rec.string(1)).toBe('page-1');
+    expect(rec.fields[2]).toBe(0); // target = 0
+    expect(rec.fields[3]).toBe(0); // resource = 0
+    expect(rec.fields[4]).toBe(0); // text = 0
+    expect(rec.fields[5]).toBe(0); // font = 0
+    expect(rec.ids).toEqual(['block-a', 'block-b']);
+    expect(rec.fields[7]).toBe(2); // count = 2
+    expect(rec.fields[8]).toBe(0); // start = 0
+    expect(rec.fields[9]).toBe(0); // end = 0
+    expect(rec.fields[10]).toBe(0); // flags = 0
+    expect(rec.fields[11]).toBe(0); // resourcePage = 0
+    expect(rec.values.slice(0, 4)).toEqual([12.5, -4.25, 200, 80]);
+    expect(rec.values.slice(4)).toEqual(new Array(10).fill(0));
   });
 });

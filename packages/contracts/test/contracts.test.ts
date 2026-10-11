@@ -38,6 +38,22 @@ describe('共享数据契约', () => {
     expect(editCommandSchema.safeParse({ ...create, multiple: true }).success).toBe(true);
     expect(editCommandSchema.safeParse({ ...create, fieldType: 'combo', multiple: true }).success).toBe(false);
   });
+  it('text.resize 要求非空唯一 blockIds 与有限正数 frame', () => {
+    const valid = {
+      type: 'text.resize',
+      pageId: 'p1',
+      blockIds: ['b1', 'b2'],
+      frame: { x: 0, y: -5, width: 120.5, height: 45 },
+    };
+    expect(editCommandSchema.safeParse(valid).success).toBe(true);
+    expect(editCommandSchema.safeParse({ ...valid, blockIds: [] }).success).toBe(false);
+    expect(editCommandSchema.safeParse({ ...valid, blockIds: ['b1', 'b1'] }).success).toBe(false);
+    expect(editCommandSchema.safeParse({ ...valid, frame: { ...valid.frame, width: 0 } }).success).toBe(false);
+    expect(editCommandSchema.safeParse({ ...valid, frame: { ...valid.frame, height: -1 } }).success).toBe(false);
+    expect(editCommandSchema.safeParse({ ...valid, frame: { ...valid.frame, x: Number.NaN } }).success).toBe(false);
+    expect(editCommandSchema.safeParse({ ...valid, frame: { ...valid.frame, y: Number.POSITIVE_INFINITY } }).success).toBe(false);
+    expect(editCommandSchema.safeParse({ ...valid, extra: true }).success).toBe(false);
+  });
   it('请求拒绝跨文档证据与任意 provider 参数', () => {
     const request = { protocolVersion: 1, requestId: 'request', feature: 'text.rewrite', document: { id: 'doc', revision: 1 },
       context: { scope: 'selection', evidence: [{ id: 'e1', docId: 'doc', revision: 1, pageId: 'p1', pageNumber: 1, blockId: 'b1', text: '😀', characterRange: [5, 7] }] }, instruction: '', options: {} };

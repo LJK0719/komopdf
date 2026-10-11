@@ -409,4 +409,84 @@ describe('CommandRegistry & AI Plan 契约边界验证', () => {
     };
     expect(() => validateTransaction(clearTx, formContext)).not.toThrow();
   });
+
+  it('text.resize 验证能力、文本块存在/可编辑性与删除状态', () => {
+    const resizeContext: CommandContext = {
+      ...context,
+      document: {
+        ...baseDocument,
+        capabilities: [...baseDocument.capabilities, 'text.resize', 'objects.delete'],
+      },
+    };
+
+    // 1. 成功验证
+    const validTx = {
+      id: 'tx-resize-valid',
+      docId: 'doc-1',
+      baseRevision: 1,
+      source: 'manual' as const,
+      commands: [
+        {
+          type: 'text.resize' as const,
+          pageId: 'page-1',
+          blockIds: ['block-1'],
+          frame: { x: 10, y: 15, width: 250, height: 40 },
+        },
+      ],
+    };
+    expect(() => validateTransaction(validTx, resizeContext)).not.toThrow();
+
+    // 2. 缺失能力时拒绝
+    expect(() => validateTransaction(validTx, context)).toThrowError(
+      expect.objectContaining({ code: 'UNSUPPORTED_CAPABILITY', message: expect.stringContaining('Resize Text') })
+    );
+
+    // 3. 目标文本块不存在
+    const nonexistentTx = {
+      ...validTx,
+      commands: [{ ...validTx.commands[0], blockIds: ['nonexistent-block'] }],
+    };
+    expect(() => validateTransaction(nonexistentTx, resizeContext)).toThrow('Target is not an editable text block');
+
+    // 4. 目标文本块为 geometry-only
+    const geoOnlyObject: EditableObject = {
+      ...textObject,
+      id: 'obj-geo',
+      textBlock: {
+        ...textObject.textBlock!,
+        id: 'block-geo',
+        editability: 'geometry-only',
+      },
+    };
+    const geoContext: CommandContext = {
+      ...resizeContext,
+      pages: new Map([
+        ['page-1', { ...page1, objects: [geoOnlyObject] }],
+        ['page-2', page2],
+      ]),
+    };
+    const geoTx = {
+      ...validTx,
+      commands: [{ ...validTx.commands[0], blockIds: ['block-geo'] }],
+    };
+    expect(() => validateTransaction(geoTx, geoContext)).toThrow('Target is not an editable text block');
+
+    // 5. 目标对象在同一事务中已被删除
+    const deletedTx = {
+      id: 'tx-resize-deleted',
+      docId: 'doc-1',
+      baseRevision: 1,
+      source: 'manual' as const,
+      commands: [
+        { type: 'objects.delete' as const, pageId: 'page-1', objectIds: ['obj-text-1'] },
+        {
+          type: 'text.resize' as const,
+          pageId: 'page-1',
+          blockIds: ['block-1'],
+          frame: { x: 0, y: 0, width: 100, height: 20 },
+        },
+      ],
+    };
+    expect(() => validateTransaction(deletedTx, resizeContext)).toThrow('Object containing the text has been deleted');
+  });
 });

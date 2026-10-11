@@ -122,7 +122,7 @@ constexpr std::string_view kCapabilitiesJson =
     "\"pages.delete\",\"pages.reorder\",\"pages.insert\","
     "\"image.insert\",\"content.insert\",\"pages.duplicate\","
     "\"pages.import\",\"image.replace\",\"image.crop\","
-    "\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\",\"form.update\"]";
+    "\"objects.copy\",\"annotation.add\",\"form.fill\",\"form.create\",\"text.reflow\",\"objects.align\",\"annotation.update\",\"annotation.delete\",\"objects.distribute\",\"pages.crop\",\"objects.group\",\"objects.ungroup\",\"form.update\",\"text.resize\"]";
 
 struct Matrix {
   double a = 1;
@@ -236,6 +236,9 @@ struct TextBlockData {
   std::string editability = "direct";
   bool is_ocr = false;
   bool is_paragraph = false;
+  bool fixed_frame = false;
+  std::optional<Rect> frame;
+  Matrix frame_transform;
 };
 
 struct ObjectData {
@@ -263,6 +266,7 @@ struct FontResource {
   std::vector<uint8_t> original_bytes;
   std::vector<uint8_t> extracted_sfnt;
   pdf_editor::FontFaceInfo face;
+  CPDF_Font* source_font = nullptr;
 
   std::span<const uint8_t> SfntBytes() const {
     return extracted_sfnt.empty() ? std::span<const uint8_t>(original_bytes)
@@ -312,6 +316,7 @@ enum class EditType : uint32_t {
   kObjectsGroup = 26,
   kObjectsUngroup = 27,
   kFormUpdate = 28,
+  kTextResize = 29,
 };
 
 struct EditCommand {
@@ -1854,6 +1859,10 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
     block.id = identity.text_block_id; block.page_id = context->page_id;
     block.source_id = context->source_id; block.object_id = data.id;
     block.bounds = data.bounds; block.transform = data.transform;
+    const float width = paragraph->GetFloatFor("Width"), height = paragraph->GetFloatFor("Height");
+    block.frame = Rect{0, 0, width, height};
+    block.frame_transform = Matrix{1, 0, 0, -1, 0, height}.Then(object_to_page);
+    block.fixed_frame = paragraph->GetNameFor("Sizing") == "Fixed";
     if (const auto flow = paragraph->GetDictFor("Flow")) {
       const auto id = flow->GetByteStringFor("Id");
       block.flow_id = std::string(id.c_str(), id.GetLength()) + ":" + std::to_string(flow->GetObjNum());
@@ -1924,6 +1933,14 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
       block.style = GetTextStyle(object);
       block.bounds = data.bounds;
       block.transform = data.transform;
+      if (native_text) {
+        auto local = native_text->Clone();
+        local->SetTextMatrix(CFX_Matrix());
+        const auto box = local->GetRect();
+        const float width = std::max(box.Width(), local->CalcPositionData(1).x - box.left);
+        block.frame = Rect{0, 0, width, box.Height()};
+        block.frame_transform = Matrix{1, 0, 0, -1, box.left, box.top}.Then(object_to_page);
+      }
       block.is_ocr = IsOcrTextObject(object);
       if ((depth > 0 && !NestedFormPathIsStructurallyEditable(context->page, object, path)) ||
           (depth == 0 && !HasSupportedTextMarks(object))) {
@@ -2150,6 +2167,13 @@ void AppendTextBlock(std::string* output, const TextBlockData& block) {
   AppendJsonString(output, block.editability);
   if (block.is_ocr) output->append(",\"isOcr\":true");
   if (block.is_paragraph) output->append(",\"isParagraph\":true");
+  if (block.fixed_frame) output->append(",\"fixedFrame\":true");
+  if (block.frame) {
+    output->append(",\"frame\":{\"width\":"); AppendJsonNumber(output, block.frame->width);
+    output->append(",\"height\":"); AppendJsonNumber(output, block.frame->height);
+    output->append(",\"transform\":"); AppendMatrix(output, block.frame_transform);
+    output->push_back('}');
+  }
   if (!block.inferred_spaces.empty()) {
     output->append(",\"inferredSpaces\":[");
     for (size_t i = 0; i < block.inferred_spaces.size(); ++i) {
@@ -5801,6 +5825,7 @@ bool ApplyObjectsCopy(const Document& document,
 #include "document_commands.h"
 #include "group_commands.h"
 #include "text_decoration.h"
+#include "text_resize.h"
 
 bool ApplyCommand(
     const Document& document,
@@ -5822,6 +5847,8 @@ bool ApplyCommand(
     case EditType::kTextStyle:
       return ApplyTextStyle(document, pdf, metadata, command, resources,
                             font_cache, batch_new_ids);
+    case EditType::kTextResize:
+      return ApplyTextResize(document, pdf, metadata, command, resources);
     case EditType::kTextReflow:
       return ApplyParagraphInsert(document, pdf, metadata, command, resources,
                                   batch_new_ids, text_insert_layout, allow_text_insert_overflow, initial_paragraph_styles);
@@ -6107,7 +6134,7 @@ bool ValidateRectValues(const EditCommand& command) {
 
 bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
   if (source.type < static_cast<uint32_t>(EditType::kTextReplace) ||
-      source.type > static_cast<uint32_t>(EditType::kFormUpdate)) {
+      source.type > static_cast<uint32_t>(EditType::kTextResize)) {
     SetError("UNSUPPORTED_CAPABILITY",
              "The edit command type is not supported.");
     return false;
@@ -6179,6 +6206,15 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
         return false;
       }
       return ValidateLayoutText(target->text, "Replacement text");
+    case EditType::kTextResize:
+      if (!require_page() || !require_ids() || !target->target_id.empty() ||
+          !target->resource_id.empty() || !target->font_id.empty() || !target->text.empty() ||
+          target->flags || target->start_utf16 || target->end_utf16 ||
+          !ValidateRectValues(*target)) {
+        if (g_error_code.empty()) SetError("INVALID_REQUEST", "Text frame resize requires source blocks and positive dimensions.");
+        return false;
+      }
+      return true;
     case EditType::kTextStyle:
       if (!require_page() || !require_ids() ||
           (target->flags & ~(kKnownStyleFlags | kTextStyleRangeFlag |

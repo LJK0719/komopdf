@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -46,6 +47,7 @@
 #include "unicode/uchar.h"
 #include "unicode/uscript.h"
 #include "unicode/utypes.h"
+#include "unicode/ustring.h"
 
 namespace pdf_editor {
 namespace {
@@ -773,11 +775,11 @@ bool PositionLines(const ParagraphRequest& request,
     const float leading = std::max(0.0f, line_step - font_height) / 2;
     line.ascent = ascent;
     line.descent = descent;
-    line.x = line.indent + AlignedX(request.alignment, request.width - line.indent, line.width, line.shaped.base_direction);
+    line.x = request.text_inset + line.indent + AlignedX(request.alignment, request.width - line.indent, line.width, line.shaped.base_direction);
     if (line.paragraph_start) top += request.space_before;
     line.top = top;
     top += line_step + (line.soft_wrap ? 0 : request.space_after);
-    line.bounds_y = line.top + leading;
+    line.bounds_y = line.top + leading + request.baseline_offset;
     line.bounds_height = font_height;
     line.baseline = request.height - line.bounds_y - ascent;
     if (!std::isfinite(line.x) || !std::isfinite(line.top) ||
@@ -1220,6 +1222,10 @@ void SetParagraphMetadata(CPDF_Document* document,
   metadata->SetNewFor<CPDF_String>("Text", text.AsStringView());
   metadata->SetNewFor<CPDF_Number>("Width", request.width);
   metadata->SetNewFor<CPDF_Number>("Height", request.height);
+  if (request.fixed_frame) metadata->SetNewFor<CPDF_Name>("Sizing", "Fixed");
+  metadata->SetNewFor<CPDF_Number>("BaselineOffset", request.baseline_offset);
+  metadata->SetNewFor<CPDF_Number>("TextInset", request.text_inset);
+  if (font_faces[0].source_font) metadata->SetNewFor<CPDF_Boolean>("SourceFont", true);
   metadata->SetNewFor<CPDF_Number>("FontSize", request.font_size);
   metadata->SetNewFor<CPDF_Number>("LineHeight", request.line_height);
   metadata->SetNewFor<CPDF_Number>("FirstLineIndent", request.first_line_indent);
@@ -1257,6 +1263,7 @@ void SetParagraphMetadata(CPDF_Document* document,
           fonts[style.font_index]->GetFontDictObjNum());
       const WideString id = WideString::FromUTF8(ByteStringView(font_faces[style.font_index].id));
       run->SetNewFor<CPDF_String>("RegisteredFontId", id.AsStringView());
+      if (font_faces[style.font_index].source_font) run->SetNewFor<CPDF_Boolean>("SourceFont", true);
       run->SetNewFor<CPDF_Number>("FontSize", style.font_size);
       run->SetNewFor<CPDF_Number>("LetterSpacing", style.letter_spacing);
       run->SetNewFor<CPDF_Boolean>("Underline", style.underline);
@@ -1276,7 +1283,8 @@ FPDF_PAGEOBJECT CreateFormObject(CPDF_Document* document,
                                  const ParagraphRequest& request,
                                  const std::u16string& logical_text,
                                  const fxcrt::string& content,
-                                 std::string* error_message) {
+                                 std::string* error_message,
+                                 bool allow_empty = false) {
   if (!document || fonts.empty()) {
     Fail("The paragraph requires embedded font resources.", error_message);
     return nullptr;
@@ -1311,7 +1319,7 @@ FPDF_PAGEOBJECT CreateFormObject(CPDF_Document* document,
 
   auto form = std::make_unique<CPDF_Form>(document, nullptr, stream, nullptr);
   form->ParseContent();
-  if (!form->HasPageObjects()) {
+  if (!allow_empty && !form->HasPageObjects()) {
     Fail("PDFium could not parse the paragraph Form content.", error_message);
     return nullptr;
   }
@@ -1321,6 +1329,156 @@ FPDF_PAGEOBJECT CreateFormObject(CPDF_Document* document,
       CFX_FloatRect(0, 0, request.width, request.height));
   form_object->SetDirty(true);
   return FPDFPageObjectFromCPDFPageObject(form_object.release());
+}
+
+// Source PDF fonts keep their character codes and metrics. This path is also
+// used for unembedded standard fonts, which must not be replaced on resize.
+bool CreateSourceFontParagraph(FPDF_DOCUMENT document,
+    const std::vector<ParagraphFont>& faces, const ParagraphRequest& request,
+    ParagraphResult* result, std::string* error_message) {
+  UErrorCode status = U_ZERO_ERROR;
+  int32_t length = 0;
+  u_strFromUTF8(nullptr, 0, &length, request.utf8.data(),
+                static_cast<int32_t>(request.utf8.size()), &status);
+  if (status != U_BUFFER_OVERFLOW_ERROR && U_FAILURE(status))
+    return Fail("The source paragraph is not valid UTF-8.", error_message);
+  std::u16string text(static_cast<size_t>(length), 0);
+  status = U_ZERO_ERROR;
+  u_strFromUTF8(reinterpret_cast<UChar*>(text.data()), length, nullptr,
+                request.utf8.data(), static_cast<int32_t>(request.utf8.size()), &status);
+  if (U_FAILURE(status)) return Fail("The source paragraph could not be decoded.", error_message);
+  const auto styles = ResolvedStyles(request, static_cast<uint32_t>(text.size()));
+  std::vector<ScopedFont> owned;
+  std::vector<CPDF_Font*> fonts;
+  for (const auto& face : faces) {
+    if (face.source_font) fonts.push_back(face.source_font);
+    else {
+      owned.emplace_back(LoadFontFace(document, face.info, face.sfnt, error_message));
+      if (!owned.back().get()) return false;
+      fonts.push_back(CPDFFontFromFPDFFont(owned.back().get()));
+    }
+  }
+  struct Glyph { uint32_t start, end, code; const ParagraphStyleRun* style; float advance; };
+  std::vector<Glyph> glyphs;
+  for (uint32_t start = 0; start < text.size();) {
+    uint32_t end = start + 1, scalar = text[start];
+    if (scalar >= 0xd800 && scalar <= 0xdbff && end < text.size()) {
+      scalar = 0x10000 + ((scalar - 0xd800) << 10) + (text[end++] - 0xdc00);
+    }
+    const auto* style = StyleAt(styles, start);
+    if (!style || style->font_index >= fonts.size())
+      return Fail("The source paragraph has an invalid style range.", error_message);
+    uint32_t code = 0;
+    float advance = 0;
+    if (!IsHardBreakUnit(text[start])) {
+      auto* font = fonts[style->font_index];
+      code = font->CharCodeFromUnicode(static_cast<wchar_t>(scalar));
+      const auto decoded = font->UnicodeFromCharCode(code).ToUTF16LE();
+      if (code == std::numeric_limits<uint32_t>::max() ||
+          decoded.GetLength() != (end - start) * 2 + 2 ||
+          std::memcmp(decoded.c_str(), text.data() + start, decoded.GetLength() - 2) != 0)
+        return Fail("The original PDF font cannot encode this character; choose a font for the added text.", error_message);
+      advance = font->GetCharWidth(code) * style->font_size / 1000.0f + style->letter_spacing;
+    }
+    glyphs.push_back({start, end, code, style, advance});
+    start = end;
+  }
+  std::vector<bool> breaks, hard_breaks;
+  if (!CollectLineBreaks(text, request.language, &breaks, &hard_breaks, error_message)) return false;
+  struct Row { size_t first, end; float width, indent; bool paragraph_start, hard; };
+  std::vector<Row> rows;
+  size_t first = 0;
+  bool paragraph_start = true;
+  while (first < glyphs.size()) {
+    const float indent = paragraph_start ? request.first_line_indent : 0;
+    float width = 0, break_width = 0;
+    size_t end = first, last_break = first;
+    for (; end < glyphs.size() && !IsHardBreakUnit(text[glyphs[end].start]); ++end) {
+      const float next = width + glyphs[end].advance;
+      if (next > request.width - indent + kLayoutEpsilon && end > first) {
+        if (last_break > first) { end = last_break; width = break_width; }
+        break;
+      }
+      width = next;
+      if (breaks[glyphs[end].end]) { last_break = end + 1; break_width = width; }
+    }
+    const bool hard = end < glyphs.size() && IsHardBreakUnit(text[glyphs[end].start]);
+    rows.push_back({first, end, width, indent, paragraph_start, hard});
+    first = hard ? end + 1 : end;
+    if (hard && text[glyphs[end].start] == u'\r' && first < glyphs.size() && text[glyphs[first].start] == u'\n') ++first;
+    paragraph_start = hard;
+  }
+  if (!text.empty() && IsHardBreakUnit(text.back())) rows.push_back({glyphs.size(), glyphs.size(), 0, 0, true, false});
+  ParagraphResult output;
+  output.logical_text = text;
+  std::ostringstream content;
+  content.imbue(std::locale::classic());
+  content << "BT\n";
+  float top = 0;
+  for (const auto& row : rows) {
+    float ascent = 0, descent = 0, step = request.font_size * request.line_height;
+    for (size_t index = row.first; index < row.end; ++index) {
+      const auto& style = *glyphs[index].style;
+      float a = 0, d = 0;
+      if (!FPDFFont_GetAscent(FPDFFontFromCPDFFont(fonts[style.font_index]), style.font_size, &a) ||
+          !FPDFFont_GetDescent(FPDFFontFromCPDFFont(fonts[style.font_index]), style.font_size, &d))
+        return Fail("The PDF font has no usable text metrics.", error_message);
+      ascent = std::max(ascent, a); descent = std::min(descent, d);
+      step = std::max(step, style.font_size * request.line_height);
+    }
+    if (row.first == row.end) {
+      FPDFFont_GetAscent(FPDFFontFromCPDFFont(fonts[0]), request.font_size, &ascent);
+      FPDFFont_GetDescent(FPDFFontFromCPDFFont(fonts[0]), request.font_size, &descent);
+    }
+    if (request.line_spacing > 0) step = request.line_spacing;
+    if (row.paragraph_start) top += request.space_before;
+    const float leading = std::max(0.0f, step - ascent + descent) / 2;
+    const float bounds_y = top + leading + request.baseline_offset;
+    const float baseline = request.height - bounds_y - ascent;
+    float x = request.text_inset + row.indent + AlignedX(request.alignment,
+        request.width - row.indent, row.width, TextDirection::kLeftToRight);
+    const uint32_t start = row.first < glyphs.size() ? glyphs[row.first].start : static_cast<uint32_t>(text.size());
+    const uint32_t end = row.end > row.first ? glyphs[row.end - 1].end : start;
+    output.lines.push_back({{x, bounds_y, row.width, ascent - descent}, {start, end}});
+    if (bounds_y + ascent - descent > request.height + kLayoutEpsilon ||
+        row.width > request.width - row.indent + kLayoutEpsilon) output.overflow = true;
+    for (size_t index = row.first; index < row.end; ++index) {
+      const auto& glyph = glyphs[index]; const auto& style = *glyph.style;
+      content << "/Span << /ActualText ";
+      AppendPdfUnicodeHex(text.substr(glyph.start, glyph.end - glyph.start), &content);
+      content << " >> BDC\n/" << FontResourceName(style.font_index) << ' ';
+      WriteFloat(content, style.font_size) << " Tf\n";
+      WriteFloat(content, style.color.red) << ' '; WriteFloat(content, style.color.green) << ' ';
+      WriteFloat(content, style.color.blue) << " rg\n1 0 0 1 ";
+      WriteFloat(content, x) << ' '; WriteFloat(content, baseline) << " Tm <";
+      ByteString encoded; fonts[style.font_index]->AppendChar(&encoded, glyph.code);
+      constexpr char hex[] = "0123456789ABCDEF";
+      for (size_t byte = 0; byte < encoded.GetLength(); ++byte) {
+        const auto value = static_cast<uint8_t>(encoded[byte]);
+        content << hex[value >> 4] << hex[value & 15];
+      }
+      content << "> Tj\nEMC\n";
+      if (style.underline && glyph.advance > 0) {
+        const float y = baseline + descent * 0.5f;
+        content << "ET\n/Artifact BMC\nq ";
+        WriteFloat(content, style.color.red) << ' '; WriteFloat(content, style.color.green) << ' ';
+        WriteFloat(content, style.color.blue) << " RG ";
+        WriteFloat(content, style.font_size * 0.05f) << " w ";
+        WriteFloat(content, x) << ' '; WriteFloat(content, y) << " m ";
+        WriteFloat(content, x + glyph.advance) << ' '; WriteFloat(content, y) << " l S Q\nEMC\nBT\n";
+      }
+      x += glyph.advance;
+    }
+    top += step + (row.hard ? request.space_after : 0);
+  }
+  content << "ET\n";
+  const auto raw_content = content.str();
+  const fxcrt::string stream(raw_content.data(), raw_content.size());
+  output.object = CreateFormObject(CPDFDocumentFromFPDFDocument(document), fonts, faces,
+      styles, request, text, stream, error_message);
+  if (!output.object) return false;
+  *result = std::move(output);
+  return true;
 }
 
 }  // namespace
@@ -1340,6 +1498,9 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
   if (!native_document) {
     return Fail("A valid target PDF document is required.", error_message);
   }
+  if (!ValidateRequest(request, error_message)) return false;
+  if (std::any_of(font_faces.begin(), font_faces.end(), [](const auto& face) { return face.source_font != nullptr; }))
+    return CreateSourceFontParagraph(document, std::vector<ParagraphFont>(font_faces.begin(), font_faces.end()), request, result, error_message);
   if (font_faces.empty() || font_faces[0].sfnt.empty()) {
     return Fail("A standalone prepared SFNT font face is required.",
                 error_message);
@@ -1480,6 +1641,22 @@ bool CreateTextParagraph(FPDF_DOCUMENT document,
 
   *result = std::move(output);
   return true;
+}
+
+bool CreatePreservedTextFrame(FPDF_DOCUMENT document,
+    std::span<const ParagraphFont> faces, const ParagraphRequest& request,
+    const std::u16string& logical_text, ParagraphResult* result, std::string* error_message) {
+  std::vector<CPDF_Font*> fonts;
+  for (const auto& face : faces) {
+    if (!face.source_font) return Fail("A preserved frame requires its source PDF fonts.", error_message);
+    fonts.push_back(face.source_font);
+  }
+  const std::vector<ParagraphFont> source_faces(faces.begin(), faces.end());
+  const auto styles = ResolvedStyles(request, static_cast<uint32_t>(logical_text.size()));
+  result->object = CreateFormObject(CPDFDocumentFromFPDFDocument(document), fonts,
+      source_faces, styles, request, logical_text, fxcrt::string(), error_message, true);
+  result->logical_text = logical_text;
+  return result->object != nullptr;
 }
 
 bool CreateTextParagraph(FPDF_DOCUMENT document,

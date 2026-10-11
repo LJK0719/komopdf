@@ -35,6 +35,8 @@ export type TextBlock = {
   id: string; pageId: string; sourceId?: string; sourceObjectIds: string[]; runs: StyledTextRun[];
   bounds: Rect; transform: Matrix; editability: 'direct' | 'font-replacement' | 'geometry-only'; isOcr?: boolean;
   isParagraph?: boolean;
+  frame?: { width: number; height: number; transform: Matrix };
+  fixedFrame?: boolean;
   characters?: TextCharacter[];
   // Internal TJ word gaps, at source UTF-16 offsets. Native edit ranges still
   // address mapped glyph text; paragraph editing materializes these as spaces.

@@ -6,6 +6,13 @@ export const rangeSchema = z.tuple([z.number().int().nonnegative(), z.number().i
   .refine(([start, end]) => end >= start, 'Range must be a UTF-16 half-open interval');
 export const matrixSchema = z.tuple([z.number(), z.number(), z.number(), z.number(), z.number(), z.number()]);
 export const rectSchema = z.object({ x: z.number(), y: z.number(), width: z.number().nonnegative(), height: z.number().nonnegative() }).strict();
+export const frameSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  width: z.number().positive().finite(),
+  height: z.number().positive().finite(),
+}).strict();
+export type Frame = z.infer<typeof frameSchema>;
 const idsSchema = z.array(idSchema).min(1).refine(ids => new Set(ids).size === ids.length, 'Target IDs must be unique');
 const colorSchema = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.number().min(0).max(1)]);
 export const textStyleSchema = z.object({
@@ -41,6 +48,7 @@ export const editCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text.insert'), pageId: idSchema, objectId: idSchema, bounds: rectSchema, text: z.string(), style: textStyleSchema,
     invisible: z.boolean().optional(), fitBounds: z.boolean().optional(), ocr: z.boolean().optional(), paragraph: z.boolean().optional() }).strict(),
   z.object({ type: z.literal('text.reflow'), pageId: idSchema, objectId: idSchema, blockIds: idsSchema, bounds: rectSchema, text: z.string(), style: reflowTextStyleSchema }).strict(),
+  z.object({ type: z.literal('text.resize'), pageId: idSchema, blockIds: idsSchema, frame: frameSchema }).strict(),
   z.object({ type: z.literal('objects.transform'), pageId: idSchema, objectIds: idsSchema, matrix: matrixSchema }).strict(),
   z.object({ type: z.literal('objects.delete'), pageId: idSchema, objectIds: idsSchema }).strict(),
   z.object({ type: z.literal('objects.copy'), pageId: idSchema, objectIds: idsSchema, newObjectIds: idsSchema, offset: z.object({ x: z.number(), y: z.number() }).strict() }).strict(),

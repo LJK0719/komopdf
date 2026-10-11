@@ -17,7 +17,7 @@ bool CreateParagraphObject(FPDF_DOCUMENT pdf,
     const pdf_editor::ParagraphRequest& request,
     pdf_editor::ParagraphResult* result) {
   std::vector<pdf_editor::ParagraphFont> faces;
-  for (const auto& font : fonts) faces.push_back({font->id, font->face, font->SfntBytes()});
+  for (const auto& font : fonts) faces.push_back({font->id, font->face, font->SfntBytes(), font->source_font});
   std::string error;
   if (!pdf_editor::CreateTextParagraph(pdf, faces, request, result, &error)) {
     SetError("UNSUPPORTED_CAPABILITY", std::move(error));
@@ -43,12 +43,19 @@ bool ParagraphIdentity(const Document& document, FPDF_PAGEOBJECT object,
 
 std::shared_ptr<const FontResource> ResolveParagraphFont(
     const CPDF_Dictionary* metadata,
-    const std::map<std::string, std::shared_ptr<const FontResource>>& resources) {
+    const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
+    CPDF_Document* document = nullptr) {
   const ByteString stored = metadata->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
   const std::string font_id(stored.c_str(), stored.GetLength());
+  const auto dictionary = metadata->GetDictFor("Font");
+  if (metadata->GetBooleanFor("SourceFont", false) && dictionary && document) {
+    auto resource = std::make_shared<FontResource>();
+    resource->id = font_id;
+    resource->source_font = CPDF_DocPageData::FromDocument(document)->GetFont(pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(dictionary.Get()))).Get();
+    return resource->source_font ? resource : nullptr;
+  }
   const auto found = resources.find(font_id);
   if (found != resources.end()) return found->second;
-  const auto dictionary = metadata->GetDictFor("Font");
   const auto descendants = dictionary ? dictionary->GetArrayFor("DescendantFonts") : nullptr;
   const auto descendant = descendants ? descendants->GetDictAt(0) : nullptr;
   const auto descriptor = descendant ? descendant->GetDictFor("FontDescriptor") : nullptr;
@@ -73,8 +80,9 @@ bool ReadParagraphStyles(
     const CPDF_Dictionary* info, uint32_t length,
     const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
     std::vector<std::shared_ptr<const FontResource>>* fonts,
-    pdf_editor::ParagraphRequest* request) {
-  auto base = ResolveParagraphFont(info, resources);
+    pdf_editor::ParagraphRequest* request,
+    CPDF_Document* document) {
+  auto base = ResolveParagraphFont(info, resources, document);
   if (!base) {
     SetError("UNSUPPORTED_CAPABILITY", "Choose a registered font to edit this saved paragraph.");
     return false;
@@ -83,6 +91,9 @@ bool ReadParagraphStyles(
   fonts->push_back(std::move(base));
   request->width = info->GetFloatFor("Width");
   request->height = info->GetFloatFor("Height");
+  request->fixed_frame = info->GetNameFor("Sizing") == "Fixed";
+  request->baseline_offset = info->GetFloatFor("BaselineOffset");
+  request->text_inset = info->GetFloatFor("TextInset");
   request->font_size = info->GetFloatFor("FontSize");
   request->line_height = info->GetFloatFor("LineHeight");
   request->first_line_indent = info->GetFloatFor("FirstLineIndent");
@@ -115,7 +126,7 @@ bool ReadParagraphStyles(
     const int start = run->GetIntegerFor("Start"), end = run->GetIntegerFor("End");
     if (start < 0 || end <= start || static_cast<uint32_t>(start) != next ||
         static_cast<uint32_t>(end) > length) break;
-    auto font = ResolveParagraphFont(run.Get(), resources);
+    auto font = ResolveParagraphFont(run.Get(), resources, document);
     if (!font) break;
     const auto font_dict = run->GetDictFor("Font");
     if (!font_dict || !font_dict->GetObjNum()) break;
@@ -527,7 +538,7 @@ bool ParagraphRangePreservesClusters(FPDF_PAGEOBJECT object,
   uint32_t cursor = 0;
   std::u16string previous;
   auto is_break = [](char16_t unit) {
-    return unit == u'\r' || unit == u'\n' || unit == u'\v' || unit == u'\f' ||
+    return unit == u' ' || unit == u'\t' || unit == u'\r' || unit == u'\n' || unit == u'\v' || unit == u'\f' ||
            unit == 0x0085 || unit == 0x2028 || unit == 0x2029;
   };
   if (!HasSupportedTextMarks(object)) return false;
@@ -568,6 +579,16 @@ bool ParagraphRangePreservesClusters(FPDF_PAGEOBJECT object,
          std::all_of(text.begin() + cursor, text.end(), is_break);
 }
 
+bool ParagraphNeedsFixedFrame(FPDF_PAGE page, FPDF_PAGEOBJECT object) {
+  const auto info = ParagraphMetadata(object);
+  if (info && info->GetNameFor("Sizing") == "Fixed") return true;
+  FS_MATRIX matrix{}; Matrix to_page, to_pdf;
+  if (!FPDFPageObj_GetMatrix(object, &matrix) || !GetPageMatrices(page, &to_page, &to_pdf)) return false;
+  const auto placement = MatrixFromFs(matrix).Then(to_page);
+  return std::abs(placement.a - 1) > 0.01 || std::abs(placement.b) > 0.01 ||
+         std::abs(placement.c) > 0.01 || std::abs(placement.d + 1) > 0.01;
+}
+
 bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
     FPDF_PAGE page, CandidateMetadata* metadata, size_t page_index,
     const ObjectTarget& target, const EditCommand& command,
@@ -603,8 +624,9 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
   pdf_editor::ParagraphRequest request;
   std::vector<std::shared_ptr<const FontResource>> fonts;
   if (!ReadParagraphStyles(logical.Get(), static_cast<uint32_t>(decoded.utf16.size()),
-                           resources, &fonts, &request)) return false;
+                           resources, &fonts, &request, CPDFDocumentFromFPDFDocument(pdf))) return false;
   request.height = info->GetFloatFor("Height");
+  if (!flow && ParagraphNeedsFixedFrame(page, target.object)) request.fixed_frame = true;
   request.utf8 = original;
   if (!UpdateParagraphStyles(&request, &fonts, command, start, end,
       static_cast<uint32_t>(decoded.utf16.size()), resources)) return false;
@@ -625,6 +647,7 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
   replacement->SetContentStream(CPDFPageObjectFromFPDFPageObject(target.object)->GetContentStream());
   auto* prior_object = CPDFPageObjectFromFPDFPageObject(target.object);
   replacement->SetContentMarks(*prior_object->GetContentMarks());
+  replacement->mutable_clip_path() = prior_object->clip_path();
   const int marked_id = prior_object->GetContentMarks()->GetMarkedContentID();
   if (pdf_editor::tagged::ActualMark(replacement.get()) &&
       (marked_id < 0 || !pdf_editor::tagged::HasOtherMember(
@@ -643,7 +666,7 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
   const std::string object_id = identity.id;
   metadata->pages[page_index].objects[position] = std::move(identity);
   if (!FPDFPage_GenerateContent(page)) return false;
-  if (!flow && !paragraph.overflow) return true;
+  if (request.fixed_frame || (!flow && !paragraph.overflow)) return true;
   return ReflowParagraphAcrossPages(document, pdf, metadata, command, object_id, fonts, request, nullptr);
 }
 
@@ -685,6 +708,14 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
     return false;
   }
   if (updated.empty()) {
+    if (!flow && ParagraphNeedsFixedFrame(page, target.object)) {
+      if (!native_page->RemovePageObject(old_object)) return false;
+      identities.erase(identities.begin() + index);
+      if (old_mcid >= 0) pdf_editor::tagged::ClearMcid(native_doc, native_page, old_mcid);
+      if (layout_bounds) *layout_bounds = {};
+      if (overflow) *overflow = false;
+      return FPDFPage_GenerateContent(page) != 0;
+    }
     TextInsertLayoutResult cleared;
     pdf_editor::ParagraphRequest empty;
     if (!ReflowParagraphAcrossPages(document, pdf, metadata, command, target.identity->id, {}, empty, &cleared)) return false;
@@ -696,8 +727,9 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   pdf_editor::ParagraphRequest request;
   std::vector<std::shared_ptr<const FontResource>> fonts;
   if (!ReadParagraphStyles(logical.Get(), static_cast<uint32_t>(decoded.utf16.size()),
-                           resources, &fonts, &request)) return false;
+                           resources, &fonts, &request, CPDFDocumentFromFPDFDocument(pdf))) return false;
   request.height = info->GetFloatFor("Height");
+  if (!flow && ParagraphNeedsFixedFrame(page, target.object)) request.fixed_frame = true;
   std::optional<uint32_t> replacement_font;
   if (!command.font_id.empty()) {
     const auto selected = resources.find(command.font_id);
@@ -741,6 +773,7 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   if (!FPDFPageObj_SetMatrix(paragraph.object, &matrix)) { SetUnexpectedError(); return false; }
   object->SetContentStream(CPDFPageObjectFromFPDFPageObject(target.object)->GetContentStream());
   object->SetContentMarks(*old_object->GetContentMarks());
+  object->mutable_clip_path() = old_object->clip_path();
   if (pdf_editor::tagged::ActualMark(object.get()))
     pdf_editor::tagged::SetLocalActualText(object.get(), updated);
   ObjectIdentity identity;
@@ -752,8 +785,8 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   const std::string object_id = identity.id;
   identities[index] = std::move(identity);
   if (!FPDFPage_GenerateContent(page)) { SetUnexpectedError(); return false; }
-  if (!flow && !paragraph.overflow) {
-    if (overflow) *overflow = false;
+  if (request.fixed_frame || (!flow && !paragraph.overflow)) {
+    if (overflow) *overflow = paragraph.overflow;
     if (layout_bounds || paragraph_layout) {
       Matrix to_page, to_pdf;
       if (!GetPageMatrices(page, &to_page, &to_pdf)) return false;
@@ -761,7 +794,7 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
       const Rect box = TransformBounds(0, 0, request.width, request.height, placement);
       if (layout_bounds) *layout_bounds = box;
       if (paragraph_layout) {
-        paragraph_layout->bounds = box; paragraph_layout->overflow = false;
+        paragraph_layout->bounds = box; paragraph_layout->overflow = paragraph.overflow;
         for (const auto& line : paragraph.lines) {
           const auto& b = line.bounds;
           paragraph_layout->lines.push_back({TransformBounds(b.x, request.height - b.y - b.height,

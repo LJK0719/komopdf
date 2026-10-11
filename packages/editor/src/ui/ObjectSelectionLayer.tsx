@@ -1,6 +1,7 @@
 import { translate as t, useI18n } from './i18n.js';
 import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import type { PageModel, RenderResult } from '@pdf-editor/contracts';
+import type { PageModel, Rect, RenderResult } from '@pdf-editor/contracts';
+import { frameBounds, localFrameDelta, resizedTextFrame, selectionTextFrame, type TextFrame } from './text-frame.js';
 import { containsRect, isContainerInterior, normalizeSelection, pickObject, selectionScope } from './object-selection.js';
 
 type ScaleHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
@@ -16,6 +17,7 @@ type Props = {
   onEditText(id: string): void;
   onMove(ids: string[], dx: number, dy: number): Promise<void>;
   onTransform?(ids: string[], matrix: [number, number, number, number, number, number]): Promise<void>;
+  onResizeText?: ((ids: string[], frame: Rect) => Promise<void>) | undefined;
 };
 
 type SelectionBounds = {
@@ -36,14 +38,15 @@ type SelectionBounds = {
 type Gesture =
   | { type: 'box'; pointerId: number; startX: number; startY: number; additive: boolean; clickId?: string }
   | { type: 'move'; pointerId: number; startX: number; startY: number; ids: string[]; clickId: string; additive: boolean }
-  | { type: 'scale'; pointerId: number; startX: number; startY: number; handle: ScaleHandle; ids: string[]; bounds: SelectionBounds }
+  | { type: 'scale'; pointerId: number; startX: number; startY: number; handle: ScaleHandle; ids: string[]; bounds: SelectionBounds; textFrame: TextFrame | null }
   | { type: 'rotate'; pointerId: number; startX: number; startY: number; startAngle: number; ids: string[]; bounds: SelectionBounds };
 
 type Preview =
   | { type: 'box'; x: number; y: number; dx: number; dy: number }
   | { type: 'move'; dx: number; dy: number; ids: string[] }
   | { type: 'scale'; sx: number; sy: number; originX: string; originY: string; matrix: [number, number, number, number, number, number]; ids: string[] }
-  | { type: 'rotate'; angleDegrees: number; matrix: [number, number, number, number, number, number]; ids: string[] };
+  | { type: 'rotate'; angleDegrees: number; matrix: [number, number, number, number, number, number]; ids: string[] }
+  | { type: 'resize-text'; bounds: Rect };
 
 const HANDLES: Array<{
   handle: ScaleHandle;
@@ -159,6 +162,7 @@ export function ObjectSelectionLayer({
   onEditText,
   onMove,
   onTransform,
+  onResizeText,
 }: Props) {
   useI18n();
   const scaleX = render.width / page.widthPt;
@@ -173,6 +177,9 @@ export function ObjectSelectionLayer({
   const objects = selectionScope(page, selectedIds);
   const idsFor = (object: (typeof objects)[number]) => object.textBlock?.sourceObjectIds ?? [object.id];
   const selectedObjects = objects.filter(object => idsFor(object).some(id => selectedIds.includes(id)));
+  const textFrame = selectionTextFrame(page, selectedObjects);
+  const textOnly = selectedObjects.length === 1 && Boolean(selectedObjects[0]?.textBlock);
+  const resizeEnabled = !textOnly || Boolean(textFrame && onResizeText);
   const stacking = new Map(objects.slice().sort((a, b) => b.bounds.width * b.bounds.height - a.bounds.width * a.bounds.height)
     .map((object, index) => [object.id, index]));
   const hitAt = (clientX: number, clientY: number) => {
@@ -181,10 +188,11 @@ export function ObjectSelectionLayer({
   };
   let bounds: SelectionBounds | null = null;
   if (selectedObjects.length > 0) {
-    const minX = Math.min(...selectedObjects.map(o => o.bounds.x));
-    const minY = Math.min(...selectedObjects.map(o => o.bounds.y));
-    const maxX = Math.max(...selectedObjects.map(o => o.bounds.x + o.bounds.width));
-    const maxY = Math.max(...selectedObjects.map(o => o.bounds.y + o.bounds.height));
+    const boxes = textFrame ? [frameBounds(textFrame)] : selectedObjects.map(object => object.bounds);
+    const minX = Math.min(...boxes.map(box => box.x));
+    const minY = Math.min(...boxes.map(box => box.y));
+    const maxX = Math.max(...boxes.map(box => box.x + box.width));
+    const maxY = Math.max(...boxes.map(box => box.y + box.height));
     const widthPt = maxX - minX;
     const heightPt = maxY - minY;
     bounds = {
@@ -208,7 +216,7 @@ export function ObjectSelectionLayer({
     handle: ScaleHandle | 'rotate',
   ) => {
     event.stopPropagation();
-    if (disabled || !canTransform || event.button !== 0 || !bounds) return;
+    if (disabled || !canTransform || event.button !== 0 || !bounds || (handle !== 'rotate' && !resizeEnabled)) return;
     const layer = layerRef.current;
     if (!layer) return;
     const rect = layer.getBoundingClientRect();
@@ -237,6 +245,7 @@ export function ObjectSelectionLayer({
         handle,
         ids: selectedIds,
         bounds,
+        textFrame,
       };
     }
     moved.current = false;
@@ -261,6 +270,13 @@ export function ObjectSelectionLayer({
       }
       if (factor !== 1) {
         event.preventDefault();
+        if (textOnly) {
+          if (!textFrame || !onResizeText) return;
+          const dx = textFrame.width * (factor - 1) * (scaleHandle.includes('w') ? -1 : 1);
+          const dy = textFrame.height * (factor - 1) * (scaleHandle.includes('n') ? -1 : 1);
+          void onResizeText(textFrame.objectIds, resizedTextFrame(textFrame, scaleHandle, dx, dy));
+          return;
+        }
         const { ax, ay } = getScaleAnchor(scaleHandle, bounds);
         matrix = [factor, 0, 0, factor, (1 - factor) * ax, (1 - factor) * ay];
       }
@@ -301,6 +317,9 @@ export function ObjectSelectionLayer({
         transformOrigin: `${preview.originX} ${preview.originY}`,
         transform: `scale(${preview.sx}, ${preview.sy})`,
       };
+    } else if (preview.type === 'resize-text') {
+      selectionBoxTransform = { left: preview.bounds.x * scaleX, top: preview.bounds.y * scaleY,
+        width: Math.max(preview.bounds.width * scaleX, 4), height: Math.max(preview.bounds.height * scaleY, 4) };
     } else if (preview.type === 'rotate') {
       selectionBoxTransform = {
         transformOrigin: '50% 50%',
@@ -359,6 +378,12 @@ export function ObjectSelectionLayer({
         } else if (active.type === 'scale') {
           if (Math.hypot(dx, dy) >= 3) moved.current = true;
           if (moved.current) {
+            if (active.textFrame) {
+              const [localX, localY] = localFrameDelta(active.textFrame, dx / scaleX, dy / scaleY);
+              const frame = resizedTextFrame(active.textFrame, active.handle, localX, localY);
+              setPreview({ type: 'resize-text', bounds: frameBounds(active.textFrame, frame) });
+              return;
+            }
             const res = computeScaleMatrix(active.handle, active.bounds, currentX, currentY, event.shiftKey);
             setPreview({
               type: 'scale',
@@ -417,7 +442,10 @@ export function ObjectSelectionLayer({
             void onMove(active.ids, dx / scaleX, dy / scaleY);
           } else onSelect(active.clickId, active.additive);
         } else if (active.type === 'scale') {
-          if (moved.current && onTransform) {
+          if (moved.current && active.textFrame && onResizeText) {
+            const [localX, localY] = localFrameDelta(active.textFrame, dx / scaleX, dy / scaleY);
+            void onResizeText(active.textFrame.objectIds, resizedTextFrame(active.textFrame, active.handle, localX, localY));
+          } else if (moved.current && onTransform && !textOnly) {
             const res = computeScaleMatrix(active.handle, active.bounds, currentX, currentY, event.shiftKey);
             void onTransform(active.ids, res.matrix);
           }
