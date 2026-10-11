@@ -152,12 +152,36 @@ bool ApplyTextResize(const Document& document, FPDF_DOCUMENT pdf,
   request.width = static_cast<float>(command.values[2]);
   request.height = static_cast<float>(command.values[3]);
   request.fixed_frame = true;
+  const Matrix old_frame_matrix = matrix;
   const float dy = old_height - static_cast<float>(command.values[1]) - request.height;
   matrix.e += matrix.a * command.values[0] + matrix.c * dy;
   matrix.f += matrix.b * command.values[0] + matrix.d * dy;
-  const bool preserve_source = !info && std::abs(request.width - old_width) < 0.02f && command.values[0] == 0;
+  const bool preserve_source = !info && std::abs(request.width - old_width) < 0.02f;
+  const bool preserve_frame = info && !flow && std::abs(request.width - old_width) < 0.02f;
   pdf_editor::ParagraphResult paragraph;
-  if (preserve_source) {
+  if (preserve_frame) {
+    const auto cloned = old_object->AsForm()->form()->GetMutableStreamForEditing()->Clone();
+    auto stream = pdfium::WrapRetain(cloned->AsMutableStream());
+    native_doc->AddIndirectObject(stream);
+    auto dictionary = stream->GetMutableDict();
+    // Parse the stored operators without baking the old/new frame BBox into
+    // each glyph's clip path; the Form itself applies the new container clip.
+    dictionary->RemoveFor("BBox");
+    auto stored = dictionary->GetMutableDictFor("KomoParagraph");
+    stored->SetNewFor<CPDF_Number>("Height", request.height);
+    stored->SetNewFor<CPDF_Name>("Sizing", "Fixed");
+    auto form = std::make_unique<CPDF_Form>(native_doc, nullptr, stream, nullptr);
+    form->ParseContent();
+    dictionary->SetRectFor("BBox", CFX_FloatRect(0, 0, request.width, request.height));
+    const CFX_Matrix shift(1, 0, 0, 1, 0, request.height - old_height);
+    for (const auto& child : *form) {
+      child->Transform(shift); child->TransformClipPath(shift); child->SetDirty(true);
+    }
+    CPDF_PageContentGenerator(form.get()).GenerateFormContentForEditing(form.get());
+    auto object = std::make_unique<CPDF_FormObject>(CPDF_PageObject::kNoContentStream, std::move(form), CFX_Matrix());
+    object->SetRect(CFX_FloatRect(0, 0, request.width, request.height)); object->SetDirty(true);
+    paragraph.object = FPDFPageObjectFromCPDFPageObject(object.release());
+  } else if (preserve_source) {
     LayoutText logical;
     if (!DecodeLayoutText(request.utf8, &logical)) return false;
     std::vector<pdf_editor::ParagraphFont> faces;
@@ -178,10 +202,11 @@ bool ApplyTextResize(const Document& document, FPDF_DOCUMENT pdf,
   if (preserve_source) {
     auto* form = replacement->AsForm()->form();
     while (form->GetPageObjectCount()) form->ErasePageObjectAtIndex(0);
-    const auto to_form = InverseMatrix(matrix);
-    if (!to_form) return false;
+    const auto original_to_form = InverseMatrix(old_frame_matrix);
+    if (!original_to_form) return false;
+    const Matrix to_form = original_to_form->Then(Matrix{1, 0, 0, 1, 0, request.height - old_height});
     for (auto& source : source_children) {
-      const auto source_matrix = MatrixFromCfx(source->GetTextMatrix()).Then(*to_form);
+      const auto source_matrix = MatrixFromCfx(source->GetTextMatrix()).Then(to_form);
       auto font = source->GetFont();
       const auto positions = source->GetCharPositions();
       const bool vertical = source->CalcPositionData(1).y != 0;
@@ -193,9 +218,9 @@ bool ApplyTextResize(const Document& document, FPDF_DOCUMENT pdf,
         glyph->SetTextMatrix(CFX_Matrix(static_cast<float>(source_matrix.a), static_cast<float>(source_matrix.b),
             static_cast<float>(source_matrix.c), static_cast<float>(source_matrix.d),
             static_cast<float>(origin[0]), static_cast<float>(origin[1])));
-        glyph->TransformClipPath(CFX_Matrix(static_cast<float>(to_form->a), static_cast<float>(to_form->b),
-            static_cast<float>(to_form->c), static_cast<float>(to_form->d),
-            static_cast<float>(to_form->e), static_cast<float>(to_form->f)));
+        glyph->TransformClipPath(CFX_Matrix(static_cast<float>(to_form.a), static_cast<float>(to_form.b),
+            static_cast<float>(to_form.c), static_cast<float>(to_form.d),
+            static_cast<float>(to_form.e), static_cast<float>(to_form.f)));
         glyph->SetContentMarks(CPDF_ContentMarks());
         auto values = pdfium::MakeRetain<CPDF_Dictionary>();
         values->SetNewFor<CPDF_String>("ActualText", font->UnicodeFromCharCode(code).AsStringView());

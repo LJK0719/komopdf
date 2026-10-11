@@ -3146,20 +3146,25 @@ void TestSourceTextFrameResize() {
   resize.values[2] = width; resize.values[3] = height + 80;
   Require(pde_apply_commands(doc, 0, "resize-original-frame", &resize, 1) != nullptr, "resize source frame without choosing a replacement font");
   Require(RenderPixels(doc, 0, 300, 300) == pixels, "height-only source resize preserves the original glyph pixels and TJ spacing");
+  resize.values[3] = height + 100;
+  Require(pde_apply_commands(doc, 1, "resize-original-frame-again", &resize, 1) != nullptr, "resize the same unchanged source frame again");
+  Require(RenderPixels(doc, 0, 300, 300) == pixels, "repeated height changes never re-shape existing glyphs");
+  resize.values[3] = height + 80;
+  Require(pde_apply_commands(doc, 2, "restore-original-frame-height", &resize, 1) != nullptr, "restore the frame height without changing glyphs");
   auto description = RequireResult(pde_describe_page(doc, 0), "describe fixed source frame");
   Require(TextBlockIds(description).front() == block && description.find("\"fixedFrame\":true") != std::string::npos,
       "source materialization retains block identity and fixed sizing");
   const std::string content = "Original text\nAdded first line\nAdded second line";
   PdeTextEdit replace{0, block.c_str(), 0, 13, content.c_str(), nullptr};
-  Require(pde_apply_text(doc, 1, "append-source-frame", &replace, 1) != nullptr, "append multiline text using the original PDF font");
+  Require(pde_apply_text(doc, 3, "append-source-frame", &replace, 1) != nullptr, "append multiline text using the original PDF font");
   const auto expanded = RenderPixels(doc, 0, 300, 300);
   resize.values[3] = height;
-  Require(pde_apply_commands(doc, 2, "shrink-source-frame", &resize, 1) != nullptr, "shrink frame without discarding new text");
+  Require(pde_apply_commands(doc, 4, "shrink-source-frame", &resize, 1) != nullptr, "shrink frame without discarding new text");
   Require(RenderPixels(doc, 0, 300, 300) != expanded, "small frame clips rather than scales its added lines");
   description = RequireResult(pde_describe_page(doc, 0), "describe clipped frame");
   Require(description.find("Added second line") != std::string::npos, "clipped frame retains complete logical text");
   resize.values[3] = height + 80;
-  Require(pde_apply_commands(doc, 3, "expand-source-frame", &resize, 1) != nullptr, "expand frame to reveal retained lines");
+  Require(pde_apply_commands(doc, 5, "expand-source-frame", &resize, 1) != nullptr, "expand frame to reveal retained lines");
   Require(RenderPixels(doc, 0, 300, 300) == expanded, "expanding restores the same glyph pixels");
   Require(pde_undo(doc) != nullptr && pde_redo(doc) != nullptr, "frame resize has ordinary undo and redo");
   Require(pde_save_memory(doc) != nullptr, "save source text frame");

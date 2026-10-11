@@ -56,6 +56,7 @@ test('increasing the frame of unchanged original PDF text does not scale glyphs'
   const object = page.locator('.object-hitbox[data-object-type="text"]').first();
   await object.click();
   await resize(page, 's', 0, 50);
+  await resize(page, 's', 0, 20);
   await expect(page.locator('.save-state')).toHaveText('Unsaved changes');
   await firstGlyphHeight(page);
   const after = await page.locator('.pdf-canvas').first().evaluate(element => (element as HTMLCanvasElement).toDataURL());
