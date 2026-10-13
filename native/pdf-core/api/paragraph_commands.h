@@ -44,11 +44,11 @@ bool ParagraphIdentity(const Document& document, FPDF_PAGEOBJECT object,
 std::shared_ptr<const FontResource> ResolveParagraphFont(
     const CPDF_Dictionary* metadata,
     const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
-    CPDF_Document* document = nullptr) {
+    CPDF_Document* document = nullptr, bool preserve_resources = false) {
   const ByteString stored = metadata->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
   const std::string font_id(stored.c_str(), stored.GetLength());
   const auto dictionary = metadata->GetDictFor("Font");
-  if (metadata->GetBooleanFor("SourceFont", false) && dictionary && document) {
+  if ((preserve_resources || metadata->GetBooleanFor("SourceFont", false)) && dictionary && document) {
     auto resource = std::make_shared<FontResource>();
     resource->id = font_id;
     resource->source_font = CPDF_DocPageData::FromDocument(document)->GetFont(pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(dictionary.Get()))).Get();
@@ -82,7 +82,13 @@ bool ReadParagraphStyles(
     std::vector<std::shared_ptr<const FontResource>>* fonts,
     pdf_editor::ParagraphRequest* request,
     CPDF_Document* document) {
-  auto base = ResolveParagraphFont(info, resources, document);
+  bool preserve_resources = info->GetBooleanFor("SourceFont", false);
+  const auto stored_runs = info->GetArrayFor("StyleRuns");
+  if (stored_runs) for (size_t i = 0; i < stored_runs->size(); ++i) {
+    const auto run = stored_runs->GetDictAt(i);
+    if (run && run->GetBooleanFor("SourceFont", false)) preserve_resources = true;
+  }
+  auto base = ResolveParagraphFont(info, resources, document, preserve_resources);
   if (!base) {
     SetError("UNSUPPORTED_CAPABILITY", "Choose a registered font to edit this saved paragraph.");
     return false;
@@ -93,6 +99,7 @@ bool ReadParagraphStyles(
   request->height = info->GetFloatFor("Height");
   request->fixed_frame = info->GetNameFor("Sizing") == "Fixed";
   request->baseline_offset = info->GetFloatFor("BaselineOffset");
+  if (info->KeyExist("SourceBaseline")) request->source_baseline = info->GetFloatFor("SourceBaseline");
   request->text_inset = info->GetFloatFor("TextInset");
   request->font_size = info->GetFloatFor("FontSize");
   request->line_height = info->GetFloatFor("LineHeight");
@@ -126,7 +133,7 @@ bool ReadParagraphStyles(
     const int start = run->GetIntegerFor("Start"), end = run->GetIntegerFor("End");
     if (start < 0 || end <= start || static_cast<uint32_t>(start) != next ||
         static_cast<uint32_t>(end) > length) break;
-    auto font = ResolveParagraphFont(run.Get(), resources, document);
+    auto font = ResolveParagraphFont(run.Get(), resources, document, preserve_resources);
     if (!font) break;
     const auto font_dict = run->GetDictFor("Font");
     if (!font_dict || !font_dict->GetObjNum()) break;
@@ -302,6 +309,8 @@ bool UpdateParagraphStyles(pdf_editor::ParagraphRequest* request,
   return true;
 }
 
+#include "source_paragraph.h"
+
 bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
     CandidateMetadata* metadata, const EditCommand& command,
     const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
@@ -310,23 +319,86 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   size_t page_index = 0;
   ScopedPage page(nullptr);
   if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) return false;
+  const bool preserve_source = command.type == EditType::kTextReflow &&
+      (command.font_id.empty() || (command.flags & kTextPreserveSourceFlag));
   const auto font = resources.find(command.font_id);
-  if (font == resources.end()) { SetError("INVALID_REQUEST", "Select a registered paragraph font."); return false; }
+  if (!preserve_source && font == resources.end()) { SetError("INVALID_REQUEST", "Select a registered paragraph font."); return false; }
   pdf_editor::ParagraphRequest request;
+  Matrix placement{1, 0, 0, -1, command.values[0], command.values[1] + command.values[3]};
+  std::vector<std::shared_ptr<const FontResource>> fonts;
+  if (preserve_source) {
+    std::vector<ObjectTarget> sources;
+    for (const auto& id : command.ids) {
+      ObjectTarget source;
+      if (!FindObjectTarget(page.get(), &metadata->pages[page_index], id, true, &source)) return false;
+      if (source.path.size() != 1) { SetError("UNSUPPORTED_CAPABILITY", "Source reflow requires top-level text."); return false; }
+      sources.push_back(source);
+    }
+    FS_MATRIX source_matrix{};
+    Matrix to_page, to_pdf;
+    if (!FPDFPageObj_GetMatrix(sources.front().object, &source_matrix) ||
+        !GetPageMatrices(page.get(), &to_page, &to_pdf)) return false;
+    placement = MatrixFromFs(source_matrix).Then(to_page);
+    placement.e = placement.f = 0;
+    const auto info = ParagraphMetadata(sources.front().object);
+    if (info) {
+      if (sources.size() != 1 || info->GetDictFor("Flow")) {
+        SetError("UNSUPPORTED_CAPABILITY", "Edit a continued paragraph with text.replace."); return false;
+      }
+      const auto raw = info->GetUnicodeTextFor("Text").ToUTF8();
+      request.utf8.assign(raw.c_str(), raw.GetLength());
+      if (!ReadParagraphStyles(info.Get(), Utf16Length(request.utf8), resources, &fonts, &request,
+          CPDFDocumentFromFPDFDocument(pdf))) return false;
+      if (!ReadSourceParagraphGlyphs(sources.front().object, request.utf8, &request)) return false;
+    } else {
+      float width = 0, height = 0;
+      if (!MaterializeSourceParagraph(page.get(), sources, MatrixFromFs(source_matrix), &request,
+          &fonts, &width, &height, nullptr, true)) return false;
+    }
+    LayoutText before, after;
+    if (!DecodeLayoutText(request.utf8, &before) || !DecodeLayoutText(command.text, &after)) return false;
+    uint32_t start = 0, old_end = 0, new_end = 0;
+    if (!SourceParagraphChange(before, after, &start, &old_end, &new_end)) return false;
+    RemapParagraphStyles(&request, static_cast<uint32_t>(before.utf16.size()), start, old_end, new_end - start);
+    RemapSourceGlyphs(&request, start, old_end, new_end - start);
+    request.utf8 = command.text;
+    if (!CompleteSourceParagraphFonts(&request, &fonts, start, new_end, command.font_id, resources)) return false;
+  } else {
+    fonts.push_back(font->second);
+    request.font_size = static_cast<float>(command.values[4]);
+  }
   request.utf8 = command.text;
   request.width = static_cast<float>(command.values[2]); request.height = static_cast<float>(command.values[3]);
-  request.font_size = static_cast<float>(command.values[4]);
+  if (preserve_source) {
+    // Command bounds are page-space bounds; source glyph metrics and Form BBox
+    // remain in the original text matrix's local coordinates.
+    const double a = std::abs(placement.a), b = std::abs(placement.b);
+    const double c = std::abs(placement.c), d = std::abs(placement.d);
+    const double determinant = a * d - b * c;
+    if (std::abs(determinant) < kMatrixEpsilon) {
+      SetError("UNSUPPORTED_CAPABILITY", "The source text transform cannot resolve this paragraph's page bounds."); return false;
+    }
+    request.width = static_cast<float>((command.values[2] * d - command.values[3] * c) / determinant);
+    request.height = static_cast<float>((command.values[3] * a - command.values[2] * b) / determinant);
+    if (request.width <= 0 || request.height <= 0) {
+      SetError("UNSUPPORTED_CAPABILITY", "The paragraph bounds are incompatible with the source text transform."); return false;
+    }
+    const auto transformed = TransformBounds(0, 0, request.width, request.height, placement);
+    placement.e = command.values[0] - transformed.x;
+    placement.f = command.values[1] - transformed.y;
+    if (std::abs(placement.a - 1) > 0.01 || std::abs(placement.b) > 0.01 ||
+        std::abs(placement.c) > 0.01 || std::abs(placement.d + 1) > 0.01) request.fixed_frame = true;
+  }
   if (command.flags & 4U) request.color = {static_cast<float>(command.values[5]), static_cast<float>(command.values[6]), static_cast<float>(command.values[7])};
   if (command.flags & 8U) request.letter_spacing = static_cast<float>(command.values[8]);
   if (command.flags & 16U) request.line_height = static_cast<float>(command.values[9]);
   ApplyParagraphMetrics(&request, command);
-  request.underline = (command.flags & kTextUnderlineFlag) != 0;
-  request.alignment = (command.flags & (32U | 64U)) == (32U | 64U)
+  if (!preserve_source || (command.flags & kTextUnderlineFlag)) request.underline = (command.flags & kTextUnderlineFlag) != 0;
+  if (!preserve_source || (command.flags & (32U | 64U))) request.alignment = (command.flags & (32U | 64U)) == (32U | 64U)
       ? pdf_editor::ParagraphAlignment::kJustify
       : (command.flags & 32U) ? pdf_editor::ParagraphAlignment::kCenter
       : (command.flags & 64U) ? pdf_editor::ParagraphAlignment::kRight
                               : pdf_editor::ParagraphAlignment::kLeft;
-  std::vector<std::shared_ptr<const FontResource>> fonts{font->second};
   if (!initial_styles.empty()) {
     LayoutText decoded;
     std::vector<bool> boundaries;
@@ -347,8 +419,7 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;
   std::unique_ptr<CPDF_PageObject> object(CPDFPageObjectFromFPDFPageObject(paragraph.object));
-  if (!SetObjectMatrix(page.get(), paragraph.object,
-      Matrix{1, 0, 0, -1, command.values[0], command.values[1] + command.values[3]})) return false;
+  if (!SetObjectMatrix(page.get(), paragraph.object, placement)) return false;
   ObjectIdentity identity;
   if (!ParagraphIdentity(document, paragraph.object, command.target_id, nullptr, &identity)) return false;
   std::set<std::string> new_ids;
@@ -518,16 +589,18 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
     }
   }
   if (!FPDFPage_GenerateContent(page.get())) { SetError("CORE_UNAVAILABLE", "The paragraph content could not be saved."); return false; }
-  if (!allow_overflow && paragraph.overflow) {
+  if (!allow_overflow && paragraph.overflow && !request.fixed_frame) {
     return ReflowParagraphAcrossPages(document, pdf, metadata, command, command.target_id,
         fonts, request, layout);
   }
   if (layout) {
     layout->overflow = paragraph.overflow;
     layout->bounds = {command.values[0], command.values[1], command.values[2], command.values[3]};
-    for (const auto& line : paragraph.lines)
-      layout->lines.push_back({{command.values[0] + line.bounds.x, command.values[1] + line.bounds.y,
-                               line.bounds.width, line.bounds.height}, line.text_range.start, line.text_range.end});
+    for (const auto& line : paragraph.lines) {
+      const auto& box = line.bounds;
+      layout->lines.push_back({TransformBounds(box.x, request.height - box.y - box.height,
+          box.x + box.width, request.height - box.y, placement), line.text_range.start, line.text_range.end});
+    }
   }
   return true;
 }
@@ -557,8 +630,10 @@ bool ParagraphRangePreservesClusters(FPDF_PAGEOBJECT object,
     auto* mark = CPDFContentMarkItemFromFPDFPageObjectMark(FPDFPageObj_GetMark(child, 0));
     if (!mark || mark->GetName() != "Span" ||
         mark->GetParamType() != CPDF_ContentMarkItem::kDirectDict ||
-        !mark->GetParam() || mark->GetParam()->size() != 1 ||
-        !mark->GetParam()->KeyExist("ActualText")) return false;
+        !mark->GetParam() || !mark->GetParam()->KeyExist("ActualText") ||
+        mark->GetParam()->size() > 3 ||
+        (mark->GetParam()->size() > 1 && !mark->GetParam()->KeyExist("KomoAdvance")) ||
+        (mark->GetParam()->size() > 2 && !mark->GetParam()->KeyExist("KomoBaseline"))) return false;
     const ByteString utf8 = mark->GetParam()->GetUnicodeTextFor("ActualText").ToUTF8();
     LayoutText cluster;
     if (!DecodeLayoutText(std::string(utf8.c_str(), utf8.GetLength()), &cluster) ||
@@ -679,7 +754,7 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   const auto flow = info->GetDictFor("Flow");
   const auto logical = flow ? flow : info;
   const uint32_t fragment_start = flow ? static_cast<uint32_t>(info->GetIntegerFor("FlowStart")) : 0;
-  const uint32_t start = command.start_utf16 + fragment_start, end = command.end_utf16 + fragment_start;
+  uint32_t start = command.start_utf16 + fragment_start, end = command.end_utf16 + fragment_start;
   const ByteString raw = logical->GetUnicodeTextFor("Text").ToUTF8();
   const std::string original(raw.c_str(), raw.GetLength());
   LayoutText decoded;
@@ -730,8 +805,25 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
                            resources, &fonts, &request, CPDFDocumentFromFPDFDocument(pdf))) return false;
   request.height = info->GetFloatFor("Height");
   if (!flow && ParagraphNeedsFixedFrame(page, target.object)) request.fixed_frame = true;
+  const bool source_paragraph = std::any_of(fonts.begin(), fonts.end(), [](const auto& font) { return font->source_font != nullptr; });
+  if (source_paragraph) {
+    if (flow) {
+      for (int p = 0; p < FPDF_GetPageCount(pdf); ++p) {
+        ScopedPage fragment(FPDF_LoadPage(pdf, p));
+        for (int i = 0; i < FPDFPage_CountObjects(fragment.get()); ++i) {
+          auto object = FPDFPage_GetObject(fragment.get(), i);
+          const auto stored = ParagraphMetadata(object);
+          const auto shared = stored ? stored->GetDictFor("Flow") : nullptr;
+          if (!shared || shared->GetObjNum() != flow->GetObjNum()) continue;
+          if (!ReadSourceParagraphGlyphs(object, original, &request,
+              static_cast<uint32_t>(stored->GetIntegerFor("FlowStart")))) return false;
+        }
+      }
+      std::sort(request.source_glyphs.begin(), request.source_glyphs.end(), [](const auto& a, const auto& b) { return a.range.start < b.range.start; });
+    } else if (!ReadSourceParagraphGlyphs(target.object, original, &request)) return false;
+  }
   std::optional<uint32_t> replacement_font;
-  if (!command.font_id.empty()) {
+  if (!command.font_id.empty() && !(command.flags & kTextPreserveSourceFlag)) {
     const auto selected = resources.find(command.font_id);
     if (selected == resources.end()) {
       SetError("INVALID_REQUEST", "The requested paragraph font is not registered.");
@@ -745,6 +837,12 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   }
   LayoutText inserted;
   if (!DecodeLayoutText(command.text, &inserted)) return false;
+  if (source_paragraph && (command.font_id.empty() || (command.flags & kTextPreserveSourceFlag))) {
+    LayoutText after;
+    uint32_t new_end = 0;
+    if (!DecodeLayoutText(updated, &after) || !SourceParagraphChange(decoded, after, &start, &end, &new_end)) return false;
+    inserted.utf16.assign(after.utf16.begin() + start, after.utf16.begin() + new_end);
+  }
   RemapParagraphStyles(&request, static_cast<uint32_t>(decoded.utf16.size()),
                        start, end, static_cast<uint32_t>(inserted.utf16.size()));
   if (replacement_font && !inserted.utf16.empty()) {
@@ -761,6 +859,11 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
     request.styles = std::move(styles);
   }
   request.utf8 = updated;
+  if (source_paragraph) {
+    RemapSourceGlyphs(&request, start, end, static_cast<uint32_t>(inserted.utf16.size()));
+    if (!replacement_font && !CompleteSourceParagraphFonts(&request, &fonts, start,
+        start + static_cast<uint32_t>(inserted.utf16.size()), command.font_id, resources)) return false;
+  }
   CompactParagraphFonts(&request, &fonts);
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;

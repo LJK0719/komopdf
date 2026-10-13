@@ -8,6 +8,8 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
+#include "core/fpdfapi/parser/cpdf_boolean.h"
+#include "public/fpdf_save.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_text.h"
@@ -4298,6 +4300,7 @@ void TestFontRuntime(const FontTestOptions& options) {
 
 #include "nested_object_test.h"
 #include "text_completion_test.h"
+#include "source_paragraph_test.h"
 #include "shading_test.h"
 #include "page_structure_test.h"
 #include "tagged_page_test.h"
@@ -4306,6 +4309,18 @@ void TestFontRuntime(const FontTestOptions& options) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc >= 2 && std::string_view(argv[1]) == "--source-font-edit-tests") {
+    Require(pde_initialize() == 1, "initialize source font tests");
+    TestSourceTextFrameResize();
+    TestPlainSourceParagraphEdit();
+    TestScaledAndNegativeBearingSourceParagraph();
+    TestUnregisteredSessionFontIdentity();
+    TestSourceParagraphGapsAndFlow();
+    if (argc == 3) TestSubsetSourceParagraphEdit(argv[2]);
+    pde_shutdown();
+    std::puts("PASS targeted source-font paragraph edit, subset completion, resize and save/reopen");
+    return 0;
+  }
   const FontTestOptions font_options = ParseFontTestOptions(argc, argv);
   const std::string form_contents =
       "0 0 20 10 re f BT /F1 14 Tf 10 20 Td (Nested text) Tj ET";

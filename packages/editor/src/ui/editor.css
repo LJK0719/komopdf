@@ -94,6 +94,20 @@
     background: rgb(255 98 61 / 9%);
     box-shadow: 0 0 0 1px white;
   }
+  .object-hitbox-text.object-hitbox-selected,
+  .object-hitbox-text.object-hitbox-hovered {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+  .object-text-hover {
+    position: absolute;
+    box-sizing: border-box;
+    pointer-events: none;
+    border: 1px dashed rgb(255 98 61 / 65%);
+    background: rgb(255 98 61 / 7%);
+  }
+  .selection-box-text .selection-box-outline { background: rgb(255 98 61 / 9%); }
   .selection-box {
     position: absolute;
     box-sizing: border-box;

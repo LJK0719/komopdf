@@ -1,10 +1,15 @@
 import type { EditCommand, PageModel, StyledTextRun, TextStyle } from '@pdf-editor/contracts';
-import { findSelectionFontInfo, getFontItalic, getFontWeight, resolveFormattingFont } from './font-face-matcher.js';
+import { findSelectionFontInfo, getFontItalic, getFontWeight, resolveFormattingFont, resolveSourceFont } from './font-face-matcher.js';
 import type { EditorFont } from './font-resources.js';
 import { detectParagraph, type ParagraphCandidate } from './paragraph-detection.js';
 import { sourceTextOffset } from './source-text.js';
 
 export function resolveParagraphRunFont(run: StyledTextRun, fonts: readonly EditorFont[]): string {
+  if (run.style.fontId?.startsWith('pdf:')) {
+    const source = resolveSourceFont(fonts, run.style);
+    if (!source) throw new Error('The original font is unavailable. Choose a font explicitly to change it.');
+    return source.id;
+  }
   const loaded = fonts.find(font => font.id === run.style.fontId);
   const block = { runs: [run] } as Parameters<typeof findSelectionFontInfo>[0];
   const info = findSelectionFontInfo(block, [0, run.text.length], fonts);

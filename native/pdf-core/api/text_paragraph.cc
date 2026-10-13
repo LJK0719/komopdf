@@ -25,6 +25,8 @@
 #include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_textobject.h"
+#include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -1224,6 +1226,7 @@ void SetParagraphMetadata(CPDF_Document* document,
   metadata->SetNewFor<CPDF_Number>("Height", request.height);
   if (request.fixed_frame) metadata->SetNewFor<CPDF_Name>("Sizing", "Fixed");
   metadata->SetNewFor<CPDF_Number>("BaselineOffset", request.baseline_offset);
+  if (request.source_baseline) metadata->SetNewFor<CPDF_Number>("SourceBaseline", *request.source_baseline);
   metadata->SetNewFor<CPDF_Number>("TextInset", request.text_inset);
   if (font_faces[0].source_font) metadata->SetNewFor<CPDF_Boolean>("SourceFont", true);
   metadata->SetNewFor<CPDF_Number>("FontSize", request.font_size);
@@ -1358,9 +1361,14 @@ bool CreateSourceFontParagraph(FPDF_DOCUMENT document,
       fonts.push_back(CPDFFontFromFPDFFont(owned.back().get()));
     }
   }
-  struct Glyph { uint32_t start, end, code; const ParagraphStyleRun* style; float advance; };
+  struct Glyph { uint32_t start, end, code; const ParagraphStyleRun* style; float advance;
+    const ParagraphSourceGlyph* source = nullptr; };
   std::vector<Glyph> glyphs;
+  size_t source_index = 0;
   for (uint32_t start = 0; start < text.size();) {
+    while (source_index < request.source_glyphs.size() && request.source_glyphs[source_index].range.start < start) ++source_index;
+    const auto* source = source_index < request.source_glyphs.size() && request.source_glyphs[source_index].range.start == start
+        ? &request.source_glyphs[source_index] : nullptr;
     uint32_t end = start + 1, scalar = text[start];
     if (scalar >= 0xd800 && scalar <= 0xdbff && end < text.size()) {
       scalar = 0x10000 + ((scalar - 0xd800) << 10) + (text[end++] - 0xdc00);
@@ -1368,6 +1376,16 @@ bool CreateSourceFontParagraph(FPDF_DOCUMENT document,
     const auto* style = StyleAt(styles, start);
     if (!style || style->font_index >= fonts.size())
       return Fail("The source paragraph has an invalid style range.", error_message);
+    if (source && source->object &&
+        (source->object->GetFont().Get() != fonts[style->font_index] ||
+         source->object->GetFontSize() != style->font_size)) source = nullptr;
+    if (source && source->range.end <= style->range.end && source->range.end <= text.size()) {
+      end = source->range.end;
+      glyphs.push_back({start, end, source->object ? source->object->GetCharCode(0) : 0,
+                       style, source->advance, source});
+      start = end;
+      continue;
+    }
     uint32_t code = 0;
     float advance = 0;
     if (!IsHardBreakUnit(text[start])) {
@@ -1395,7 +1413,7 @@ bool CreateSourceFontParagraph(FPDF_DOCUMENT document,
     size_t end = first, last_break = first;
     for (; end < glyphs.size() && !IsHardBreakUnit(text[glyphs[end].start]); ++end) {
       const float next = width + glyphs[end].advance;
-      if (next > request.width - indent + kLayoutEpsilon && end > first) {
+      if (next > request.width - request.text_inset - indent + kLayoutEpsilon && end > first) {
         if (last_break > first) { end = last_break; width = break_width; }
         break;
       }
@@ -1414,6 +1432,9 @@ bool CreateSourceFontParagraph(FPDF_DOCUMENT document,
   std::ostringstream content;
   content.imbue(std::locale::classic());
   content << "BT\n";
+  struct PreservedPlacement { size_t object_index; const ParagraphSourceGlyph* source; float x, y; };
+  std::vector<PreservedPlacement> placements;
+  size_t object_index = 0;
   float top = 0;
   for (const auto& row : rows) {
     float ascent = 0, descent = 0, step = request.font_size * request.line_height;
@@ -1433,19 +1454,27 @@ bool CreateSourceFontParagraph(FPDF_DOCUMENT document,
     if (request.line_spacing > 0) step = request.line_spacing;
     if (row.paragraph_start) top += request.space_before;
     const float leading = std::max(0.0f, step - ascent + descent) / 2;
-    const float bounds_y = top + leading + request.baseline_offset;
-    const float baseline = request.height - bounds_y - ascent;
+    const float baseline = request.source_baseline ? request.height - top - *request.source_baseline
+        : request.height - top - leading - request.baseline_offset - ascent;
+    const float bounds_y = request.height - baseline - ascent;
     float x = request.text_inset + row.indent + AlignedX(request.alignment,
         request.width - row.indent, row.width, TextDirection::kLeftToRight);
     const uint32_t start = row.first < glyphs.size() ? glyphs[row.first].start : static_cast<uint32_t>(text.size());
     const uint32_t end = row.end > row.first ? glyphs[row.end - 1].end : start;
-    output.lines.push_back({{x, bounds_y, row.width, ascent - descent}, {start, end}});
+    const float line_x = std::max(0.0f, x);
+    const float line_width = std::max(0.0f, row.width + std::min(0.0f, x));
+    output.lines.push_back({{line_x, bounds_y, line_width, ascent - descent}, {start, end}});
     if (bounds_y + ascent - descent > request.height + kLayoutEpsilon ||
-        row.width > request.width - row.indent + kLayoutEpsilon) output.overflow = true;
+        line_x + line_width > request.width + kLayoutEpsilon) output.overflow = true;
     for (size_t index = row.first; index < row.end; ++index) {
       const auto& glyph = glyphs[index]; const auto& style = *glyph.style;
+      if (glyph.source && !glyph.source->object) { x += glyph.advance; continue; }
+      if (glyph.source) placements.push_back({object_index, glyph.source, x, baseline + glyph.source->baseline_offset});
+      ++object_index;
       content << "/Span << /ActualText ";
       AppendPdfUnicodeHex(text.substr(glyph.start, glyph.end - glyph.start), &content);
+      content << " /KomoAdvance "; WriteFloat(content, glyph.advance);
+      content << " /KomoBaseline "; WriteFloat(content, glyph.source ? glyph.source->baseline_offset : 0);
       content << " >> BDC\n/" << FontResourceName(style.font_index) << ' ';
       WriteFloat(content, style.font_size) << " Tf\n";
       WriteFloat(content, style.color.red) << ' '; WriteFloat(content, style.color.green) << ' ';
@@ -1459,6 +1488,7 @@ bool CreateSourceFontParagraph(FPDF_DOCUMENT document,
       }
       content << "> Tj\nEMC\n";
       if (style.underline && glyph.advance > 0) {
+        ++object_index;
         const float y = baseline + descent * 0.5f;
         content << "ET\n/Artifact BMC\nq ";
         WriteFloat(content, style.color.red) << ' '; WriteFloat(content, style.color.green) << ' ';
@@ -1477,6 +1507,20 @@ bool CreateSourceFontParagraph(FPDF_DOCUMENT document,
   output.object = CreateFormObject(CPDFDocumentFromFPDFDocument(document), fonts, faces,
       styles, request, text, stream, error_message);
   if (!output.object) return false;
+  if (!placements.empty()) {
+    auto* form = CPDFPageObjectFromFPDFPageObject(output.object)->AsForm()->form();
+    for (const auto& placement : placements) {
+      auto* emitted = form->GetPageObjectByIndex(placement.object_index);
+      auto clone = placement.source->object->Clone();
+      auto matrix = clone->GetTextMatrix(); matrix.e = placement.x; matrix.f = placement.y;
+      clone->SetTextMatrix(matrix);
+      clone->SetContentMarks(*emitted->GetContentMarks());
+      clone->SetContentStream(CPDF_PageObject::kNoContentStream); clone->SetDirty(true);
+      form->ErasePageObjectAtIndex(placement.object_index);
+      form->InsertPageObjectAtIndex(placement.object_index, std::move(clone));
+    }
+    CPDF_PageContentGenerator(form).GenerateFormContentForEditing(form);
+  }
   *result = std::move(output);
   return true;
 }

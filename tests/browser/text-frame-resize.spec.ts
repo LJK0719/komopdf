@@ -103,6 +103,9 @@ test('appending explicit lines commits complete source text before resizing', as
 test('fixed frame retains new lines through resizing, undo and PDF reopen', async ({ page }) => {
   await open(page); await edit(page);
   await page.locator('.object-hitbox[data-object-type="text"]').first().click();
+  // Helvetica cannot encode Chinese; selecting a Chinese face is an explicit user choice, not a silent fallback.
+  await page.getByRole('combobox', { name: 'Font', exact: true }).selectOption('Noto Sans CJK SC');
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
   await resize(page, 's', 0, 20);
   await page.locator('.object-hitbox[data-object-type="text"]').first().dblclick();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });

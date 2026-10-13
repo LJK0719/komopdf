@@ -179,6 +179,9 @@ export function ObjectSelectionLayer({
   const selectedObjects = objects.filter(object => idsFor(object).some(id => selectedIds.includes(id)));
   const textFrame = selectionTextFrame(page, selectedObjects);
   const textOnly = selectedObjects.length === 1 && Boolean(selectedObjects[0]?.textBlock);
+  const hoveredText = objects.find(object => object.id === hoveredId && object.textBlock && !idsFor(object).some(id => selectedIds.includes(id)));
+  const hoveredFrame = hoveredText ? selectionTextFrame(page, [hoveredText]) : null;
+  const hoveredBounds = hoveredFrame ? frameBounds(hoveredFrame) : hoveredText?.bounds;
   const resizeEnabled = !textOnly || Boolean(textFrame && onResizeText);
   const stacking = new Map(objects.slice().sort((a, b) => b.bounds.width * b.bounds.height - a.bounds.width * a.bounds.height)
     .map((object, index) => [object.id, index]));
@@ -472,7 +475,7 @@ export function ObjectSelectionLayer({
               disabled={disabled}
               data-object-id={object.id}
               data-object-type={object.type}
-              className={`object-hitbox${selected ? ' object-hitbox-selected' : ''}${!disabled && hoveredId === object.id ? ' object-hitbox-hovered' : ''}`}
+              className={`object-hitbox${selected ? ' object-hitbox-selected' : ''}${object.textBlock ? ' object-hitbox-text' : ''}${!disabled && hoveredId === object.id ? ' object-hitbox-hovered' : ''}`}
               style={{
                 zIndex: stacking.get(object.id),
                 left: object.bounds.x * scaleX,
@@ -493,9 +496,14 @@ export function ObjectSelectionLayer({
           );
         })}
 
+      {hoveredBounds && !disabled && <div className="object-text-hover" aria-hidden="true" style={{
+        zIndex: objects.length, left: hoveredBounds.x * scaleX, top: hoveredBounds.y * scaleY,
+        width: hoveredBounds.width * scaleX, height: hoveredBounds.height * scaleY,
+      }} />}
+
       {bounds && selectedObjects.length > 0 && (
         <div
-          className="selection-box"
+          className={`selection-box${textOnly ? ' selection-box-text' : ''}`}
           style={{
             zIndex: objects.length + 1,
             left: bounds.boxLeft,

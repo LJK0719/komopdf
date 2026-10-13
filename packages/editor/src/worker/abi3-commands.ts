@@ -44,7 +44,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
   const bounds = (rect: { x: number; y: number; width: number; height: number }) => {
     values.splice(0, 4, rect.x, rect.y, rect.width, rect.height);
   };
-  const style = (input: TextStyle, insert: boolean, paragraph = false) => {
+  const style = (input: TextStyle, insert: boolean, paragraph = false, sourceFont = false) => {
     const supported = ['fontId', 'fontSize', 'color', 'characterSpacing',
       'lineHeight', 'alignment', 'firstLineIndent', 'lineSpacing', 'spaceBefore', 'spaceAfter', ...(!insert || paragraph ? ['underline'] : [])];
     if (Object.keys(input).some(key => !supported.includes(key))) {
@@ -72,7 +72,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       if (insert && !paragraph) throw new EngineError('UNSUPPORTED_CAPABILITY', 'Paragraph metrics require paragraph layout');
       flags |= 4096 << index; values[10 + index] = input[key]!;
     });
-    if (insert && (flags & 3) !== 3) throw new EngineError('INVALID_REQUEST', 'New text requires an explicit font and font size');
+    if (insert && ((flags & 2) === 0 || (!sourceFont && (flags & 1) === 0))) throw new EngineError('INVALID_REQUEST', 'New text requires an explicit font and font size');
     fields[10] = flags;
   };
   if ('pageId' in command) string(1, command.pageId);
@@ -82,6 +82,7 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
       fields[8] = command.range[0]; fields[9] = command.range[1];
       if (command.style && Object.keys(command.style).some(key => key !== 'fontId')) throw new EngineError('UNSUPPORTED_CAPABILITY', 'Replacement currently supports only font selection');
       string(5, command.style?.fontId);
+      if (command.preserveSource) fields[10]! |= 65536;
       // Empty replacement is an allocated empty string, not a missing argument.
       if (!command.text) fields[4] = allocations.string('');
       break;
@@ -106,8 +107,9 @@ function packCommand(allocations: Allocator, command: EditCommand): PackedComman
     case 'text.reflow':
       fields[0] = 20; string(2, command.objectId); ids(command.blockIds);
       fields[4] = allocations.string(command.text);
-      bounds(command.bounds); style(command.style, true, true);
+      bounds(command.bounds); style(command.style, true, true, true);
       fields[10]! |= 1024;
+      if (command.preserveSource) fields[10]! |= 65536;
       break;
     case 'objects.transform': fields[0] = 4; ids(command.objectIds); values.splice(0, 6, ...command.matrix); break;
     case 'objects.align': {

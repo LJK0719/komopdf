@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { aiRequestSchema, assertTextRange, editCommandSchema, proposedCommandSchema, encodeFrameHeader, decodeFrameHeader } from '../src/index.js';
 
 describe('共享数据契约', () => {
+  it('源段落重排可以保留原字体，同款补字与显式换字体分开', () => {
+    const reflow = { type: 'text.reflow', pageId: 'p', objectId: 'o', blockIds: ['b'],
+      bounds: { x: 0, y: 0, width: 100, height: 20 }, text: '续写', preserveSource: true, style: { fontSize: 12 } };
+    expect(editCommandSchema.safeParse(reflow).success).toBe(true);
+    expect(editCommandSchema.safeParse({ ...reflow, style: { fontId: 'system-font-song', fontSize: 12 } }).success).toBe(true);
+    expect(editCommandSchema.safeParse({ ...reflow, style: {} }).success).toBe(false);
+    expect(editCommandSchema.safeParse({ type: 'text.replace', pageId: 'p', blockId: 'b', range: [1, 1], text: '字',
+      preserveSource: true, style: { fontId: 'system-font-song' } }).success).toBe(true);
+  });
   it('native 帧协议与 C++ 使用相同固定字节', () => {
     const header = { type: 'binary' as const, length: 65536, sequence: 7 };
     const bytes = encodeFrameHeader(header);

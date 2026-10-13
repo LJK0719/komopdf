@@ -41,6 +41,19 @@ function packed(commands: EditCommand[]) {
 }
 
 describe('general command encoding', () => {
+  it('encodes source-font reflow and same-family replacement without changing stride', () => {
+    const { bytes, record } = packed([
+      { type: 'text.reflow', pageId: 'p', objectId: 'o', blockIds: ['b'], text: 'Text',
+        bounds: { x: 10, y: 20, width: 100, height: 30 }, style: { fontSize: 12 }, preserveSource: true },
+      { type: 'text.replace', pageId: 'p', blockId: 'b', range: [4, 4], text: ' added',
+        style: { fontId: 'system-font-song' }, preserveSource: true },
+    ]);
+    expect(bytes.byteLength).toBe(2 * EDIT_COMMAND_STRIDE);
+    expect(record(0).fields[10]).toBe(2 | 1024 | 65536);
+    expect(record(0).string(5)).toBeUndefined();
+    expect(record(1).fields[10]).toBe(65536);
+    expect(record(1).string(5)).toBe('system-font-song');
+  });
   it('packs paragraph indentation and spacing in ABI 4 and rejects silently dropping them in ABI 3', () => {
     const command: EditCommand = { type: 'text.style', pageId: 'p', blockIds: ['b'],
       style: { firstLineIndent: 24, lineSpacing: 18, spaceBefore: 6, spaceAfter: 8 } };

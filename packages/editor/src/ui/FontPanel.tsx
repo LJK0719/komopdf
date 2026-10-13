@@ -1,12 +1,13 @@
 import { translate as t, useI18n } from './i18n.js';
 import { useEffect, useRef, useState } from 'react';
 import type { EngineAdapter, FontFaceInfo, FontSelection, HostAdapter, SystemFontEntry } from '@pdf-editor/contracts';
-import { addImportedFont } from './font-resources.js';
+import { addImportedFont, ensureEditorFont, useFontResources } from './font-resources.js';
 
 type Props = { engine: EngineAdapter; host: HostAdapter; disabled: boolean; onBusyChange(busy: boolean): void };
 
 export function FontPanel({ engine, host, disabled, onBusyChange }: Props) {
   useI18n();
+  const { fonts } = useFontResources(engine);
   const [selection, setSelection] = useState<FontSelection | null>(null);
   const [faces, setFaces] = useState<FontFaceInfo[]>([]);
   const [index, setIndex] = useState(0);
@@ -19,7 +20,11 @@ export function FontPanel({ engine, host, disabled, onBusyChange }: Props) {
   const generation = useRef(0);
   useEffect(() => {
     generation.current++;
-    setSelection(null); setFaces([]); setSystemFonts([]); setNotice('');
+    setSelection(null); setFaces([]); setSystemFonts([]); setSystemId(''); setNotice('');
+    const captured = generation.current;
+    if (host.capabilities.nativeFiles && host.listSystemFonts) void host.listSystemFonts().then(list => {
+      if (captured === generation.current) setSystemFonts(list);
+    }).catch(caught => { if (captured === generation.current) setError(String(caught)); });
     return () => { generation.current++; };
   }, [engine, host]);
   const locked = disabled || busy;
@@ -44,7 +49,8 @@ export function FontPanel({ engine, host, disabled, onBusyChange }: Props) {
   }
 
   if (!host.pickFont || !engine.inspectFont || !engine.registerFont) return null;
-  const visible = systemFonts.filter(item => item.label.toLowerCase().includes(filter.toLowerCase()));
+  const visible = systemFonts.filter(item => [item.label, item.family ?? '', ...(item.aliases ?? [])]
+    .some(name => name.toLowerCase().includes(filter.toLowerCase())));
   return <section className="text-edit-panel" aria-label={t("Fonts")}>
     <details open><summary>{t("Add fonts")}</summary>
 
@@ -52,19 +58,27 @@ export function FontPanel({ engine, host, disabled, onBusyChange }: Props) {
         await inspect(await host.pickFont!(), current);
       })}>{t("Import font file")}</button>
       {host.capabilities.systemFonts && host.listSystemFonts && host.getSystemFont && <>
-        <button type="button" disabled={locked} onClick={() => void run(async current => {
+        {!host.capabilities.nativeFiles && <button type="button" disabled={locked} onClick={() => void run(async current => {
           const list = await host.listSystemFonts!();
           if (current()) { setSystemFonts(list); setSystemId(list[0]?.id ?? ''); if (!list.length) setNotice('No local font files were found.'); }
-        })}>{t("Browse system fonts")}</button>
+        })}>{t("Browse system fonts")}</button>}
         {systemFonts.length > 0 && <>
           <label>{t("Find system font")}<input value={filter} disabled={locked} onChange={event => { setFilter(event.target.value); setSystemId(''); }} /></label>
-          <label>{t("System font")}<select value={systemId} disabled={locked} onChange={event => setSystemId(event.target.value)}>
+          <label>{t("System font")}<select value={systemId} disabled={locked} onChange={event => {
+            const id = event.target.value;
+            setSystemId(id);
+            const font = fonts.find(item => item.systemId === id);
+            if (host.capabilities.nativeFiles && font) void run(async current => {
+              await ensureEditorFont(engine, font);
+              if (current()) setNotice(t('Font added: {font}', { font: font.label ?? font.family }));
+            });
+          }}>
             <option value="">{t("Choose a local font")}</option>
             {visible.map(font => <option key={font.id} value={font.id}>{t(font.label)}</option>)}
           </select></label>
-          <button type="button" disabled={locked || !systemId} onClick={() => void run(async current => {
+          {!host.capabilities.nativeFiles && <button type="button" disabled={locked || !systemId} onClick={() => void run(async current => {
             await inspect(await host.getSystemFont!(systemId), current);
-          })}>{t("Inspect system font")}</button>
+          })}>{t("Inspect system font")}</button>}
         </>}
       </>}
       {!host.capabilities.systemFonts && <p>{t("System font access is unavailable in this browser. Import a local font file instead.")}</p>}

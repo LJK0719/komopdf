@@ -1,5 +1,5 @@
 import type { EditorFont } from './font-resources.js';
-import type { TextBlock, TextRange, StyledTextRun } from '@pdf-editor/contracts';
+import type { TextBlock, TextRange, StyledTextRun, TextStyle } from '@pdf-editor/contracts';
 
 export type FontFaceCriteria = {
   family: string;
@@ -196,7 +196,7 @@ export function findSelectionFontInfo(
     if (!font && run.style.fontId?.startsWith('pdf:')) {
       const name = run.style.fontId.slice(4).replace(/^[A-Z]{6}\+/, '');
       const parsed = sourceFontFamily(name);
-      const family = fonts.find(item => normalizeFamily(item.family) === normalizeFamily(parsed))?.family ?? parsed;
+      const family = resolveSourceFont(fonts, run.style)?.family ?? parsed;
       font = { id: run.style.fontId, family, style: name, format: 'ttf',
         weight: run.style.weight ?? getFontWeight({ id: name, family, style: name, format: 'ttf' }),
         italic: run.style.italic ?? /italic|oblique/i.test(name) };
@@ -228,10 +228,27 @@ export function sourceFontFamily(name: string): string {
   const known: Record<string, string> = {
     arial: 'Arial', timesnewroman: 'Times New Roman', timesnewromanps: 'Times New Roman',
     couriernew: 'Courier New', couriernewps: 'Courier New', helvetica: 'Helvetica', times: 'Times',
-    microsoftyahei: 'Microsoft YaHei', microsoftyaheiui: 'Microsoft YaHei', simsun: 'SimSun',
-    simhei: 'SimHei', kaiti: 'KaiTi', fangsong: 'FangSong', pingfangsc: 'PingFang SC',
+    microsoftyahei: 'Microsoft YaHei', microsoftyaheiui: 'Microsoft YaHei', simsun: 'SimSun', 宋体: 'SimSun',
+    nsimsun: 'NSimSun', 新宋体: 'NSimSun', simhei: 'SimHei', 黑体: 'SimHei',
+    kaiti: 'KaiTi', 楷体: 'KaiTi', fangsong: 'FangSong', 仿宋: 'FangSong', pingfangsc: 'PingFang SC',
   };
   return known[normalizeFamily(clean)] ?? clean;
+}
+
+/** Match a source PDF face without substituting a different family. */
+export function resolveSourceFont(fonts: readonly EditorFont[], style: TextStyle): EditorFont | undefined {
+  const exact = fonts.find(font => font.id === style.fontId);
+  if (exact) return exact;
+  if (!style.fontId?.startsWith('pdf:')) return;
+  const name = style.fontId.slice(4).replace(/^[A-Z]{6}\+/, '');
+  const family = sourceFontFamily(name);
+  const source = normalizeFamily(family);
+  const weight = style.weight ?? getFontWeight({ id: name, family, style: name, format: 'ttf' });
+  const italic = style.italic ?? /italic|oblique/i.test(name);
+  const matches = fonts.filter(font => font.supported !== false && [font.family, font.postscriptName ?? '', ...(font.aliases ?? [])]
+    .some(alias => normalizeFamily(sourceFontFamily(alias)) === source));
+  return matches.filter(font => getFontItalic(font) === italic)
+    .sort((a, b) => Math.abs(getFontWeight(a) - weight) - Math.abs(getFontWeight(b) - weight))[0];
 }
 
 /** Resolve the user's style intent, with script-safe family substitution when needed. */
@@ -258,7 +275,8 @@ export function resolveFormattingFont(fonts: readonly EditorFont[], criteria: Fo
   // Do not route Chinese text to a Latin-only alias such as Arimo.
   const latinOnlySource = /^(liberation(sans|serif|mono)|arial|helvetica|timesnewroman|courier(new)?|arimo|cousine|carlito|caladea|calibri|cambria|notosans|notoserif)$/.test(source);
   const candidates = fonts.filter(font => !cjk || (!latinOnlySource && normalizeFamily(font.family) === source) || /cjk|wenkai|zhuque|zcool|mashan|longcang|zhimang/i.test(font.family));
-  const pool = candidates.length ? candidates : [...fonts];
+  const exactFamily = candidates.filter(font => normalizeFamily(font.family) === source);
+  const pool = exactFamily.length ? exactFamily : candidates.length ? candidates : [...fonts];
   const matchingStyle = pool.filter(font => getFontItalic(font) === criteria.italic && (getFontWeight(font) >= 600) === (criteria.weight >= 600));
   const choices = matchingStyle.length ? matchingStyle : pool.filter(font => getFontItalic(font) === criteria.italic);
   return [...(choices.length ? choices : pool)].sort((a, b) =>

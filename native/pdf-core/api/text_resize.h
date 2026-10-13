@@ -75,79 +75,16 @@ bool ApplyTextResize(const Document& document, FPDF_DOCUMENT pdf,
                              &fonts, &request, native_doc)) return false;
     old_width = info->GetFloatFor("Width"); old_height = info->GetFloatFor("Height");
   } else {
-    Matrix to_page, to_pdf;
-    if (!GetPageMatrices(page.get(), &to_page, &to_pdf)) return false;
-    // The caller's source IDs are in reading order, as exposed by selectionScope.
-    auto* first_text = old_object->AsText();
-    if (!first_text) { SetError("INVALID_REQUEST", "The target is not text."); return false; }
-    auto first_local = first_text->Clone(); first_local->SetTextMatrix(CFX_Matrix());
-    const auto first_box = first_local->GetRect();
-    const auto inverse = InverseMatrix(matrix);
-    if (!inverse) { SetError("UNSUPPORTED_CAPABILITY", "The text frame transform is singular."); return false; }
-    CFX_FloatRect union_box = first_box;
-    float prior_y = first_box.top, prior_right = first_box.left;
-    float prior_baseline = 0;
-    uint32_t offset = 0;
-    for (const auto& target : targets) {
-      auto* text = CPDFPageObjectFromFPDFPageObject(target.object)->AsText();
-      if (!text || !HasSupportedTextMarks(target.object) || IsOcrTextObject(target.object) ||
-          !pdf_editor::tagged::CanEditTextScope(native_page, text)) {
-        SetError("UNSUPPORTED_CAPABILITY", "This source cannot be made into an editable text frame."); return false;
-      }
-      std::string value;
-      if (!GetObjectText(page.get(), target.object, &value, native_page)) return false;
-      const Matrix local = MatrixFromCfx(text->GetTextMatrix()).Then(*inverse);
-      auto clone = text->Clone(); clone->SetTextMatrix(CFX_Matrix());
-      const auto box = clone->GetRect();
-      const auto bounds = TransformBounds(box.left, box.bottom, box.right, box.top, local);
-      const float top = static_cast<float>(bounds.y + bounds.height);
-      const auto baseline = local.Apply(0, 0);
-      const auto advance_end = local.Apply(clone->CalcPositionData(1).x, 0);
-      if (offset && std::abs(top - prior_y) > text->GetFontSize() * 0.5f) {
-        request.utf8 += '\n'; ++offset;
-        if (request.line_spacing == 0) request.line_spacing = static_cast<float>(std::abs(baseline[1] - prior_baseline));
-      } else if (offset && bounds.x - prior_right > text->GetFontSize() * 0.18f &&
-                 !request.utf8.empty() && request.utf8.back() != ' ' && !value.empty() && value.front() != ' ') {
-        request.utf8 += ' '; ++offset;
-      }
-      prior_y = top; prior_baseline = static_cast<float>(baseline[1]);
-      prior_right = static_cast<float>(advance_end[0]);
-      union_box.Union(CFX_FloatRect(static_cast<float>(bounds.x), static_cast<float>(bounds.y),
-          static_cast<float>(bounds.x + bounds.width), top));
-      union_box.right = std::max(union_box.right, static_cast<float>(advance_end[0]));
-      auto resource = std::make_shared<FontResource>();
-      resource->source_font = text->GetFont().Get();
-      resource->id = GetTextStyle(target.object).font_id.value_or("pdf-source-font");
-      uint32_t font_index = 0;
-      for (; font_index < fonts.size(); ++font_index)
-        if (fonts[font_index]->source_font == resource->source_font) break;
-      if (font_index == fonts.size()) fonts.push_back(resource);
-      const auto style = GetTextStyle(target.object);
-      const uint32_t length = Utf16Length(value);
-      const float tracking = static_cast<float>(style.character_spacing.value_or(0));
-      const auto color = style.color.value_or(std::array<double, 3>{0, 0, 0});
-      request.styles.push_back({{offset, offset + length}, font_index, text->GetFontSize(), tracking,
-          {static_cast<float>(color[0]), static_cast<float>(color[1]), static_cast<float>(color[2])}, style.underline.value_or(false)});
-      request.utf8 += value; offset += length;
-      source_children.push_back(text->Clone());
-    }
-    // Assign explicit line separators to the preceding style.
-    for (size_t i = 1; i < request.styles.size(); ++i)
-      request.styles[i - 1].range.end = request.styles[i].range.start;
-    request.font_size = first_text->GetFontSize(); request.line_height = 1.2f;
-    request.letter_spacing = request.styles.front().letter_spacing;
-    request.color = request.styles.front().color;
-    old_width = std::max(union_box.Width(), first_local->CalcPositionData(1).x - union_box.left);
-    old_height = union_box.Height();
+    if (!MaterializeSourceParagraph(page.get(), targets, matrix, &request, &fonts,
+                                    &old_width, &old_height, &source_children)) return false;
+    const float frame_left = -request.text_inset;
     float ascent = 0, descent = 0;
-    const auto font = FPDFFontFromCPDFFont(first_text->GetFont().Get());
+    const auto font = FPDFFontFromCPDFFont(fonts.front()->source_font);
     if (!FPDFFont_GetAscent(font, request.font_size, &ascent) ||
         !FPDFFont_GetDescent(font, request.font_size, &descent)) return false;
     const float step = request.line_spacing > 0 ? request.line_spacing : request.font_size * request.line_height;
-    const float leading = std::max(0.0f, step - ascent + descent) / 2;
-    request.baseline_offset = union_box.top - leading - ascent;
-    request.text_inset = -union_box.left;
-    matrix = Matrix{1, 0, 0, 1, union_box.left, union_box.bottom}.Then(matrix);
+    const float frame_top = request.baseline_offset + std::max(0.0f, step - ascent + descent) / 2 + ascent;
+    matrix = Matrix{1, 0, 0, 1, frame_left, frame_top - old_height}.Then(matrix);
   }
   request.width = static_cast<float>(command.values[2]);
   request.height = static_cast<float>(command.values[3]);
@@ -224,6 +161,10 @@ bool ApplyTextResize(const Document& document, FPDF_DOCUMENT pdf,
         glyph->SetContentMarks(CPDF_ContentMarks());
         auto values = pdfium::MakeRetain<CPDF_Dictionary>();
         values->SetNewFor<CPDF_String>("ActualText", font->UnicodeFromCharCode(code).AsStringView());
+        const float next = index + 1 < positions.size() ? positions[index + 1] : source->CalcPositionData(1).x;
+        values->SetNewFor<CPDF_Number>("KomoAdvance", static_cast<float>(source_matrix.a) * (next - positions[index]));
+        values->SetNewFor<CPDF_Number>("KomoBaseline", static_cast<float>(origin[1]) -
+            (request.height - request.source_baseline.value_or(0)));
         glyph->GetContentMarks()->AddMarkWithDirectDict("Span", values);
         glyph->SetContentStream(CPDF_PageObject::kNoContentStream); glyph->SetDirty(true);
         form->AppendPageObject(std::move(glyph));

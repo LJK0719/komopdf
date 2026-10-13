@@ -13,7 +13,7 @@ import {
   type EditorFont,
 } from '../src/ui/font-resources.js';
 import { packCommands, EDIT_COMMAND_STRIDE } from '../src/worker/abi3-commands.js';
-import { resolveFormattingFont } from '../src/ui/font-face-matcher.js';
+import { resolveFormattingFont, resolveSourceFont } from '../src/ui/font-face-matcher.js';
 
 const mockFonts: EditorFont[] = [
   { id: 'noto-sans-cjk-sc-regular', family: 'Noto Sans CJK SC', style: 'Regular', weight: 400, italic: false, format: 'otf' },
@@ -46,6 +46,17 @@ class MockAllocator {
 }
 
 describe('font-face-matcher and font-resources', () => {
+  it('matches subset Song fonts to the installed face without crossing to Noto', () => {
+    const song: EditorFont = { id: 'system-font-song', family: 'SimSun', style: 'Regular', format: 'ttf',
+      aliases: ['宋体', 'SimSun'], faceIndex: 0, weight: 400, italic: false };
+    const fonts = [...mockFonts, song];
+    expect(resolveSourceFont(fonts, { fontId: 'pdf:AAAAAA+SimSun' })).toBe(song);
+    expect(resolveSourceFont(fonts, { fontId: 'pdf:ABCDEF+宋体' })).toBe(song);
+    expect(resolveFormattingFont(fonts, { family: 'SimSun', weight: 700, italic: false, text: '中文' })).toBe(song);
+    expect(resolveSourceFont(mockFonts, { fontId: 'pdf:AAAAAA+SimSun' })).toBeUndefined();
+    const newSong = { ...song, id: 'system-font-nsong', family: 'NSimSun', aliases: ['新宋体'] };
+    expect(resolveSourceFont([song, newSong], { fontId: 'pdf:AAAAAA+NSimSun' })).toBe(newSong);
+  });
   it('keeps the requested family instead of switching to another family just for an exact medium weight', () => {
     expect(resolveFormattingFont(mockFonts, { family: 'Liberation Sans', weight: 500, italic: false, text: 'Sample' }).id)
       .toBe('liberation-sans-regular');

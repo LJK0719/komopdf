@@ -50,7 +50,8 @@ import { ObjectSelectionLayer as SelectionLayer } from './ObjectSelectionLayer.j
 import { normalizeSelection, objectSelectionIds, pickObject, selectionScope } from './object-selection.js';
 import { detectParagraph, selectedTextObject } from './paragraph-detection.js';
 import { PdfLinkLayer } from './PdfLinkLayer.js';
-import { addImportedFont, useFontResources } from './font-resources.js';
+import { addImportedFont, useFontResources, ensureEditorFont } from './font-resources.js';
+import { resolveSourceFont } from './font-face-matcher.js';
 import {
   checkRecoverableSessions,
   persistRecoverySnapshot,
@@ -149,7 +150,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const beforePresentation = useRef({ view, continuous, pointer });
   const textEditor = useRef<TextEditorHandle | null>(null);
   const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
-  const { fonts } = useFontResources(engine);
+  const { fonts } = useFontResources(engine, host);
   const hasAi = Boolean(renderAiPanel || aiPanel);
   const aiPanelActive = hasAi && activeTool === 'ai';
   const [dragOver, setDragOver] = useState(false);
@@ -158,6 +159,12 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const inactiveWebDocuments = useRef(new Map<string, WebDocumentSession>());
   const [webTabs, setWebTabs] = useState<{ id: string; name: string }[]>([]);
   const [document, setDocument] = useState<LoadedDocument | null>(null);
+  useEffect(() => {
+    const faces = new Map((document?.page.objects ?? []).flatMap(object => object.textBlock?.runs ?? [])
+      .map(run => resolveSourceFont(fonts, run.style)).filter(font => font?.systemId && font.editableEmbedding !== false)
+      .map(font => [font!.id, font!]));
+    for (const face of faces.values()) void ensureEditorFont(engine, face).catch(() => undefined);
+  }, [engine, document?.page, fonts]);
   const railVisible = railOpen && (railTab === 'files' ? hasWorkspace : Boolean(document));
   const panelVisible = Boolean(activeTool) && (!previewActive || activeTool === 'ai');
   const { workspaceRef, separatorRef, resizing: panelResizing } = usePanelResize(aiPanelActive, railVisible);

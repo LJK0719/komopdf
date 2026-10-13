@@ -108,6 +108,7 @@ constexpr uint32_t kTextFitBoundsFlag = 256U;
 constexpr uint32_t kTextOcrFlag = 512U;
 constexpr uint32_t kTextParagraphFlag = 1024U;
 constexpr uint32_t kTextUnderlineFlag = 2048U;
+constexpr uint32_t kTextPreserveSourceFlag = 65536U;
 constexpr uint32_t kParagraphMetricsFlags = 4096U | 8192U | 16384U | 32768U;
 constexpr uint32_t kKnownTextInsertFlags =
     kKnownStyleFlags | kTextInsertLineHeightFlag | kTextInsertCenterFlag |
@@ -238,6 +239,7 @@ struct TextBlockData {
   bool is_paragraph = false;
   bool fixed_frame = false;
   std::optional<Rect> frame;
+  std::optional<double> frame_baseline;
   Matrix frame_transform;
 };
 
@@ -1229,6 +1231,15 @@ float TypicalTextKerning(const CPDF_TextObject* text) {
   return sorted[sorted.size() / 2];
 }
 
+std::optional<std::string> ExposedFontId(const std::string& registered_id,
+                                         const CPDF_Dictionary* dictionary) {
+  const bool session_font = registered_id.starts_with("user-font-") || registered_id.starts_with("system-font-");
+  if (!registered_id.empty() && (!session_font || g_fonts.contains(registered_id))) return registered_id;
+  const auto name = dictionary ? dictionary->GetByteStringFor("BaseFont") : ByteString();
+  if (!name.IsEmpty()) return "pdf:" + std::string(name.c_str(), name.GetLength());
+  return std::nullopt;
+}
+
 TextStyleData GetTextStyle(FPDF_PAGEOBJECT object) {
   TextStyleData style;
   float font_size = 0;
@@ -1262,13 +1273,7 @@ TextStyleData GetTextStyle(FPDF_PAGEOBJECT object) {
     const auto dictionary = CPDFFontFromFPDFFont(font)->GetFontDict();
     const ByteString registered = dictionary->GetUnicodeTextFor("KomoFontId").ToUTF8();
     const std::string registered_id(registered.c_str(), registered.GetLength());
-    if (!registered.IsEmpty() &&
-        (!registered_id.starts_with("user-font-") || g_fonts.contains(registered_id))) {
-      style.font_id = registered_id;
-    } else {
-      const ByteString name = dictionary->GetByteStringFor("BaseFont");
-      if (!name.IsEmpty()) style.font_id = "pdf:" + std::string(name.c_str(), name.GetLength());
-    }
+    style.font_id = ExposedFontId(registered_id, dictionary.Get());
     const int weight = FPDFFont_GetWeight(font);
     if (weight >= 100 && weight <= 900) {
       style.weight = weight;
@@ -1752,7 +1757,7 @@ bool NestedFormPathIsStructurallyEditable(FPDF_PAGE page,
 
 TextStyleData StoredParagraphStyle(const CPDF_Dictionary* info, TextStyleData style = {}) {
   const auto font = info->GetUnicodeTextFor("RegisteredFontId").ToUTF8();
-  if (!font.IsEmpty()) style.font_id = std::string(font.c_str(), font.GetLength());
+  if (!font.IsEmpty()) style.font_id = ExposedFontId(std::string(font.c_str(), font.GetLength()), info->GetDictFor("Font").Get());
   style.font_size = info->GetFloatFor("FontSize");
   style.character_spacing = info->GetFloatFor("LetterSpacing");
   style.underline = info->GetBooleanFor("Underline", false);
@@ -1862,6 +1867,11 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
     const float width = paragraph->GetFloatFor("Width"), height = paragraph->GetFloatFor("Height");
     block.frame = Rect{0, 0, width, height};
     block.frame_transform = Matrix{1, 0, 0, -1, 0, height}.Then(object_to_page);
+    for (const auto& child : *CPDFPageObjectFromFPDFPageObject(object)->AsForm()->form()) {
+      if (const auto* text = child->AsText()) {
+        block.frame_baseline = height - text->GetTextMatrix().f; break;
+      }
+    }
     block.fixed_frame = paragraph->GetNameFor("Sizing") == "Fixed";
     if (const auto flow = paragraph->GetDictFor("Flow")) {
       const auto id = flow->GetByteStringFor("Id");
@@ -1939,6 +1949,7 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
         const auto box = local->GetRect();
         const float width = std::max(box.Width(), local->CalcPositionData(1).x - box.left);
         block.frame = Rect{0, 0, width, box.Height()};
+        block.frame_baseline = box.top;
         block.frame_transform = Matrix{1, 0, 0, -1, box.left, box.top}.Then(object_to_page);
       }
       block.is_ocr = IsOcrTextObject(object);
@@ -2171,6 +2182,7 @@ void AppendTextBlock(std::string* output, const TextBlockData& block) {
   if (block.frame) {
     output->append(",\"frame\":{\"width\":"); AppendJsonNumber(output, block.frame->width);
     output->append(",\"height\":"); AppendJsonNumber(output, block.frame->height);
+    if (block.frame_baseline) { output->append(",\"baseline\":"); AppendJsonNumber(output, *block.frame_baseline); }
     output->append(",\"transform\":"); AppendMatrix(output, block.frame_transform);
     output->push_back('}');
   }
@@ -3333,6 +3345,10 @@ bool ApplyTextReplace(
       native_object ? native_object->AsText() : nullptr;
   if (!native_text) {
     SetError("INVALID_REQUEST", "The target is not a text object.");
+    return false;
+  }
+  if ((command.flags & kTextPreserveSourceFlag) && !command.font_id.empty()) {
+    SetError("UNSUPPORTED_CAPABILITY", "Create a source-preserving paragraph with text.reflow before adding a supplemental font.");
     return false;
   }
   const bool search_layer = IsOcrTextObject(target.object);
@@ -6198,7 +6214,7 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
   switch (target->type) {
     case EditType::kTextReplace:
       if (!require_page() || !require_target() || !source.text_utf8 ||
-          !target->ids.empty() || target->flags != 0) {
+          !target->ids.empty() || (target->flags & ~kTextPreserveSourceFlag)) {
         if (g_error_code.empty()) {
           SetError("INVALID_REQUEST",
                    "The text replacement fields are invalid.");
@@ -6260,8 +6276,9 @@ bool CopyEditCommand(const PdeEditCommand& source, EditCommand* target) {
           ((target->flags & kTextUnderlineFlag) && !(target->flags & kTextParagraphFlag)) ||
           ((target->flags & kTextParagraphFlag) &&
            (target->flags & (kTextInvisibleFlag | kTextFitBoundsFlag | kTextOcrFlag))) ||
-          (target->flags & ~kKnownTextInsertFlags) != 0 ||
-          (target->flags & 3U) != 3U || target->font_id.empty() ||
+          (target->flags & ~(kKnownTextInsertFlags | (target->type == EditType::kTextReflow ? kTextPreserveSourceFlag : 0U))) != 0 ||
+          !(target->flags & 2U) || (((target->flags & 1U) != 0) != !target->font_id.empty()) ||
+          (target->type == EditType::kTextInsert && target->font_id.empty()) ||
           target->values[4] <= 0 || target->values[4] > 1000 ||
           ((target->flags & kTextFitBoundsFlag) && !(target->flags & kTextInvisibleFlag)) ||
           ((target->flags & kTextOcrFlag) &&

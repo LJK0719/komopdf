@@ -28,7 +28,7 @@ export const textStyleSchema = z.object({
 }).strict();
 
 export const reflowTextStyleSchema = z.object({
-  fontId: idSchema,
+  fontId: idSchema.optional(),
   fontSize: z.number().positive().max(1000),
   color: colorSchema.optional(),
   characterSpacing: z.number().optional(),
@@ -43,11 +43,11 @@ export const reflowTextStyleSchema = z.object({
 export type ReflowTextStyle = z.infer<typeof reflowTextStyleSchema>;
 
 export const editCommandSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('text.replace'), pageId: idSchema, blockId: idSchema, range: rangeSchema, text: z.string(), style: textStyleSchema.optional() }).strict(),
+  z.object({ type: z.literal('text.replace'), pageId: idSchema, blockId: idSchema, range: rangeSchema, text: z.string(), style: textStyleSchema.optional(), preserveSource: z.boolean().optional() }).strict(),
   z.object({ type: z.literal('text.style'), pageId: idSchema, blockIds: idsSchema, range: rangeSchema.optional(), style: textStyleSchema }).strict(),
   z.object({ type: z.literal('text.insert'), pageId: idSchema, objectId: idSchema, bounds: rectSchema, text: z.string(), style: textStyleSchema,
     invisible: z.boolean().optional(), fitBounds: z.boolean().optional(), ocr: z.boolean().optional(), paragraph: z.boolean().optional() }).strict(),
-  z.object({ type: z.literal('text.reflow'), pageId: idSchema, objectId: idSchema, blockIds: idsSchema, bounds: rectSchema, text: z.string(), style: reflowTextStyleSchema }).strict(),
+  z.object({ type: z.literal('text.reflow'), pageId: idSchema, objectId: idSchema, blockIds: idsSchema, bounds: rectSchema, text: z.string(), style: reflowTextStyleSchema, preserveSource: z.boolean().optional() }).strict(),
   z.object({ type: z.literal('text.resize'), pageId: idSchema, blockIds: idsSchema, frame: frameSchema }).strict(),
   z.object({ type: z.literal('objects.transform'), pageId: idSchema, objectIds: idsSchema, matrix: matrixSchema }).strict(),
   z.object({ type: z.literal('objects.delete'), pageId: idSchema, objectIds: idsSchema }).strict(),

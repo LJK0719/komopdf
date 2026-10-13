@@ -25,6 +25,12 @@ pdf_editor::ParagraphRequest SliceParagraph(const pdf_editor::ParagraphRequest& 
   auto result = original;
   result.utf8 = original.utf8.substr(decoded.byte_offsets[start], decoded.byte_offsets[end] - decoded.byte_offsets[start]);
   result.styles.clear();
+  result.source_glyphs.clear();
+  for (auto glyph : original.source_glyphs) {
+    if (glyph.range.start < start || glyph.range.end > end) continue;
+    glyph.range.start -= start; glyph.range.end -= start;
+    result.source_glyphs.push_back(std::move(glyph));
+  }
   result.continues = end < decoded.utf16.size() && end > start && decoded.utf16[end - 1] != u'\n' && decoded.utf16[end - 1] != u'\r';
   for (auto run : original.styles) {
     if (run.range.end <= start || run.range.start >= end) continue;

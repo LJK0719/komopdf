@@ -1,6 +1,6 @@
 import type { EditableObject, Matrix, PageModel, Rect } from '@pdf-editor/contracts';
 
-export type TextFrame = { width: number; height: number; transform: Matrix; objectIds: string[] };
+export type TextFrame = { width: number; height: number; transform: Matrix; objectIds: string[]; baseline?: number };
 export type FrameHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 function point(matrix: Matrix, x: number, y: number): [number, number] {
@@ -39,7 +39,8 @@ export function selectionTextFrame(page: PageModel, selected: EditableObject[]):
   const left = Math.min(...points.map(item => item[0])), top = Math.min(...points.map(item => item[1]));
   const origin = point(first.transform, left, top);
   return { width: Math.max(...points.map(item => item[0])) - left, height: Math.max(...points.map(item => item[1])) - top,
-    transform: [a, b, c, d, origin[0], origin[1]], objectIds: ids };
+    transform: [a, b, c, d, origin[0], origin[1]], objectIds: ids,
+    ...(first.baseline !== undefined ? { baseline: first.baseline - top } : {}) };
 }
 
 export function resizedTextFrame(frame: TextFrame, handle: FrameHandle, dx: number, dy: number): Rect {

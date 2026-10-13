@@ -174,7 +174,9 @@ describe('paragraph selection and source-preserving formatting', () => {
     const fonts = [{ id: 'regular', family: 'Liberation Sans', style: 'Regular', weight: 400, italic: false, format: 'ttf' as const },
       { id: 'bold-italic', family: 'Liberation Sans', style: 'Bold Italic', weight: 700, italic: true, format: 'ttf' as const },
       { id: 'imported', family: 'Liberation Sans', style: 'Regular', weight: 400, italic: false, format: 'ttf' as const }];
-    expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'pdf:Helvetica-BoldOblique' }, sourceObjectIds: [] }, fonts)).toBe('bold-italic');
+    const source = { id: 'helvetica-bold-italic', family: 'Helvetica', style: 'Bold Oblique', weight: 700, italic: true, format: 'ttf' as const };
+    expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'pdf:Helvetica-BoldOblique' }, sourceObjectIds: [] }, [...fonts, source])).toBe(source.id);
+    expect(() => resolveParagraphRunFont({ text: 'word', style: { fontId: 'pdf:Helvetica-BoldOblique' }, sourceObjectIds: [] }, fonts)).toThrow(/original font is unavailable/);
     expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'imported' }, sourceObjectIds: [] }, fonts)).toBe('imported');
   });
   it('removes parent/child double selection after additive selection too', () => {

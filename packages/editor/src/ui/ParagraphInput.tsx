@@ -12,22 +12,19 @@ import { $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isElem
   COMMAND_PRIORITY_HIGH, FORMAT_TEXT_COMMAND, SKIP_SCROLL_INTO_VIEW_TAG, type LexicalNode, type TextNode } from 'lexical';
 import type { StyledTextRun, TextRange, TextStyle } from '@pdf-editor/contracts';
 import { type EditorFont, loadFontPreview } from './font-resources.js';
-import { getFontWeight, resolveFormattingFont, sourceFontFamily } from './font-face-matcher.js';
+import { resolveSourceFont, sourceFontFamily } from './font-face-matcher.js';
 
 export type ParagraphInputHandle = { format(style: TextStyle, range?: TextRange): void; focus(range?: TextRange): void; isComposing(): boolean };
 type Props = {
   runs: StyledTextRun[]; fonts: EditorFont[]; zoom: number; disabled: boolean; initialRange?: TextRange | null | undefined;
   handle: RefObject<ParagraphInputHandle | null>; label: string; style: TextStyle;
+  baseline?: number | undefined; frameHeight?: number | undefined; fixedFrame?: boolean | undefined;
   onChange(text: string, runs: StyledTextRun[], dirty: boolean): void; onSelect(range: TextRange): void; onFinish(): void; onCancel(): void;
   onFormat(format: 'bold' | 'italic' | 'underline'): void;
 };
 
-function previewFace(style: TextStyle, fonts: EditorFont[], text: string): EditorFont | undefined {
-  const exact = fonts.find(font => font.id === style.fontId);
-  if (exact || !fonts.length || !style.fontId?.startsWith('pdf:')) return exact;
-  const name = style.fontId.slice(4), family = sourceFontFamily(name);
-  return resolveFormattingFont(fonts, { family, text, weight: style.weight ?? getFontWeight({ id: name, family, style: name, format: 'ttf' }),
-    italic: style.italic ?? /italic|oblique/i.test(name) });
+function previewFace(style: TextStyle, fonts: EditorFont[], _text: string): EditorFont | undefined {
+  return resolveSourceFont(fonts, style);
 }
 
 // Text-node styles are PDF point values. View zoom never enters serialization.
@@ -35,7 +32,8 @@ function css(style: TextStyle, fonts: EditorFont[], text = ''): Record<string, s
   const result: Record<string, string> = {};
   if (style.fontId) {
     const font = previewFace(style, fonts, text);
-    result['--pdf-font-id'] = JSON.stringify(style.fontId); result['font-family'] = JSON.stringify(font?.family ?? 'sans-serif');
+    const family = font?.family ?? (style.fontId.startsWith('pdf:') ? sourceFontFamily(style.fontId.slice(4)) : 'sans-serif');
+    result['--pdf-font-id'] = JSON.stringify(style.fontId); result['font-family'] = JSON.stringify(family);
     if (font) { result['font-weight'] = String(font.weight ?? 400); result['font-style'] = font.italic ? 'italic' : 'normal'; }
   }
   if (style.fontSize !== undefined) result['font-size'] = `${style.fontSize}px`;
@@ -173,6 +171,22 @@ function Controls(props: Props) {
   })} />;
 }
 
+function baselineOffset(props: Props): number {
+  if (props.baseline === undefined) return 0;
+  const run = props.runs.find(item => item.text.length);
+  if (!run) return 0;
+  const style = { ...props.style, ...run.style };
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context) return 0;
+  const family = previewFace(style, props.fonts, run.text)?.family ?? sourceFontFamily(style.fontId?.replace(/^pdf:/, '') ?? 'sans-serif');
+  const size = style.fontSize ?? 12;
+  context.font = `${style.italic ? 'italic' : 'normal'} ${style.weight ?? 400} ${size}px ${JSON.stringify(family)}`;
+  const metrics = context.measureText(run.text.split('\n')[0]!);
+  const ascent = metrics.fontBoundingBoxAscent, descent = metrics.fontBoundingBoxDescent;
+  const height = props.style.lineSpacing || size * (props.style.lineHeight ?? 1.2);
+  return props.baseline - (ascent + (height - ascent - descent) / 2);
+}
+
 export function ParagraphInput(props: Props) {
   const initial = useRef({ namespace: 'pdf-paragraph', onError: (error: Error) => { throw error; },
     editorState: () => {
@@ -188,7 +202,9 @@ export function ParagraphInput(props: Props) {
   return <LexicalComposer initialConfig={initial.current}>
     <RichTextPlugin ErrorBoundary={LexicalErrorBoundary} contentEditable={<ContentEditable className="paragraph-input" aria-label={props.label}
       style={{ zoom: props.zoom, fontSize: props.style.fontSize ?? 12,
-        maxHeight: `min(calc(55vh / ${props.zoom}), ${640 / props.zoom}px)`,
+        minHeight: props.frameHeight,
+        maxHeight: props.fixedFrame ? props.frameHeight : undefined,
+        position: 'relative', top: baselineOffset(props),
         lineHeight: props.style.lineSpacing ? `${props.style.lineSpacing}px` : props.style.lineHeight ?? 1.2,
         textAlign: props.style.alignment ?? 'left', textIndent: props.style.firstLineIndent ?? 0,
         ['--paragraph-space-before' as string]: `${props.style.spaceBefore ?? 0}px`,

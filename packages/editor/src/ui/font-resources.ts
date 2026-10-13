@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { EngineAdapter, RegisteredFontInfo } from '@pdf-editor/contracts';
+import type { EngineAdapter, HostAdapter, RegisteredFontInfo } from '@pdf-editor/contracts';
 
 export type EditorFont = {
   id: string;
@@ -10,6 +10,13 @@ export type EditorFont = {
   italic?: boolean;
   editableEmbedding?: boolean;
   url?: string;
+  label?: string;
+  aliases?: string[];
+  postscriptName?: string;
+  systemId?: string;
+  faceIndex?: number;
+  registered?: boolean;
+  supported?: boolean;
 };
 const browserFaces = new Map<string, Promise<string>>();
 
@@ -28,10 +35,62 @@ export function loadFontPreview(font: EditorFont): Promise<string> {
 const importedFonts = new WeakMap<EngineAdapter, EditorFont[]>();
 const listeners = new WeakMap<EngineAdapter, Set<() => void>>();
 
-export function addImportedFont(engine: EngineAdapter, font: RegisteredFontInfo): void {
+export function addImportedFont(engine: EngineAdapter, font: RegisteredFontInfo | EditorFont): void {
   const current = importedFonts.get(engine) ?? [];
   importedFonts.set(engine, [...current.filter(item => item.id !== font.id), font]);
   listeners.get(engine)?.forEach(notify => notify());
+}
+
+const systemHosts = new WeakMap<EngineAdapter, HostAdapter>();
+const systemCatalogs = new WeakMap<EngineAdapter, Promise<void>>();
+const systemRegistrations = new WeakMap<EngineAdapter, Map<string, Promise<EditorFont>>>();
+
+export function loadSystemFontCatalog(engine: EngineAdapter, host: HostAdapter): Promise<void> {
+  if (!host.capabilities.nativeFiles || !host.listSystemFonts || !host.getSystemFont) return Promise.resolve();
+  systemHosts.set(engine, host);
+  let pending = systemCatalogs.get(engine);
+  if (!pending) {
+    pending = host.listSystemFonts().then(entries => {
+      const current = importedFonts.get(engine) ?? [];
+      const fonts: EditorFont[] = entries.filter(entry => entry.family && entry.format).map(entry => ({
+        id: entry.id, systemId: entry.id, family: entry.family!, style: entry.style ?? 'Regular', format: entry.format!,
+        label: entry.label, aliases: entry.aliases ?? [], postscriptName: entry.postscriptName ?? '',
+        faceIndex: entry.faceIndex ?? 0, weight: entry.weight ?? 400, italic: entry.italic ?? false,
+        editableEmbedding: entry.editableEmbedding ?? true, supported: entry.supported ?? true, registered: false,
+      }));
+      importedFonts.set(engine, [...current, ...fonts.filter(font => !current.some(item => item.id === font.id))]);
+      listeners.get(engine)?.forEach(notify => notify());
+    });
+    systemCatalogs.set(engine, pending);
+  }
+  return pending;
+}
+
+export async function ensureEditorFont(engine: EngineAdapter, font: EditorFont): Promise<EditorFont> {
+  if (!font.systemId || font.registered || importedFonts.get(engine)?.find(item => item.id === font.id)?.registered) return font;
+  if (font.supported === false || font.editableEmbedding === false) throw new Error(`This font cannot be embedded for editing: ${font.family}`);
+  const host = systemHosts.get(engine);
+  if (!host?.getSystemFont || !engine.registerFont) throw new Error('System font access is unavailable.');
+  const registrations = systemRegistrations.get(engine) ?? new Map<string, Promise<EditorFont>>();
+  systemRegistrations.set(engine, registrations);
+  let pending = registrations.get(font.id);
+  if (!pending) {
+    pending = host.getSystemFont(font.systemId).then(async selection => {
+      const registered = await engine.registerFont!({ id: font.id, source: selection.source, faceIndex: font.faceIndex ?? selection.faceIndex ?? 0 });
+      const ready = { ...font, ...registered, registered: true };
+      addImportedFont(engine, ready);
+      return ready;
+    });
+    registrations.set(font.id, pending);
+  }
+  return pending;
+}
+
+export async function prepareEditorFonts(engine: EngineAdapter, fonts: readonly EditorFont[], ids: Iterable<string>): Promise<void> {
+  await Promise.all([...new Set(ids)].map(async id => {
+    const font = fonts.find(item => item.id === id);
+    if (font) await ensureEditorFont(engine, font);
+  }));
 }
 
 export type WebFontResource = {
@@ -62,10 +121,16 @@ export function loadFontResources(): Promise<WebFontResource[]> {
   return fontResourcesPromise;
 }
 
-export function useFontResources(engine?: EngineAdapter): { fonts: EditorFont[]; error: string } {
+export function useFontResources(engine?: EngineAdapter, host?: HostAdapter): { fonts: EditorFont[]; error: string } {
   const [fonts, setFonts] = useState<WebFontResource[]>([]);
   const [local, setLocal] = useState<EditorFont[]>(() => engine ? importedFonts.get(engine) ?? [] : []);
   const [error, setError] = useState('');
+  useEffect(() => {
+    if (!engine || !host) return;
+    let active = true;
+    void loadSystemFontCatalog(engine, host).catch(caught => { if (active) setError(caught instanceof Error ? caught.message : 'System font list unavailable'); });
+    return () => { active = false; };
+  }, [engine, host]);
   useEffect(() => {
     setLocal(engine ? importedFonts.get(engine) ?? [] : []);
     if (!engine) return;

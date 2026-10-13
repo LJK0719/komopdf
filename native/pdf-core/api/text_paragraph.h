@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -11,6 +13,7 @@
 #include "text_shaping.h"
 
 class CPDF_Font;
+class CPDF_TextObject;
 
 namespace pdf_editor {
 
@@ -58,6 +61,15 @@ struct ParagraphFont {
   CPDF_Font* source_font = nullptr;
 };
 
+// Unchanged source clusters carry the original PDF code, advance (including
+// TJ/word spacing), and rendering state through ordinary paragraph layout.
+struct ParagraphSourceGlyph {
+  Utf16Range range;
+  std::shared_ptr<const CPDF_TextObject> object;
+  float advance = 0;
+  float baseline_offset = 0;
+};
+
 struct ParagraphRequest {
   std::string utf8;
   float width = 0;
@@ -78,12 +90,14 @@ struct ParagraphRequest {
   // Empty means one default style. Otherwise contiguous resolved UTF-16 runs;
   // font_index selects fonts[0] (base) or another embedded font resource.
   std::vector<ParagraphStyleRun> styles;
+  std::vector<ParagraphSourceGlyph> source_glyphs;
   // A page break is not the end of a justified logical paragraph.
   bool continues = false;
   bool fixed_frame = false;
   // Source frames keep their first baseline and horizontal origin.
   float baseline_offset = 0;
   float text_inset = 0;
+  std::optional<float> source_baseline;
 };
 
 struct ParagraphResult {

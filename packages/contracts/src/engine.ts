@@ -35,7 +35,7 @@ export type TextBlock = {
   id: string; pageId: string; sourceId?: string; sourceObjectIds: string[]; runs: StyledTextRun[];
   bounds: Rect; transform: Matrix; editability: 'direct' | 'font-replacement' | 'geometry-only'; isOcr?: boolean;
   isParagraph?: boolean;
-  frame?: { width: number; height: number; transform: Matrix };
+  frame?: { width: number; height: number; transform: Matrix; baseline?: number };
   fixedFrame?: boolean;
   characters?: TextCharacter[];
   // Internal TJ word gaps, at source UTF-16 offsets. Native edit ranges still
@@ -85,8 +85,10 @@ export type FontFaceInfo = { index: number; family: string; style: string; forma
   weight: number; italic: boolean; fsType: number; editableEmbedding: boolean };
 export type RegisteredFontInfo = FontFaceInfo & { id: string; faceIndex: number };
 export type RegisterFontRequest = { id: string; source: FontSource; faceIndex: number };
-export type FontSelection = { name: string; source: FontSource };
-export type SystemFontEntry = { id: string; label: string };
+export type FontSelection = { name: string; source: FontSource; faceIndex?: number };
+export type SystemFontEntry = { id: string; label: string; family?: string; style?: string;
+  aliases?: string[]; postscriptName?: string; format?: 'ttf' | 'otf'; faceIndex?: number;
+  weight?: number; italic?: boolean; editableEmbedding?: boolean; supported?: boolean };
 export type RecoverySource =
   | { kind: 'bytes'; bytes: ArrayBuffer }
   | { kind: 'native-file'; handle: string };
