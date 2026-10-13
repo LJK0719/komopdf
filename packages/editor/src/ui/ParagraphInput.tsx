@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useImperativeHandle, useRef, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useImperativeHandle, useMemo, useRef, useState, type RefObject } from 'react';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
-import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin';
+import { ParagraphSourceSelection, type InputSelection, type SourceSelectionGeometry } from './ParagraphSourceSelection.js';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $patchStyleText } from '@lexical/selection';
@@ -19,6 +19,7 @@ type Props = {
   runs: StyledTextRun[]; fonts: EditorFont[]; zoom: number; disabled: boolean; initialRange?: TextRange | null | undefined;
   handle: RefObject<ParagraphInputHandle | null>; label: string; style: TextStyle;
   baseline?: number | undefined; frameHeight?: number | undefined; fixedFrame?: boolean | undefined;
+  pristine?: boolean | undefined; sourceGeometry?: SourceSelectionGeometry | undefined;
   onChange(text: string, runs: StyledTextRun[], dirty: boolean): void; onSelect(range: TextRange): void; onFinish(): void; onCancel(): void;
   onFormat(format: 'bold' | 'italic' | 'underline'): void;
 };
@@ -83,14 +84,16 @@ function readDraft(base: TextStyle, zoom: number) {
   return { text, runs, positions };
 }
 
-function selectRange(range: TextRange, base: TextStyle, zoom: number) {
-  const { positions } = readDraft(base, zoom);
+function selectRange(range: TextRange, positions: ReturnType<typeof readDraft>['positions']) {
   const nodes = [...positions.values()].filter(value => $isTextNode(value.node));
   if (!nodes.length) { $getRoot().selectEnd(); return; }
-  const point = (offset: number) => nodes.find(item => item.start + item.length >= offset) ?? nodes.at(-1)!;
+  const point = (offset: number) => nodes.find(item => item.start + item.length > offset) ?? nodes.at(-1)!;
   const start = point(range[0]), end = point(range[1]), selection = $createRangeSelection();
   selection.anchor.set(start.node.getKey(), Math.min(start.length, Math.max(0, range[0] - start.start)), 'text');
   selection.focus.set(end.node.getKey(), Math.min(end.length, Math.max(0, range[1] - end.start)), 'text');
+  const focus = end.node as TextNode;
+  selection.style = focus.getStyle();
+  selection.format = focus.getFormat();
   $setSelection(selection);
 }
 
@@ -98,11 +101,28 @@ function Controls(props: Props) {
   const [editor] = useLexicalComposerContext();
   const latest = useRef(props); latest.current = props;
   const lastContent = useRef(''), originalContent = useRef('');
-  useLayoutEffect(() => { editor.getEditorState().read(() => { originalContent.current = lastContent.current = JSON.stringify(readDraft(props.style, props.zoom).runs); }); }, [editor]);
+  const draft = useRef<ReturnType<typeof readDraft> | null>(null);
+  const selected = useRef<InputSelection | null>(null);
+  useLayoutEffect(() => { editor.getEditorState().read(() => {
+    draft.current = readDraft(props.style, props.zoom);
+    originalContent.current = lastContent.current = JSON.stringify(draft.current.runs);
+  }); }, [editor]);
+  const selectionOffsets = (): InputSelection | null => {
+    const selection = $getSelection();
+    if (!$isRangeSelection(selection) || !draft.current) return null;
+    const offset = (point: typeof selection.anchor) => {
+      const value = draft.current!.positions.get(point.key);
+      if (!value) return draft.current!.text.length;
+      if ($isTextNode(value.node)) return value.start + point.offset;
+      const child = $isElementNode(value.node) ? value.node.getChildren()[point.offset] : null;
+      return child ? draft.current!.positions.get(child.getKey())?.start ?? value.start : value.start + value.length;
+    };
+    return { anchor: offset(selection.anchor), focus: offset(selection.focus) };
+  };
   useImperativeHandle(props.handle, () => ({
     format(style, range) {
       editor.update(() => {
-        if (range) selectRange(range, latest.current.style, latest.current.zoom);
+        if (range) selectRange(range, draft.current!.positions);
         const selection = $getSelection();
         if ($isRangeSelection(selection)) $patchStyleText(selection, css(style, latest.current.fonts));
       });
@@ -116,7 +136,7 @@ function Controls(props: Props) {
       }).catch(() => undefined);
       editor.focus();
     },
-    focus(range) { editor.update(() => { if (range) selectRange(range, latest.current.style, latest.current.zoom); else $getRoot().selectEnd(); }); editor.focus(); },
+    focus(range) { editor.update(() => { if (range) selectRange(range, draft.current!.positions); else $getRoot().selectEnd(); }); editor.focus(); },
     isComposing: () => editor.isComposing(),
   }), [editor]);
   useEffect(() => {
@@ -136,7 +156,7 @@ function Controls(props: Props) {
   }, [editor]);
   useEffect(() => { editor.setEditable(!props.disabled); }, [editor, props.disabled]);
   useEffect(() => {
-    editor.update(() => selectRange(props.initialRange ?? [0, 0], props.style, props.zoom), { tag: SKIP_SCROLL_INTO_VIEW_TAG, discrete: true });
+    editor.update(() => selectRange(props.initialRange ?? [0, 0], draft.current!.positions), { tag: SKIP_SCROLL_INTO_VIEW_TAG, discrete: true });
     editor.getRootElement()?.focus({ preventScroll: true });
   }, [editor]);
   const fontKey = props.fonts.map(font => font.id).join('\0');
@@ -154,31 +174,35 @@ function Controls(props: Props) {
       }, { tag: 'font-preview' }); }).catch(() => undefined);
     return () => { active = false; };
   }, [editor, fontKey]);
-  return <OnChangePlugin ignoreSelectionChange={false} onChange={(state, _editor, tags) => state.read(() => {
-    const current = latest.current, draft = readDraft(current.style, current.zoom);
-    const content = JSON.stringify(draft.runs);
-    if (!tags.has('font-preview') && content !== lastContent.current) current.onChange(draft.text, draft.runs, content !== originalContent.current);
-    lastContent.current = content;
-    const selection = $getSelection();
-    if ($isRangeSelection(selection)) {
-      const offset = (point: typeof selection.anchor) => {
-        const value = draft.positions.get(point.key);
-        return value ? value.start + ($isTextNode(value.node) ? point.offset : point.offset ? value.length : 0) : draft.text.length;
-      };
-      const a = offset(selection.anchor), b = offset(selection.focus);
-      current.onSelect([Math.min(a, b), Math.max(a, b)]);
+  useEffect(() => editor.registerUpdateListener(({ editorState, dirtyElements, dirtyLeaves, tags }) => editorState.read(() => {
+    const current = latest.current;
+    if (dirtyElements.size || dirtyLeaves.size || !draft.current) {
+      draft.current = readDraft(current.style, current.zoom);
+      const content = JSON.stringify(draft.current.runs);
+      if (!tags.has('font-preview') && content !== lastContent.current)
+        current.onChange(draft.current.text, draft.current.runs, content !== originalContent.current);
+      lastContent.current = content;
     }
-  })} />;
+    const next = selectionOffsets();
+    if (next && (next.anchor !== selected.current?.anchor || next.focus !== selected.current?.focus)) {
+      selected.current = next;
+      current.onSelect([Math.min(next.anchor, next.focus), Math.max(next.anchor, next.focus)]);
+    }
+  })), [editor]);
+  return props.sourceGeometry && <ParagraphSourceSelection geometry={props.sourceGeometry} enabled={Boolean(props.pristine)}
+    text={props.runs.map(run => run.text).join('')}
+    readSelection={() => editor.getEditorState().read(selectionOffsets)}
+    select={selection => selectRange([selection.anchor, selection.focus], draft.current!.positions)} />;
 }
 
-function baselineOffset(props: Props): number {
+function baselineOffset(props: Props, previewFamily?: string): number {
   if (props.baseline === undefined) return 0;
   const run = props.runs.find(item => item.text.length);
   if (!run) return 0;
   const style = { ...props.style, ...run.style };
   const context = document.createElement('canvas').getContext('2d');
   if (!context) return 0;
-  const family = previewFace(style, props.fonts, run.text)?.family ?? sourceFontFamily(style.fontId?.replace(/^pdf:/, '') ?? 'sans-serif');
+  const family = previewFamily ?? previewFace(style, props.fonts, run.text)?.family ?? sourceFontFamily(style.fontId?.replace(/^pdf:/, '') ?? 'sans-serif');
   const size = style.fontSize ?? 12;
   context.font = `${style.italic ? 'italic' : 'normal'} ${style.weight ?? 400} ${size}px ${JSON.stringify(family)}`;
   const metrics = context.measureText(run.text.split('\n')[0]!);
@@ -188,6 +212,16 @@ function baselineOffset(props: Props): number {
 }
 
 export function ParagraphInput(props: Props) {
+  const first = props.runs.find(run => run.text.length);
+  const face = first && previewFace({ ...props.style, ...first.style }, props.fonts, first.text);
+  const [baselineFamily, setBaselineFamily] = useState<string | undefined>();
+  useEffect(() => {
+    let active = true;
+    setBaselineFamily(undefined);
+    if (face) void loadFontPreview(face).then(family => { if (active) setBaselineFamily(family); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [face?.id]);
+  const baseline = useMemo(() => baselineOffset(props, baselineFamily), [props.baseline, props.runs, props.fonts, props.style, baselineFamily]);
   const initial = useRef({ namespace: 'pdf-paragraph', onError: (error: Error) => { throw error; },
     editorState: () => {
       let paragraph = $createParagraphNode(); $getRoot().append(paragraph);
@@ -204,7 +238,7 @@ export function ParagraphInput(props: Props) {
       style={{ zoom: props.zoom, fontSize: props.style.fontSize ?? 12,
         minHeight: props.frameHeight,
         maxHeight: props.fixedFrame ? props.frameHeight : undefined,
-        position: 'relative', top: baselineOffset(props),
+        position: 'relative', top: baseline,
         lineHeight: props.style.lineSpacing ? `${props.style.lineSpacing}px` : props.style.lineHeight ?? 1.2,
         textAlign: props.style.alignment ?? 'left', textIndent: props.style.firstLineIndent ?? 0,
         ['--paragraph-space-before' as string]: `${props.style.spaceBefore ?? 0}px`,

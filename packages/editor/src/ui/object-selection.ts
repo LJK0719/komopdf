@@ -42,10 +42,15 @@ export function normalizeSelection(page: PageModel, ids: string[]): string[] {
 
 // Geometry, not DOM paint order, decides which nested hitbox receives the click.
 export function pickObject(objects: EditableObject[], x: number, y: number, tolerance: number): EditableObject | undefined {
-  return objects.filter(object => containsRect(object.bounds, { x, y, width: 0, height: 0 }, tolerance))
-    .sort((a, b) => a.bounds.width * a.bounds.height - b.bounds.width * b.bounds.height ||
-      b.locator.containerPath.length - a.locator.containerPath.length ||
-      b.locator.objectIndex - a.locator.objectIndex)[0];
+  let best: EditableObject | undefined;
+  const point = { x, y, width: 0, height: 0 };
+  for (const object of objects) {
+    if (!containsRect(object.bounds, point, tolerance)) continue;
+    const rank = best ? object.bounds.width * object.bounds.height - best.bounds.width * best.bounds.height ||
+      best.locator.containerPath.length - object.locator.containerPath.length || best.locator.objectIndex - object.locator.objectIndex : -1;
+    if (rank < 0) best = object;
+  }
+  return best;
 }
 
 export function isContainerInterior(object: EditableObject, objects: EditableObject[], x: number, y: number, edge: number): boolean {

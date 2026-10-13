@@ -1,5 +1,5 @@
 import type { EditCommand, PageModel, StyledTextRun, TextStyle } from '@pdf-editor/contracts';
-import { findSelectionFontInfo, getFontItalic, getFontWeight, resolveFormattingFont, resolveSourceFont } from './font-face-matcher.js';
+import { findSelectionFontInfo, resolveFormattingFont, resolveSourceFont } from './font-face-matcher.js';
 import type { EditorFont } from './font-resources.js';
 import { detectParagraph, type ParagraphCandidate } from './paragraph-detection.js';
 import { sourceTextOffset } from './source-text.js';
@@ -11,13 +11,14 @@ export function resolveParagraphRunFont(run: StyledTextRun, fonts: readonly Edit
     return source.id;
   }
   const loaded = fonts.find(font => font.id === run.style.fontId);
+  // A registered face is exact; inferred PDF stem weights are not face choices.
+  if (loaded) return loaded.id;
   const block = { runs: [run] } as Parameters<typeof findSelectionFontInfo>[0];
   const info = findSelectionFontInfo(block, [0, run.text.length], fonts);
   const weight = run.style.weight ?? info?.weight ?? 400;
   const italic = run.style.italic ?? info?.italic ?? false;
   const match = resolveFormattingFont(fonts, { family: info?.family ?? (/\p{Script=Han}/u.test(run.text) ? 'Noto Sans CJK SC' : 'Liberation Sans'),
     weight, italic, text: run.text });
-  if (loaded && loaded.family === match.family && getFontWeight(loaded) === weight && getFontItalic(loaded) === italic) return loaded.id;
   return match.id;
 }
 
@@ -30,7 +31,10 @@ export function applyParagraphFormats(runs: StyledTextRun[], formats: { range: [
     for (let i = 0; i + 1 < cuts.length; i++) {
       const from = cuts[i]!, to = cuts[i + 1]!;
       const style = { ...run.style };
-      for (const format of formats) if (format.range[0] <= from && format.range[1] >= to) Object.assign(style, format.style);
+      for (const format of formats) if (format.range[0] <= from && format.range[1] >= to) {
+        if (format.style.fontId && format.style.fontId !== style.fontId) { delete style.weight; delete style.italic; }
+        Object.assign(style, format.style);
+      }
       result.push({ ...run, text: run.text.slice(from - start, to - start), style });
     }
     start = end;

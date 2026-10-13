@@ -1,6 +1,6 @@
 import { translate as t, useI18n } from './i18n.js';
-import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import type { PageModel, Rect, RenderResult } from '@pdf-editor/contracts';
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import type { EditableObject, PageModel, Rect, RenderResult } from '@pdf-editor/contracts';
 import { frameBounds, localFrameDelta, resizedTextFrame, selectionTextFrame, type TextFrame } from './text-frame.js';
 import { containsRect, isContainerInterior, normalizeSelection, pickObject, selectionScope } from './object-selection.js';
 
@@ -151,6 +151,20 @@ function computeRotateMatrix(
   return { matrix, angleRadians: angleDiff, angleDegrees: deg };
 }
 
+const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group', shading: 'Gradient' };
+const ObjectHitbox = memo(function ObjectHitbox({ object, selected, hovered, disabled, zIndex, scaleX, scaleY, dx, dy, onSelect }: {
+  object: EditableObject; selected: boolean; hovered: boolean; disabled: boolean; zIndex: number | undefined;
+  scaleX: number; scaleY: number; dx: number; dy: number; onSelect: Props['onSelect'];
+}) {
+  return <button type="button" disabled={disabled} data-object-id={object.id} data-object-type={object.type}
+    className={`object-hitbox${selected ? ' object-hitbox-selected' : ''}${object.textBlock ? ' object-hitbox-text' : ''}${hovered ? ' object-hitbox-hovered' : ''}`}
+    style={{ zIndex, left: object.bounds.x * scaleX, top: object.bounds.y * scaleY,
+      width: Math.max(object.bounds.width * scaleX, 6), height: Math.max(object.bounds.height * scaleY, 6),
+      ...(dx || dy ? { transform: `translate(${dx}px, ${dy}px)` } : {}) }}
+    onClick={event => { event.stopPropagation(); if (!disabled && event.detail === 0) onSelect(object.id, event.ctrlKey || event.metaKey || event.shiftKey); }}
+    aria-pressed={selected} aria-label={`Select ${names[object.type]} object`} />;
+});
+
 export function ObjectSelectionLayer({
   page,
   render,
@@ -172,25 +186,45 @@ export function ObjectSelectionLayer({
   const moved = useRef(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const previewFrame = useRef(0);
+  const nextPreview = useRef<Preview | null>(null);
+  const schedulePreview = (next: Preview) => {
+    nextPreview.current = next;
+    if (!previewFrame.current) previewFrame.current = requestAnimationFrame(() => {
+      previewFrame.current = 0;
+      setPreview(nextPreview.current);
+    });
+  };
+  const clearPreview = () => {
+    cancelAnimationFrame(previewFrame.current);
+    previewFrame.current = 0;
+    nextPreview.current = null;
+    setPreview(null);
+  };
+  useEffect(() => () => cancelAnimationFrame(previewFrame.current), []);
 
-  const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group', shading: 'Gradient' };
-  const objects = selectionScope(page, selectedIds);
-  const idsFor = (object: (typeof objects)[number]) => object.textBlock?.sourceObjectIds ?? [object.id];
-  const selectedObjects = objects.filter(object => idsFor(object).some(id => selectedIds.includes(id)));
-  const textFrame = selectionTextFrame(page, selectedObjects);
+  const objects = useMemo(() => selectionScope(page, selectedIds), [page, selectedIds]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const idsFor = (object: EditableObject) => object.textBlock?.sourceObjectIds ?? [object.id];
+  const selectedObjects = useMemo(() => objects.filter(object => idsFor(object).some(id => selectedSet.has(id))), [objects, selectedSet]);
+  const textFrame = useMemo(() => selectionTextFrame(page, selectedObjects), [page, selectedObjects]);
   const textOnly = selectedObjects.length === 1 && Boolean(selectedObjects[0]?.textBlock);
-  const hoveredText = objects.find(object => object.id === hoveredId && object.textBlock && !idsFor(object).some(id => selectedIds.includes(id)));
-  const hoveredFrame = hoveredText ? selectionTextFrame(page, [hoveredText]) : null;
-  const hoveredBounds = hoveredFrame ? frameBounds(hoveredFrame) : hoveredText?.bounds;
+  const hoveredText = objects.find(object => object.id === hoveredId && object.textBlock && !idsFor(object).some(id => selectedSet.has(id)));
+  const hoveredBounds = useMemo(() => {
+    const frame = hoveredText ? selectionTextFrame(page, [hoveredText]) : null;
+    return frame ? frameBounds(frame) : hoveredText?.bounds;
+  }, [page, hoveredText]);
   const resizeEnabled = !textOnly || Boolean(textFrame && onResizeText);
-  const stacking = new Map(objects.slice().sort((a, b) => b.bounds.width * b.bounds.height - a.bounds.width * a.bounds.height)
-    .map((object, index) => [object.id, index]));
+  const stacking = useMemo(() => new Map(objects.slice().sort((a, b) => b.bounds.width * b.bounds.height - a.bounds.width * a.bounds.height)
+    .map((object, index) => [object.id, index])), [objects]);
+  const movingIds = preview?.type === 'move' ? preview.ids : null;
+  const movingSet = useMemo(() => new Set(movingIds), [movingIds]);
   const hitAt = (clientX: number, clientY: number) => {
     const rect = layerRef.current!.getBoundingClientRect();
     return pickObject(objects, (clientX - rect.left) / scaleX, (clientY - rect.top) / scaleY, 3 / Math.max(scaleX, scaleY));
   };
-  let bounds: SelectionBounds | null = null;
-  if (selectedObjects.length > 0) {
+  const bounds = useMemo<SelectionBounds | null>(() => {
+    if (!selectedObjects.length) return null;
     const boxes = textFrame ? [frameBounds(textFrame)] : selectedObjects.map(object => object.bounds);
     const minX = Math.min(...boxes.map(box => box.x));
     const minY = Math.min(...boxes.map(box => box.y));
@@ -198,7 +232,7 @@ export function ObjectSelectionLayer({
     const maxY = Math.max(...boxes.map(box => box.y + box.height));
     const widthPt = maxX - minX;
     const heightPt = maxY - minY;
-    bounds = {
+    return {
       minX,
       minY,
       maxX,
@@ -212,7 +246,7 @@ export function ObjectSelectionLayer({
       boxWidth: Math.max(widthPt * scaleX, 4),
       boxHeight: Math.max(heightPt * scaleY, 4),
     };
-  }
+  }, [selectedObjects, textFrame, scaleX, scaleY]);
 
   const handleHandlePointerDown = (
     event: ReactPointerEvent<HTMLButtonElement>,
@@ -374,21 +408,21 @@ export function ObjectSelectionLayer({
 
         if (active.type === 'box') {
           if (Math.hypot(dx, dy) >= 3) moved.current = true;
-          if (moved.current) setPreview({ type: 'box', x: active.startX, y: active.startY, dx, dy });
+          if (moved.current) schedulePreview({ type: 'box', x: active.startX, y: active.startY, dx, dy });
         } else if (active.type === 'move') {
           if (Math.hypot(dx, dy) >= 3) moved.current = true;
-          if (moved.current) setPreview({ type: 'move', dx, dy, ids: active.ids });
+          if (moved.current) schedulePreview({ type: 'move', dx, dy, ids: active.ids });
         } else if (active.type === 'scale') {
           if (Math.hypot(dx, dy) >= 3) moved.current = true;
           if (moved.current) {
             if (active.textFrame) {
               const [localX, localY] = localFrameDelta(active.textFrame, dx / scaleX, dy / scaleY);
               const frame = resizedTextFrame(active.textFrame, active.handle, localX, localY);
-              setPreview({ type: 'resize-text', bounds: frameBounds(active.textFrame, frame) });
+              schedulePreview({ type: 'resize-text', bounds: frameBounds(active.textFrame, frame) });
               return;
             }
             const res = computeScaleMatrix(active.handle, active.bounds, currentX, currentY, event.shiftKey);
-            setPreview({
+            schedulePreview({
               type: 'scale',
               sx: res.sx,
               sy: res.sy,
@@ -402,7 +436,7 @@ export function ObjectSelectionLayer({
           const res = computeRotateMatrix(active.bounds, active.startAngle, currentX, currentY, event.shiftKey);
           if (Math.abs(res.angleRadians) >= 0.02) moved.current = true;
           if (moved.current) {
-            setPreview({
+            schedulePreview({
               type: 'rotate',
               angleDegrees: res.angleDegrees,
               matrix: res.matrix,
@@ -421,7 +455,7 @@ export function ObjectSelectionLayer({
         const dy = currentY - active.startY;
 
         gesture.current = null;
-        setPreview(null);
+        clearPreview();
         if (disabled) return;
 
         if (active.type === 'box') {
@@ -461,40 +495,16 @@ export function ObjectSelectionLayer({
       }}
       onPointerCancel={() => {
         gesture.current = null;
-        setPreview(null);
+        clearPreview();
         moved.current = false;
       }}
     >
       {objects.map(object => {
-          const selected = idsFor(object).some(id => selectedIds.includes(id));
-          const moving = preview?.type === 'move' && idsFor(object).some(id => preview.ids.includes(id));
-          return (
-            <button
-              type="button"
-              key={object.id}
-              disabled={disabled}
-              data-object-id={object.id}
-              data-object-type={object.type}
-              className={`object-hitbox${selected ? ' object-hitbox-selected' : ''}${object.textBlock ? ' object-hitbox-text' : ''}${!disabled && hoveredId === object.id ? ' object-hitbox-hovered' : ''}`}
-              style={{
-                zIndex: stacking.get(object.id),
-                left: object.bounds.x * scaleX,
-                top: object.bounds.y * scaleY,
-                width: Math.max(object.bounds.width * scaleX, 6),
-                height: Math.max(object.bounds.height * scaleY, 6),
-                ...(moving && preview?.type === 'move'
-                  ? { transform: `translate(${preview.dx}px, ${preview.dy}px)` }
-                  : {}),
-              }}
-              onClick={event => {
-                event.stopPropagation();
-                if (!disabled && event.detail === 0) onSelect(object.id, event.ctrlKey || event.metaKey || event.shiftKey);
-              }}
-              aria-pressed={selected}
-              aria-label={`Select ${names[object.type]} object`}
-            />
-          );
-        })}
+        const moving = idsFor(object).some(id => movingSet.has(id));
+        return <ObjectHitbox key={object.id} object={object} selected={idsFor(object).some(id => selectedSet.has(id))}
+          hovered={!disabled && hoveredId === object.id} disabled={disabled} zIndex={stacking.get(object.id)} scaleX={scaleX} scaleY={scaleY}
+          dx={moving && preview?.type === 'move' ? preview.dx : 0} dy={moving && preview?.type === 'move' ? preview.dy : 0} onSelect={onSelect} />;
+      })}
 
       {hoveredBounds && !disabled && <div className="object-text-hover" aria-hidden="true" style={{
         zIndex: objects.length, left: hoveredBounds.x * scaleX, top: hoveredBounds.y * scaleY,

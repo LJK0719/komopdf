@@ -224,7 +224,7 @@ const normalizeFamily = (name: string) => name.replace(/\s*\(technical preview\)
 
 export function sourceFontFamily(name: string): string {
   const clean = name.replace(/^[A-Z]{6}\+/, '').replace(/(?:PS)?MT$/i, '')
-    .replace(/[-,](?:bolditalic|boldoblique|bold|italic|oblique|regular|roman|light|medium|semibold).*$/i, '');
+    .replace(/[-,\s]+(?:bolditalic|boldoblique|bold\s+italic|bold\s+oblique|bold|italic|oblique|regular|roman|light|medium|semibold).*$/i, '');
   const known: Record<string, string> = {
     arial: 'Arial', timesnewroman: 'Times New Roman', timesnewromanps: 'Times New Roman',
     couriernew: 'Courier New', couriernewps: 'Courier New', helvetica: 'Helvetica', times: 'Times',
@@ -235,8 +235,21 @@ export function sourceFontFamily(name: string): string {
   return known[normalizeFamily(clean)] ?? clean;
 }
 
+const sourceFaces = new WeakMap<readonly EditorFont[], Map<string, EditorFont | undefined>>();
+
 /** Match a source PDF face without substituting a different family. */
 export function resolveSourceFont(fonts: readonly EditorFont[], style: TextStyle): EditorFont | undefined {
+  if (!style.fontId) return;
+  let cache = sourceFaces.get(fonts);
+  if (!cache) { cache = new Map(); sourceFaces.set(fonts, cache); }
+  const key = JSON.stringify([style.fontId, style.weight, style.italic]);
+  if (cache.has(key)) return cache.get(key);
+  const result = matchSourceFont(fonts, style);
+  cache.set(key, result);
+  return result;
+}
+
+function matchSourceFont(fonts: readonly EditorFont[], style: TextStyle): EditorFont | undefined {
   const exact = fonts.find(font => font.id === style.fontId);
   if (exact) return exact;
   if (!style.fontId?.startsWith('pdf:')) return;

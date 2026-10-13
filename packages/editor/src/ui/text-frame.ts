@@ -2,6 +2,7 @@ import type { EditableObject, Matrix, PageModel, Rect } from '@pdf-editor/contra
 
 export type TextFrame = { width: number; height: number; transform: Matrix; objectIds: string[]; baseline?: number };
 export type FrameHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+const objectIndexes = new WeakMap<PageModel, Map<string, EditableObject>>();
 
 function point(matrix: Matrix, x: number, y: number): [number, number] {
   return [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
@@ -26,7 +27,9 @@ export function selectionTextFrame(page: PageModel, selected: EditableObject[]):
   const object = selected[0]!, block = object.textBlock;
   if (!block || block.isOcr || block.editability === 'geometry-only') return null;
   const ids = block.sourceObjectIds.length ? block.sourceObjectIds : [object.id];
-  const frames = ids.map(id => page.objects.find(item => item.id === id)?.textBlock?.frame);
+  let objects = objectIndexes.get(page);
+  if (!objects) { objects = new Map(page.objects.map(item => [item.id, item])); objectIndexes.set(page, objects); }
+  const frames = ids.map(id => objects.get(id)?.textBlock?.frame);
   const first = frames[0];
   if (!first || frames.some(frame => !frame)) return null;
   const [a, b, c, d, e, f] = first.transform;

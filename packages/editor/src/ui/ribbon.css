@@ -102,6 +102,10 @@
 .direct-text-editor[data-pristine="true"] .paragraph-input span,
 .direct-text-editor[data-pristine="true"] textarea { color: transparent !important; text-decoration-color: transparent !important; }
 .direct-text-editor[data-pristine="true"] ::selection { color: transparent; background: rgb(53 136 219 / 25%); }
+.paragraph-input[data-source-selection="true"] { caret-color: transparent; }
+.paragraph-input[data-source-selection="true"] ::selection { background: transparent; }
+.inline-source-selection { z-index: 6; }
+.inline-source-caret { position: absolute; background: #111; }
 .direct-text-error { display: block; padding: 6px; color: #a3372d; font: 12px/1.5 sans-serif; background: #fff3ef; }
 .placement-layer { position: absolute; inset: 0; z-index: 5; cursor: crosshair; }
 .placement-layer > span { position: absolute; top: 8px; left: 8px; padding: 7px 10px; color: #fff; background: var(--dark); border-radius: 5px; font-size: 12px; pointer-events: none; }

@@ -146,11 +146,17 @@ bool ApplyTextResize(const Document& document, FPDF_DOCUMENT pdf,
       const auto source_matrix = MatrixFromCfx(source->GetTextMatrix()).Then(to_form);
       auto font = source->GetFont();
       const auto positions = source->GetCharPositions();
-      const bool vertical = source->CalcPositionData(1).y != 0;
+      const auto endpoint = source->CalcPositionData(1);
+      const bool vertical = endpoint.y != 0;
+      std::unique_ptr<CPDF_TextObject> glyph_template;
       for (size_t index = 0; index < source->CharCount(); ++index) {
         const uint32_t code = source->GetCharCode(index);
         ByteString encoded; font->AppendChar(&encoded, code);
-        auto glyph = source->Clone(); glyph->SetText(encoded);
+        // Keep source geometry intact and clone its full glyph data only once.
+        if (!glyph_template) {
+          glyph_template = source->Clone(); glyph_template->SetText(encoded);
+        }
+        auto glyph = glyph_template->Clone(); glyph->SetText(encoded);
         const auto origin = source_matrix.Apply(vertical ? 0 : positions[index], vertical ? positions[index] : 0);
         glyph->SetTextMatrix(CFX_Matrix(static_cast<float>(source_matrix.a), static_cast<float>(source_matrix.b),
             static_cast<float>(source_matrix.c), static_cast<float>(source_matrix.d),
@@ -161,7 +167,7 @@ bool ApplyTextResize(const Document& document, FPDF_DOCUMENT pdf,
         glyph->SetContentMarks(CPDF_ContentMarks());
         auto values = pdfium::MakeRetain<CPDF_Dictionary>();
         values->SetNewFor<CPDF_String>("ActualText", font->UnicodeFromCharCode(code).AsStringView());
-        const float next = index + 1 < positions.size() ? positions[index + 1] : source->CalcPositionData(1).x;
+        const float next = index + 1 < positions.size() ? positions[index + 1] : endpoint.x;
         values->SetNewFor<CPDF_Number>("KomoAdvance", static_cast<float>(source_matrix.a) * (next - positions[index]));
         values->SetNewFor<CPDF_Number>("KomoBaseline", static_cast<float>(origin[1]) -
             (request.height - request.source_baseline.value_or(0)));

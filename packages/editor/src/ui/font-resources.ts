@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { EngineAdapter, HostAdapter, RegisteredFontInfo } from '@pdf-editor/contracts';
 
 export type EditorFont = {
@@ -150,7 +150,8 @@ export function useFontResources(engine?: EngineAdapter, host?: HostAdapter): { 
     return () => { active = false; };
   }, []);
 
-  return { fonts: [...fonts, ...local], error };
+  const combined = useMemo(() => [...fonts, ...local], [fonts, local]);
+  return { fonts: combined, error };
 }
 
 async function fetchFontResources(): Promise<WebFontResource[]> {

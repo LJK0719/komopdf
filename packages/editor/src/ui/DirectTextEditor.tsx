@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type RefObject } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Popover } from '@base-ui/react/popover';
 import { Bold, Italic, Underline } from 'lucide-react';
@@ -8,6 +8,7 @@ import { useFontResources, findSelectionFontInfo, loadFontPreview, prepareEditor
 import { resolveSourceFont } from './font-face-matcher.js';
 import { selectionTextFrame } from './text-frame.js';
 import { selectionScope } from './object-selection.js';
+import { inlineTextClusters } from './inline-text-geometry.js';
 import { resolveSelectionFormatRuns, type SelectionFormatOptions } from './TextEditPanel.js';
 import { useI18n } from './i18n.js';
 import { detectParagraph, selectedTextObject } from './paragraph-detection.js';
@@ -30,19 +31,24 @@ type Props = {
 export function DirectTextEditor(props: Props) {
   const { document, page, engine, selectedIds, inlineId, host, render, handle, onClose, onEdit, onManageFonts, onDraftChange, onBusyChange, onCommitted, disabled } = props;
   const { t } = useI18n();
-  const selected = selectedTextObject(page, selectedIds);
+  const selected = useMemo(() => selectedTextObject(page, selectedIds), [page, selectedIds]);
   const object = selected && inlineId && selectedIds.includes(inlineId) ? page.objects.find(item => item.id === inlineId) : selected;
   const sourceBlock = object?.textBlock;
   const editing = Boolean(sourceBlock && inlineId && selectedIds.includes(inlineId));
-  const paragraph = object ? detectParagraph(page, object.id) ?? detectParagraph(page, object.id, true) : null;
+  const paragraph = useMemo(() => object ? detectParagraph(page, object.id) ?? detectParagraph(page, object.id, true) : null, [page, object]);
   const virtual = paragraph && !sourceBlock?.isParagraph ? paragraph : null;
-  const block: TextBlock | undefined = virtual && sourceBlock ? { ...sourceBlock, isParagraph: true, bounds: virtual.bounds, runs: virtual.runs }
-    : sourceBlock?.flow?.start === 0 && sourceBlock.flow.runs ? { ...sourceBlock, runs: sourceBlock.flow.runs } : sourceBlock;
-  const original = block?.runs.map(run => run.text).join('') ?? '';
-  const frame = selectionTextFrame(page, selectionScope(page, selectedIds).filter(item =>
-    (item.textBlock?.sourceObjectIds ?? [item.id]).some(id => selectedIds.includes(id))));
+  const block: TextBlock | undefined = useMemo(() => virtual && sourceBlock ? { ...sourceBlock, isParagraph: true, bounds: virtual.bounds, runs: virtual.runs }
+    : sourceBlock?.flow?.start === 0 && sourceBlock.flow.runs ? { ...sourceBlock, runs: sourceBlock.flow.runs } : sourceBlock, [virtual, sourceBlock]);
+  const original = useMemo(() => block?.runs.map(run => run.text).join('') ?? '', [block]);
+  const frame = useMemo(() => selectionTextFrame(page, selectionScope(page, selectedIds).filter(item =>
+    (item.textBlock?.sourceObjectIds ?? [item.id]).some(id => selectedIds.includes(id)))), [page, selectedIds]);
   const viewScale = render.width / page.widthPt;
   const sourceScale = virtual && frame ? Math.hypot(frame.transform[0], frame.transform[1]) : 1;
+  const sourceGeometry = useMemo(() => {
+    if (!block || !host) return;
+    const clusters = inlineTextClusters(block, virtual);
+    return clusters.length && clusters.at(-1)!.range[1] === original.length ? { clusters, host, zoom: viewScale } : undefined;
+  }, [block, virtual, host, viewScale, original]);
   const inputStyle = (style: TextStyle, scale = sourceScale): TextStyle => ({ ...style,
     ...(style.fontSize !== undefined ? { fontSize: style.fontSize / scale } : {}),
     ...(style.characterSpacing !== undefined ? { characterSpacing: style.characterSpacing / scale } : {}),
@@ -80,14 +86,16 @@ export function DirectTextEditor(props: Props) {
   const activeRuns = draftRuns ?? block?.runs;
   const activeRun = activeRuns?.find(run => { offset += run.text.length; return offset > selectionRange[0]; }) ?? activeRuns?.at(-1);
   const base = { ...activeRun?.style, ...(virtual ? { alignment: virtual.style.alignment ?? 'left' } : {}), ...draftStyle };
-  const paragraphStyle: TextStyle = { ...block?.runs[0]?.style, ...(virtual ? { alignment: virtual.style.alignment ?? 'left' } : {}), lineHeight: block?.runs[0]?.style.lineHeight ?? virtual?.lineHeight ?? 1.2,
-    firstLineIndent: block?.runs[0]?.style.firstLineIndent ?? virtual?.firstLineIndent ?? 0, ...draftStyle };
+  const paragraphStyle: TextStyle = useMemo(() => ({ ...block?.runs[0]?.style, ...(virtual ? { alignment: virtual.style.alignment ?? 'left' } : {}), lineHeight: block?.runs[0]?.style.lineHeight ?? virtual?.lineHeight ?? 1.2,
+    firstLineIndent: block?.runs[0]?.style.firstLineIndent ?? virtual?.firstLineIndent ?? 0, ...draftStyle }), [block, virtual, draftStyle]);
+  const inputRuns = useMemo(() => block?.runs.map(run => ({ ...run, style: inputStyle(run.style) })) ?? [], [block, sourceScale]);
+  const inputParagraphStyle = useMemo(() => inputStyle(paragraphStyle), [paragraphStyle, sourceScale]);
   const fontInfo = block ? findSelectionFontInfo({ ...block, runs: activeRuns ?? block.runs }, selectionRange, fonts) : null;
   const activeFontInfo = activeRun ? findSelectionFontInfo({ ...block!, runs: [activeRun] }, [0, activeRun.text.length], fonts) : null;
   const currentFamily = fontInfo?.family ?? activeFontInfo?.family ?? (/\p{Script=Han}/u.test(original) ? 'Noto Sans CJK SC' : 'Liberation Sans');
   const currentWeight = fontInfo?.weight ?? base.weight ?? 400;
   const currentItalic = fontInfo?.italic ?? base.italic ?? false;
-  const families = [...new Set(fonts.map(font => font.family))];
+  const families = useMemo(() => [...new Set(fonts.map(font => font.family))], [fonts]);
   const [previewFamily, setPreviewFamily] = useState('');
   const previewFace = resolveSourceFont(fonts, activeRun?.style ?? {});
   useEffect(() => {
@@ -362,14 +370,15 @@ export function DirectTextEditor(props: Props) {
         transformOrigin: '0 0', ...(frame ? { transform: `matrix(${frame.transform.slice(0, 4).join(',')},0,0)` } : {}) }}
       onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
       {block.isParagraph ? <Suspense fallback={null}><ParagraphInput key={key}
-        runs={block.runs.map(run => ({ ...run, style: inputStyle(run.style) }))} fonts={fonts} zoom={viewScale} disabled={disabled}
+        runs={inputRuns} fonts={fonts} zoom={viewScale} disabled={disabled}
+        pristine={!dirty} sourceGeometry={sourceGeometry}
         baseline={frame?.baseline} frameHeight={frame?.height} fixedFrame={block.fixedFrame}
         initialRange={initialRange ?? [original.length, original.length]}
-        handle={richInput} label={t('Page text')} style={inputStyle(paragraphStyle)}
+        handle={richInput} label={t('Page text')} style={inputParagraphStyle}
         onChange={(value, runs, dirty) => { setText(value); setDraftRuns(dirty ? runs.map(run => ({ ...run, style: inputStyle(run.style, 1 / sourceScale) })) : null); }}
         onFormat={format => { void save(format === 'bold' ? { formatWeight: currentWeight >= 600 ? 400 : 700 }
           : format === 'italic' ? { formatItalic: currentItalic ? 'off' : 'on' } : { formatUnderline: base.underline ? 'off' : 'on' }); }}
-        onSelect={value => { range.current = value; setSelectionRange(value); }}
+        onSelect={value => { range.current = value; setSelectionRange(previous => previous[0] === value[0] && previous[1] === value[1] ? previous : value); }}
         onFinish={() => { void save(); }} onCancel={cancel} /></Suspense> : <textarea ref={input} aria-label={t('Page text')} value={text} disabled={disabled}
         rows={Math.max(1, text.split('\n').length)} wrap={block.isParagraph || original.includes('\n') ? 'soft' : 'off'}
         style={{ minHeight: (frame?.height ?? object.bounds.height) * viewScale,

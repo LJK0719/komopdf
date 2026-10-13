@@ -54,6 +54,8 @@ export function DocumentViewport(props: Props) {
       for (const node of container.current.querySelectorAll<HTMLElement>('[data-document-page]')) {
         const rect = node.getBoundingClientRect();
         if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) continue;
+        // A toolbar/layout change must not move a still-visible editing target.
+        if (current.pointer === 'edit' && node.dataset.documentPage === current.document.page.id) return;
         const delta = middle < rect.top ? rect.top - middle : middle > rect.bottom ? middle - rect.bottom : 0;
         // Keep the active page when both facing pages occupy the same row.
         if (delta < distance || (delta === distance && node.dataset.documentPage === current.document.page.id)) {

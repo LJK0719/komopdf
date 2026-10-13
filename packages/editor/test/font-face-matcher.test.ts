@@ -52,10 +52,23 @@ describe('font-face-matcher and font-resources', () => {
     const fonts = [...mockFonts, song];
     expect(resolveSourceFont(fonts, { fontId: 'pdf:AAAAAA+SimSun' })).toBe(song);
     expect(resolveSourceFont(fonts, { fontId: 'pdf:ABCDEF+宋体' })).toBe(song);
+    expect(resolveSourceFont(fonts, { fontId: 'pdf:SimSun Regular' })).toBe(song);
     expect(resolveFormattingFont(fonts, { family: 'SimSun', weight: 700, italic: false, text: '中文' })).toBe(song);
     expect(resolveSourceFont(mockFonts, { fontId: 'pdf:AAAAAA+SimSun' })).toBeUndefined();
     const newSong = { ...song, id: 'system-font-nsong', family: 'NSimSun', aliases: ['新宋体'] };
     expect(resolveSourceFont([song, newSong], { fontId: 'pdf:AAAAAA+NSimSun' })).toBe(newSong);
+  });
+  it('does not rescan an unchanged source face on caret or color changes, but refreshes with a new catalog', () => {
+    let reads = 0;
+    const song: EditorFont = { id: 'song', get family() { reads++; return 'SimSun'; }, style: 'Regular', format: 'ttf', weight: 400, italic: false };
+    const fonts = [song];
+    expect(resolveSourceFont(fonts, { fontId: 'pdf:AAAAAA+SimSun' })).toBe(song);
+    const firstReads = reads;
+    for (let i = 0; i < 100; i++) expect(resolveSourceFont(fonts, { fontId: 'pdf:AAAAAA+SimSun', color: [i / 100, 0, 0] })).toBe(song);
+    expect(reads).toBe(firstReads);
+    const bold = { ...song, id: 'bold', weight: 700 };
+    expect(resolveSourceFont([...fonts, bold], { fontId: 'pdf:AAAAAA+SimSun', weight: 700 })).toBe(bold);
+    expect(reads).toBeGreaterThan(firstReads);
   });
   it('keeps the requested family instead of switching to another family just for an exact medium weight', () => {
     expect(resolveFormattingFont(mockFonts, { family: 'Liberation Sans', weight: 500, italic: false, text: 'Sample' }).id)

@@ -31,12 +31,13 @@ bool MaterializeSourceParagraph(FPDF_PAGE page, const std::vector<ObjectTarget>&
     std::string value;
     if (!GetObjectText(page, target.object, &value, native_page)) return false;
     const Matrix local = MatrixFromCfx(text->GetTextMatrix()).Then(*inverse);
-    auto clone = text->Clone(); clone->SetTextMatrix(CFX_Matrix());
-    const auto box = clone->GetRect();
+    auto glyph_template = text->Clone(); glyph_template->SetTextMatrix(CFX_Matrix());
+    const auto box = glyph_template->GetRect();
     const auto bounds = TransformBounds(box.left, box.bottom, box.right, box.top, local);
     const float top = static_cast<float>(bounds.y + bounds.height);
     const auto baseline = local.Apply(0, 0);
-    const auto advance_end = local.Apply(clone->CalcPositionData(1).x, 0);
+    const float endpoint = text->CalcPositionData(1).x;
+    const auto advance_end = local.Apply(endpoint, 0);
     if (offset && std::abs(top - prior_y) > text->GetFontSize() * 0.5f) {
       request->utf8 += '\n'; ++offset;
       line_baseline = static_cast<float>(baseline[1]);
@@ -68,14 +69,13 @@ bool MaterializeSourceParagraph(FPDF_PAGE page, const std::vector<ObjectTarget>&
     uint32_t cursor = 0;
     const auto found = geometry.find(target.object);
     const auto* gaps = found == geometry.end() ? nullptr : &found->second.inferred_spaces;
-    const auto& positions = clone->GetCharPositions();
-    const float endpoint = clone->CalcPositionData(1).x;
-    for (size_t index = 0; index < clone->CharCount(); ++index) {
+    const auto& positions = text->GetCharPositions();
+    for (size_t index = 0; index < text->CharCount(); ++index) {
       if (gaps && std::find(gaps->begin(), gaps->end(), cursor) != gaps->end()) {
         request->source_glyphs.push_back({{offset, offset + 1}, nullptr, 0, 0});
         request->utf8 += ' '; ++offset;
       }
-      const uint32_t code = clone->GetCharCode(index);
+      const uint32_t code = text->GetCharCode(index);
       const auto unicode = text->GetFont()->UnicodeFromCharCode(code).ToUTF8();
       const std::string mapped(unicode.c_str(), unicode.GetLength());
       LayoutText cluster;
@@ -84,8 +84,10 @@ bool MaterializeSourceParagraph(FPDF_PAGE page, const std::vector<ObjectTarget>&
           !std::equal(cluster.utf16.begin(), cluster.utf16.end(), logical.utf16.begin() + cursor)) {
         SetError("UNSUPPORTED_CAPABILITY", "The source glyphs do not match their editable Unicode text."); return false;
       }
-      auto glyph = clone->Clone();
-      ByteString encoded; text->GetFont()->AppendChar(&encoded, code); glyph->SetText(encoded);
+      ByteString encoded; text->GetFont()->AppendChar(&encoded, code);
+      // Reduce the local clone once; later clones copy only one glyph.
+      if (index == 0) glyph_template->SetText(encoded);
+      auto glyph = glyph_template->Clone(); glyph->SetText(encoded);
       glyph->SetTextMatrix(CFX_Matrix(static_cast<float>(local.a), static_cast<float>(local.b),
           static_cast<float>(local.c), static_cast<float>(local.d), 0, 0));
       glyph->SetContentMarks(CPDF_ContentMarks());
@@ -162,6 +164,8 @@ bool CompleteSourceParagraphFonts(pdf_editor::ParagraphRequest* request,
       request->font_size, request->letter_spacing, request->color, request->underline});
   std::vector<pdf_editor::ParagraphStyleRun> updated;
   std::optional<uint32_t> completion;
+  struct SourceFace { std::string family; bool bold; bool italic; };
+  std::map<CPDF_Font*, SourceFace> source_faces;
   auto normalize = [](std::string value) {
     if (value.size() > 7 && value[6] == '+') value.erase(0, 7);
     std::string result;
@@ -182,10 +186,21 @@ bool CompleteSourceParagraphFonts(pdf_editor::ParagraphRequest* request,
         if (selected == resources.end()) {
           SetError("UNSUPPORTED_CAPABILITY", "The original PDF font cannot encode this character; choose the matching font for the added text."); return false;
         }
-        const auto family = source->GetFont()->GetFamilyName();
+        auto known = source_faces.find(source);
+        if (known == source_faces.end()) {
+          const auto family = source->GetFont()->GetFamilyName();
+          SourceFace source_face{std::string(family.c_str(), family.GetLength()), source->GetFont()->IsBold(), source->GetFont()->IsItalic()};
+          const auto bytes = source->GetFont()->GetFontSpan();
+          std::vector<pdf_editor::FontFaceInfo> embedded;
+          std::string error_code, error_message;
+          // PDF stem estimates/FreeType flags may disagree with a static face's OS/2 style.
+          if (pdf_editor::InspectFontFaces(std::span<const uint8_t>(bytes.data(), bytes.size()), &embedded, &error_code, &error_message) && embedded.size() == 1)
+            source_face = {embedded[0].family, embedded[0].weight >= 600, embedded[0].italic};
+          known = source_faces.emplace(source, std::move(source_face)).first;
+        }
         const auto& face = selected->second->face;
-        if (normalize(std::string(family.c_str(), family.GetLength())) != normalize(face.family) ||
-            source->GetFont()->IsItalic() != face.italic || source->GetFont()->IsBold() != (face.weight >= 600)) {
+        if (normalize(known->second.family) != normalize(face.family) ||
+            known->second.italic != face.italic || known->second.bold != (face.weight >= 600)) {
           SetError("UNSUPPORTED_CAPABILITY", "Source-preserving text edits require the exact matching font family and style."); return false;
         }
         if (!completion) {

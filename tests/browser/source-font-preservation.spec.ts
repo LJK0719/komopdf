@@ -84,6 +84,7 @@ test('SimSun subset uses installed SimSun only for added Chinese glyphs and keep
   const family = await input.locator('span').first().evaluate(node => getComputedStyle(node).fontFamily);
   expect(family).toContain('SimSun');
   expect(family).not.toMatch(/Noto|Liberation/);
+  const sourceIdentity = await input.locator('span').first().evaluate(node => (node as HTMLElement).style.getPropertyValue('--pdf-font-id'));
   await input.press('End');
   await input.pressSequentially('新增中文');
   await input.press('Control+Enter');
@@ -101,7 +102,7 @@ test('SimSun subset uses installed SimSun only for added Chinese glyphs and keep
   await page.locator('[data-object-type="text"]').first().dblclick({ position: { x: 12, y: 6 } });
   await expect(input).toHaveText('原文宋体测试新增中文');
   const identities = await input.locator('span').evaluateAll(nodes => nodes.map(node => (node as HTMLElement).style.getPropertyValue('--pdf-font-id')));
-  expect(identities.some(id => id.includes('pdf:AAAAAA+SimSun'))).toBe(true);
+  expect(identities).toContain(sourceIdentity);
   expect(identities.every(id => !/noto|liberation/i.test(id))).toBe(true);
   await input.press('End');
   await input.pressSequentially('字体');
