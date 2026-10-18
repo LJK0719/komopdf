@@ -1,6 +1,6 @@
 import { useI18n } from './i18n.js';
 import { useEffect, useRef, useState } from 'react';
-import { CommandRegistry, validateTransaction } from '@pdf-editor/commands';
+import { CommandRegistry } from '@pdf-editor/commands';
 import { WEB_LIMITS, type CommandType, type CommitResult, type DocumentInfo, type EditCommand,
   type EngineAdapter, type HostAdapter, type PageModel, type TextLayoutResult } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
@@ -72,16 +72,14 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
       setTextPreview({ key: layoutKey, layout });
       if (layout.overflow) throw new Error('Text does not fit the box. Increase its size or reduce the font size.');
     }
-    await execute([command], new Set(), Boolean(engine.previewTextInsert));
+    await execute([command]);
   }
 
-  async function execute(commands: EditCommand[], resourceIds = new Set<string>(), alreadyPreviewed = false,
+  async function execute(commands: EditCommand[], resourceIds = new Set<string>(),
     loadedPages: Map<string, PageModel> = new Map([[page.id, page]])) {
     const transaction = { id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision, source: 'manual' as const, commands };
     const context = { document, pages: loadedPages, fontIds: new Set(fonts.map(font => font.id)), resourceIds,
       ...(host.capabilities.platform === 'web' ? { pageLimit: WEB_LIMITS.pagesPerDocument } : {}) };
-    validateTransaction(transaction, context);
-    if (!alreadyPreviewed) await engine.previewTransaction(transaction);
     const result = await new CommandRegistry(engine).execute(transaction, context);
     await onCommitted(result);
   }
@@ -179,7 +177,7 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
           alignment: decoration === 'watermark' ? 'center' : 'left' },
         paragraph: true });
     }
-    await execute(commands, new Set(), false, loaded);
+    await execute(commands, new Set(), loaded);
   }
 
   async function extractSelectedPages() {

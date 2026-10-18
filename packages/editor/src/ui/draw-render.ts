@@ -34,6 +34,7 @@ export function mountVisiblePageTiles(
   onError: (error: unknown) => void,
   onViewportLimitChange: (limited: boolean) => void,
 ): () => void {
+  const version = engine.getPageVersion?.(docId, page.id) ?? render.revision;
   const tiles = new Map<string, HTMLCanvasElement>();
   let frame = 0;
   let rendering = false;
@@ -50,7 +51,7 @@ export function mountVisiblePageTiles(
     rendering = true;
     void engine.render({ docId, pageId: page.id, scale, clip }).then(bitmap => {
       if (disposed || tiles.get(key) !== canvas) return;
-      if (bitmap.revision !== render.revision) throw new Error('Page changed while rendering a tile');
+      if (version !== (engine.getPageVersion?.(docId, page.id) ?? bitmap.revision)) throw new Error('Page changed while rendering a tile');
       canvas.style.left = `${Math.floor(clip.x * scale)}px`;
       canvas.style.top = `${Math.floor(clip.y * scale)}px`;
       drawRender(canvas, bitmap);

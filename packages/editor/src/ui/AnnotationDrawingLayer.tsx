@@ -24,6 +24,7 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
   const svg = useRef<SVGSVGElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const gesture = useRef<Gesture | null>(null);
+  const previewFrame = useRef(0);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [note, setNote] = useState<Note | null>(null);
   const [busy, setBusy] = useState(false);
@@ -40,6 +41,7 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
   const visibleNote = note?.scope === scope ? note : null;
 
   function clearDraft(): void {
+    cancelAnimationFrame(previewFrame.current); previewFrame.current = 0;
     const active = gesture.current;
     gesture.current = null;
     if (active && svg.current?.hasPointerCapture(active.pointerId)) svg.current.releasePointerCapture(active.pointerId);
@@ -48,7 +50,7 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; generation.current += 1; };
+    return () => { mounted.current = false; generation.current += 1; cancelAnimationFrame(previewFrame.current); };
   }, []);
   useEffect(() => { clearDraft(); setFeedback(null); }, [scope]);
   useEffect(() => { if ((disabled && !busyRef.current) || !allowed) clearDraft(); }, [disabled, allowed]);
@@ -95,8 +97,12 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
     const distance = Math.hypot((point[0] - last[0]) * rect.width / page.widthPt, (point[1] - last[1]) * rect.height / page.heightPt);
     if (distance < 0.5) return;
     active.distance += distance;
-    active.points = options.tool === 'ink' ? [...active.points, point] : [active.points[0]!, point];
-    setDraft({ scope, points: active.points });
+    if (options.tool === 'ink') active.points.push(point);
+    else active.points = [active.points[0]!, point];
+    if (!previewFrame.current) previewFrame.current = requestAnimationFrame(() => {
+      previewFrame.current = 0;
+      if (gesture.current === active) setDraft({ scope: active.scope, points: [...active.points] });
+    });
   }
 
   function cancelPointer(event: ReactPointerEvent<SVGSVGElement>): void {
@@ -128,6 +134,8 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
         event.preventDefault(); event.stopPropagation();
         if (locked || active.scope !== scope) { clearDraft(); return; }
         appendPoint(event);
+        cancelAnimationFrame(previewFrame.current); previewFrame.current = 0;
+        setDraft({ scope, points: [...active.points] });
         gesture.current = null;
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         const dx = Math.abs(event.clientX - active.startClient[0]), dy = Math.abs(event.clientY - active.startClient[1]);

@@ -100,6 +100,31 @@ test('appending explicit lines commits complete source text before resizing', as
   await page.screenshot({ path: 'tmp/browser/text-frame-appended.png' });
 });
 
+test('undoing a reopened flow resize refreshes retained continuation thumbnails', async ({ page }) => {
+  await open(page); await edit(page);
+  await page.locator('.object-hitbox[data-object-type="text"]').first().dblclick();
+  const input = page.getByRole('textbox', { name: 'Page text', exact: true });
+  await input.fill('Original text '.repeat(45).trim());
+  await input.press('Control+Enter');
+  await expect(input).toHaveCount(0);
+  await expect.poll(() => page.locator('.page-chip').count()).toBeGreaterThan(1);
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const bytes = await readFile((await (await download).path())!);
+  const chooser = page.waitForEvent('filechooser'); await page.keyboard.press('Control+o');
+  await (await chooser).setFiles({ name: 'saved-flow.pdf', mimeType: 'application/pdf', buffer: bytes });
+  await edit(page);
+  await page.getByRole('button', { name: 'Open page 1', exact: true }).click();
+  const thumbnail = page.locator('.page-chip').nth(1).locator('canvas');
+  await expect.poll(() => thumbnail.evaluate(canvas => (canvas as HTMLCanvasElement).width)).toBeGreaterThan(0);
+  const original = await thumbnail.evaluate(canvas => (canvas as HTMLCanvasElement).toDataURL());
+  await page.locator('.object-hitbox[data-object-type="text"]').first().click();
+  await resize(page, 's', 0, 10);
+  await expect.poll(() => thumbnail.evaluate(canvas => (canvas as HTMLCanvasElement).toDataURL())).not.toBe(original);
+  await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
+  await expect.poll(() => thumbnail.evaluate(canvas => (canvas as HTMLCanvasElement).toDataURL())).toBe(original);
+});
+
 test('fixed frame retains new lines through resizing, undo and PDF reopen', async ({ page }) => {
   await open(page); await edit(page);
   await page.locator('.object-hitbox[data-object-type="text"]').first().click();

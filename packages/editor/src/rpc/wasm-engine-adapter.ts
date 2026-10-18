@@ -23,9 +23,11 @@ import {
   type RecoverySnapshot, type RestoreRecoveryRequest,
 } from '@pdf-editor/contracts';
 import { WorkerRpcClient } from './client.js';
+import { PageCache } from './page-cache.js';
 
 export class WasmEngineAdapter implements EngineAdapter {
-  private readonly pageModels = new Map<string, PageModel>();
+  private readonly pages = new PageCache();
+  getPageVersion(docId: string, pageId: string): number { return this.pages.version(docId, pageId); }
   private readonly pageOrders = new Map<string, string[]>();
   private readonly sourceSizes = new Map<string, number>();
   private retainedSourceBytes = 0;
@@ -53,6 +55,7 @@ export class WasmEngineAdapter implements EngineAdapter {
         await this.rpc.call<void>('close', [info.id]).catch(() => undefined);
         throw new EngineError('RESOURCE_LIMIT', `Web version supports up to ${WEB_LIMITS.pagesPerDocument} pages per document and ${WEB_LIMITS.totalPages} pages per session.`);
       }
+      this.pages.close(info.id);
       this.pageOrders.set(info.id, info.pageOrder);
       this.sourceSizes.set(info.id, size); retained = true;
       return info;
@@ -62,10 +65,8 @@ export class WasmEngineAdapter implements EngineAdapter {
     }
   }
 
-  async describePage(docId: string, pageId: string): Promise<PageModel> {
-    const page = await this.rpc.call<PageModel>('describePage', [docId, pageId]);
-    this.pageModels.set(pageKey(docId, pageId), page);
-    return page;
+  describePage(docId: string, pageId: string): Promise<PageModel> {
+    return this.pages.describe(docId, pageId, () => this.rpc.call<PageModel>('describePage', [docId, pageId]));
   }
 
   describeForms(docId: string): Promise<FormFieldInfo[]> {
@@ -85,8 +86,7 @@ export class WasmEngineAdapter implements EngineAdapter {
   }
 
   async render(request: RenderRequest): Promise<RenderResult> {
-    const page = this.pageModels.get(pageKey(request.docId, request.pageId))
-      ?? await this.describePage(request.docId, request.pageId);
+    const page = await this.describePage(request.docId, request.pageId);
     assertRenderBudget(request, page);
     const result = await this.rpc.call<RenderResult>('render', [request]);
     if (result.width * result.height > WEB_LIMITS.renderPixels) {
@@ -164,9 +164,7 @@ export class WasmEngineAdapter implements EngineAdapter {
 
   private invalidatePages(result: CommitResult): void {
     this.pageOrders.set(result.docId, result.pageOrder);
-    for (const key of this.pageModels.keys()) {
-      if (key.startsWith(`${result.docId}\0`)) this.pageModels.delete(key);
-    }
+    this.pages.commit(result);
   }
 
   save(request: SaveRequest): Promise<SaveResult> {
@@ -210,6 +208,7 @@ export class WasmEngineAdapter implements EngineAdapter {
         await this.rpc.call<void>('close', [info.id]).catch(() => undefined);
         throw new EngineError('RESOURCE_LIMIT', 'Recovered document source budget exceeded; close another document or use the desktop app');
       }
+      this.pages.close(info.id);
       this.pageOrders.set(info.id, info.pageOrder);
       this.sourceSizes.set(info.id, sourceBytes);
       this.retainedSourceBytes += sourceBytes;
@@ -220,9 +219,7 @@ export class WasmEngineAdapter implements EngineAdapter {
   }
 
   async close(docId: string): Promise<void> {
-    for (const key of this.pageModels.keys()) {
-      if (key.startsWith(`${docId} `)) this.pageModels.delete(key);
-    }
+    this.pages.close(docId);
     await this.rpc.call<void>('close', [docId]);
     this.pageOrders.delete(docId);
     this.retainedSourceBytes -= this.sourceSizes.get(docId) ?? 0;
@@ -230,16 +227,12 @@ export class WasmEngineAdapter implements EngineAdapter {
   }
 
   dispose(): void {
-    this.pageModels.clear();
+    this.pages.clear();
     this.pageOrders.clear();
     this.sourceSizes.clear();
     this.retainedSourceBytes = 0;
     this.rpc.dispose();
   }
-}
-
-function pageKey(docId: string, pageId: string): string {
-  return `${docId} ${pageId}`;
 }
 
 function assertRenderBudget(request: RenderRequest, page: PageModel): void {

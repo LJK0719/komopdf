@@ -33,6 +33,7 @@ test('large PDF renders visible tiles while keeping page selection aligned throu
   await expect(page.locator('.page-wrap')).toHaveJSProperty('clientWidth', 2500);
   await expect(page.locator('.page-wrap')).toHaveJSProperty('clientHeight', 3750);
   expect(await tiles.count()).toBeLessThanOrEqual(56);
+  await page.locator('.ribbon-tabs').getByRole('button', { name: 'Edit', exact: true }).click();
   const hitbox = page.locator('.object-hitbox[data-object-type="text"]');
   await hitbox.scrollIntoViewIfNeeded();
   await hitbox.click();

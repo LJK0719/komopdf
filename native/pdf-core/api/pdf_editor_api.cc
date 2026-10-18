@@ -6706,9 +6706,11 @@ void AppendPageOrder(std::string* output, const CandidateMetadata& metadata) {
 
 void AppendChangedPages(std::string* output,
                         const EditTransaction& transaction,
-                        const CandidateMetadata& metadata) {
+                        const CandidateMetadata& metadata,
+                        const std::set<std::string>* reverted_flow_pages = nullptr) {
   std::set<std::string> changed = ChangedPageSet(transaction);
   changed.insert(metadata.flow_changed_pages.begin(), metadata.flow_changed_pages.end());
+  if (reverted_flow_pages) changed.insert(reverted_flow_pages->begin(), reverted_flow_pages->end());
   const bool forms_changed = std::any_of(transaction.commands.begin(), transaction.commands.end(),
       [](const EditCommand& command) {
         return command.type == EditType::kFormFill || command.type == EditType::kFormUpdate;
@@ -6750,14 +6752,15 @@ std::string SerializeCommitResult(const Document& document,
                                   size_t undoable_count,
                                   bool can_redo,
                                   const EditTransaction& transaction,
-                                  const CandidateMetadata& metadata) {
+                                  const CandidateMetadata& metadata,
+                                  const std::set<std::string>* reverted_flow_pages = nullptr) {
   std::string output;
   output.append("{\"docId\":");
   AppendJsonString(&output, document.document_id);
   output.append(",\"revision\":");
   AppendJsonUnsigned(&output, revision);
   output.append(",\"changedPageIds\":");
-  AppendChangedPages(&output, transaction, metadata);
+  AppendChangedPages(&output, transaction, metadata, reverted_flow_pages);
   output.append(",\"pageOrder\":");
   AppendPageOrder(&output, metadata);
   output.append(",\"canUndo\":");
@@ -8149,9 +8152,11 @@ const char* pde_undo(uint32_t document) {
     }
     ScopedDocument candidate(rebuilt);
     const size_t undoable_count = value->undoable_count - 1;
+    // Replaying the remaining history does not report the reverted command's
+    // continuation pages, including retained pages whose fragments return.
     std::string result =
         SerializeCommitResult(*value, value->revision + 1, undoable_count, true,
-                              transaction, metadata);
+                              transaction, metadata, &value->metadata.flow_changed_pages);
 
     InstallCandidate(value, candidate.release(), std::move(metadata));
     value->transactions.swap(transactions);

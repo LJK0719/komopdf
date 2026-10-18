@@ -3224,6 +3224,21 @@ void TestParagraphFlow(const std::string& font_id) {
     return bytes;
   };
   const auto snapshot = check(doc, text, true);
+  const auto fixed_reopen = pde_open_memory(snapshot.data(), snapshot.size(), "flow-cache-undo", "flow-cache-source", nullptr);
+  const auto fixed_page = PageIdFromDescription(pde_describe_page(fixed_reopen, 0));
+  const auto continuation_page = PageIdFromDescription(pde_describe_page(fixed_reopen, 1));
+  const auto continuation_pixels = RenderPixels(fixed_reopen, 1, 200, 160);
+  const auto fixed_block = TextBlockIds(pde_describe_page(fixed_reopen, 0)).front();
+  const char* fixed_ids[] = {fixed_block.c_str()};
+  PdeEditCommand fix{}; fix.type = 29; fix.page_id = fixed_page.c_str(); fix.ids = fixed_ids; fix.id_count = 1;
+  fix.values[2] = 170; fix.values[3] = 100;
+  Require(pde_apply_commands(fixed_reopen, 0, "fix-reopened-flow", &fix, 1) != nullptr, "resize reopened flow into a fixed frame");
+  Require(TextBlockIds(pde_describe_page(fixed_reopen, 1)).empty(), "fixed frame leaves an empty retained continuation page");
+  const auto undo_fixed = RequireResult(pde_undo(fixed_reopen), "undo reopened fixed frame");
+  Require(undo_fixed.substr(0, undo_fixed.find("\"pageOrder\"")).find(continuation_page) != std::string::npos,
+      "undo invalidates restored continuation pages for model and bitmap caches");
+  Require(RenderPixels(fixed_reopen, 1, 200, 160) == continuation_pixels, "undo restores continuation pixels");
+  pde_close(fixed_reopen);
   const auto flow_block = TextBlockIds(pde_describe_page(doc, 0)).front();
   const char* resizing[] = {flow_block.c_str()};
   PdeEditCommand resize{}; resize.type = 29; resize.page_id = page.c_str(); resize.ids = resizing; resize.id_count = 1;

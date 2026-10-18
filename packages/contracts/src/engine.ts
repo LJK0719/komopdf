@@ -102,6 +102,8 @@ export type RestoreRecoveryRequest = {
   password?: string | undefined;
 };
 export interface EngineAdapter {
+  /** Opaque page-content token for display caches, not a transaction revision. */
+  getPageVersion?(docId: string, pageId: string): number;
   previewTextInsert?(request: TextInsertLayoutRequest): Promise<TextLayoutResult>;
   inspectFont?(source: FontSource): Promise<FontFaceInfo[]>;
   registerFont?(request: RegisterFontRequest): Promise<RegisteredFontInfo>;

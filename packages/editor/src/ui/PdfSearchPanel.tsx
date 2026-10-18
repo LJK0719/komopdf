@@ -1,5 +1,5 @@
 import { useI18n } from './i18n.js';
-import { useEffect, useId, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
 import type { CommitResult, DocumentInfo, EngineAdapter } from '@pdf-editor/contracts';
 import { CommandRegistry } from '@pdf-editor/commands';
 import { findSearchRanges, nextSearchIndex, type SearchOptions } from './search-matching.js';
@@ -15,6 +15,16 @@ type SearchState = {
 type Props = { document: DocumentInfo | null; engine: EngineAdapter; disabled: boolean;
   onLocate(pageId: string, blockId: string, range?: { start: number; end: number }): void;
   onCommitted?(result: CommitResult): Promise<void>; onBusyChange?(busy: boolean): void };
+
+const SearchResult = memo(function SearchResult({ match, selected, disabled, selectedButton, onLocate }: {
+  match: Match; selected: boolean; disabled: boolean; selectedButton: RefObject<HTMLButtonElement | null>; onLocate(match: Match): void;
+}) {
+  const { t } = useI18n();
+  const start = Math.min(35, match.range.start), end = start + match.range.end - match.range.start;
+  return <button type="button" ref={selected ? selectedButton : undefined} aria-pressed={selected} disabled={disabled}
+    style={{ textAlign: 'start', overflowWrap: 'anywhere', ...(selected ? { background: '#edf7f2', borderColor: 'var(--accent)', fontWeight: 600 } : {}) }}
+    onClick={() => onLocate(match)}>{t('Page {page}', { page: match.pageNumber })}: {match.excerpt.slice(0, start)}<mark>{match.excerpt.slice(start, end)}</mark>{match.excerpt.slice(end)}</button>;
+});
 
 /** Search one page at a time; keep only hit locations and short excerpts, never extracted page text. */
 export async function searchPdfDocument(
@@ -59,13 +69,18 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
   const statusId = useId();
   const wordHelpId = useId();
   const operation = useRef<AbortController | null>(null);
+  const progressFrame = useRef(0);
+  const pendingProgress = useRef<SearchState | null>(null);
+  const cancelProgress = () => {
+    cancelAnimationFrame(progressFrame.current); progressFrame.current = 0; pendingProgress.current = null;
+  };
   const current = useRef({ docId: document?.id, revision: document?.revision, engine });
   current.current = { docId: document?.id, revision: document?.revision, engine };
   useEffect(() => {
     operation.current?.abort();
     operation.current = null;
-    setResult(null); setSelected(null); setError('');
-    return () => operation.current?.abort();
+    cancelProgress(); setResult(null); setSelected(null); setError('');
+    return () => { operation.current?.abort(); cancelProgress(); };
   }, [document?.id, document?.revision, engine]);
   useEffect(() => {
     selectedButton.current?.scrollIntoView({ block: 'nearest' });
@@ -78,14 +93,14 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
   const canNavigate = !disabled && !replacing && !searching && !!visible?.matches.length;
 
   function invalidateSearch() {
-    operation.current?.abort(); operation.current = null;
+    operation.current?.abort(); operation.current = null; cancelProgress();
     setResult(null); setSelected(null); setError('');
   }
 
-  function locate(match: Match) {
+  const locate = useCallback((match: Match) => {
     setSelected(match);
     onLocate(match.pageId, match.blockId, match.range);
-  }
+  }, [onLocate]);
 
   function navigate(direction: 1 | -1) {
     if (!canNavigate || !visible) return;
@@ -95,7 +110,7 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
 
   async function search(direction: 1 | -1 = 1) {
     if (!document || !query.trim() || disabled || replacing) return;
-    operation.current?.abort(); setError(''); setSelected(null);
+    operation.current?.abort(); cancelProgress(); setError(''); setSelected(null);
     const controller = new AbortController();
     operation.current = controller;
     const snapshot: SearchSnapshot = { id: document.id, revision: document.revision, pageOrder: [...document.pageOrder] };
@@ -106,10 +121,16 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
       matches: [], status: 'searching', scannedPages: 0 });
     try {
       const matches = await searchPdfDocument(engine, snapshot, query.trim(), controller.signal, (found, scannedPages) => {
-        if (belongsToCurrentDocument()) setResult({ docId: snapshot.id, revision: snapshot.revision, engine,
-          matches: found, status: 'searching', scannedPages });
+        if (!belongsToCurrentDocument()) return;
+        pendingProgress.current = { docId: snapshot.id, revision: snapshot.revision, engine,
+          matches: found, status: 'searching', scannedPages };
+        if (!progressFrame.current) progressFrame.current = requestAnimationFrame(() => {
+          progressFrame.current = 0;
+          if (belongsToCurrentDocument() && pendingProgress.current) setResult(pendingProgress.current);
+        });
       }, { matchCase, wholeWord });
       if (belongsToCurrentDocument()) {
+        cancelProgress();
         setResult({ docId: snapshot.id, revision: snapshot.revision, engine,
           matches, status: 'complete', scannedPages: snapshot.pageOrder.length });
         const first = matches[nextSearchIndex(-1, matches.length, direction)];
@@ -118,7 +139,8 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
     } catch (error) {
       if (belongsToCurrentDocument()) {
         setError(error instanceof Error ? error.message : t('Search failed'));
-        setResult(previous => previous && ({ ...previous, status: 'failed' }));
+        const progress = pendingProgress.current; cancelProgress();
+        setResult(previous => (progress ?? previous) && ({ ...(progress ?? previous)!, status: 'failed' }));
       }
     } finally {
       if (operation.current === controller) operation.current = null;
@@ -183,7 +205,8 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
           <button disabled={!document || disabled || replacing || searching || !query.trim()} type="submit">{t('Find')}</button>
           {searching && <button type="button" onClick={() => {
             operation.current?.abort(); operation.current = null;
-            setResult(previous => previous && ({ ...previous, status: 'stopped' }));
+            const progress = pendingProgress.current; cancelProgress();
+            setResult(previous => (progress ?? previous) && ({ ...(progress ?? previous)!, status: 'stopped' }));
           }}>{t('Stop search')}</button>}
         </div>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 10 }}>
@@ -212,14 +235,8 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
       </>}
       {error && <p role="alert">{t(error)}</p>}
       {!!count && <div style={{ display: 'grid', gap: 6, maxHeight: 280, overflowY: 'auto' }} aria-label={t('Search results')}>
-        {visible?.matches.map(match => {
-          const excerptStart = Math.min(35, match.range.start);
-          const excerptEnd = excerptStart + match.range.end - match.range.start;
-          return <button type="button" key={`${match.pageId}:${match.blockId}:${match.range.start}:${match.range.end}`}
-            ref={selected === match ? selectedButton : undefined} aria-pressed={selected === match} disabled={!canNavigate}
-            style={{ textAlign: 'start', overflowWrap: 'anywhere', ...(selected === match ? { background: '#edf7f2', borderColor: 'var(--accent)', fontWeight: 600 } : {}) }}
-            onClick={() => locate(match)}>{t('Page {page}', { page: match.pageNumber })}: {match.excerpt.slice(0, excerptStart)}<mark>{match.excerpt.slice(excerptStart, excerptEnd)}</mark>{match.excerpt.slice(excerptEnd)}</button>;
-        })}
+        {visible?.matches.map(match => <SearchResult key={`${match.pageId}:${match.blockId}:${match.range.start}:${match.range.end}`}
+          match={match} selected={selected === match} disabled={!canNavigate} selectedButton={selectedButton} onLocate={locate} />)}
       </div>}
     </details>
   </section>;

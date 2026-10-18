@@ -7,6 +7,7 @@ type Props = { engine: EngineAdapter; docId: string; pageId: string; revision: n
 
 export function PageThumbnail({ engine, docId, pageId, revision, scale = 0.16 }: Props) {
   useI18n();
+  const version = engine.getPageVersion?.(docId, pageId) ?? revision;
   const canvas = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
 
@@ -31,12 +32,12 @@ export function PageThumbnail({ engine, docId, pageId, revision, scale = 0.16 }:
     }
     let disposed = false;
     void engine.render({ docId, pageId, scale }).then(render => {
-      if (!disposed && render.revision === revision) drawRender(canvas.current, render);
+      if (!disposed && version === (engine.getPageVersion?.(docId, pageId) ?? render.revision)) drawRender(canvas.current, render);
     }).catch(() => {
       // A thumbnail is optional; the full-size page reports its own errors.
     });
     return () => { disposed = true; };
-  }, [engine, docId, pageId, revision, visible, scale]);
+  }, [engine, docId, pageId, version, visible, scale]);
 
   return <canvas ref={canvas} className="page-thumbnail" aria-hidden="true" />;
 }

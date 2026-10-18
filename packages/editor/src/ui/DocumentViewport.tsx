@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { EngineAdapter, PageModel } from '@pdf-editor/contracts';
 import type { LoadedDocument } from './EditorShell.js';
 import { drawRender, mountVisiblePageTiles, renderPage } from './draw-render.js';
@@ -29,7 +29,14 @@ export function DocumentViewport(props: Props) {
   const { document, root, continuous, view, locked, onActive } = props;
   const container = useRef<HTMLDivElement>(null);
   const loaded = useRef(new Map<string, LoadedDocument>());
-  useLayoutEffect(() => { loaded.current.clear(); }, [document.info.id, document.info.revision, props.zoom]);
+  useLayoutEffect(() => { loaded.current.clear(); }, [document.info.id, props.zoom]);
+  useLayoutEffect(() => {
+    const retained = new Set(document.info.pageOrder);
+    for (const [id, page] of loaded.current) {
+      const version = props.engine.getPageVersion?.(document.info.id, id) ?? document.info.revision;
+      if (!retained.has(id) || (page.pageVersion ?? page.render.revision) !== version) loaded.current.delete(id);
+    }
+  }, [document.info, props.engine]);
   useLayoutEffect(() => {
     const stage = root.current;
     const active = [...(container.current?.querySelectorAll<HTMLElement>('[data-document-page]') ?? [])]
@@ -63,7 +70,10 @@ export function DocumentViewport(props: Props) {
         }
       }
       const page = best && loaded.current.get(best);
-      if (page && page.info.revision === current.document.info.revision && page.page.id !== current.document.page.id) current.onActive(page);
+      if (page && page.page.id !== current.document.page.id
+          && (page.pageVersion ?? page.render.revision) === (current.engine.getPageVersion?.(current.document.info.id, page.page.id) ?? current.document.info.revision)) {
+        current.onActive({ ...page, info: current.document.info, name: current.document.name });
+      }
     });
   };
   useEffect(() => {
@@ -94,7 +104,7 @@ export function DocumentViewport(props: Props) {
     return () => { cancelled = true; };
   }, [props.engine, props.onViewSize, document.info.id, document.info.revision, document.page.id, document.page.widthPt, document.page.heightPt, view, start]);
   return <div ref={container} className={`document-pages document-pages-${view}`}>
-    {ids.map((id, position) => <PageSurface key={id} {...props} pageId={id}
+    {ids.map((id, position) => <PageSurface key={`${document.info.id}:${id}`} {...props} pageId={id}
       pageNumber={continuous ? position + 1 : start + position + 1}
       onReady={page => { loaded.current.set(id, page); trackPage(); }}
       onRelease={() => loaded.current.delete(id)} />)}
@@ -117,8 +127,11 @@ function PageSurface({ engine, document, zoom, root, pageId, pageNumber, childre
   const [error, setError] = useState('');
   const callbacks = useRef({ onReady, onRelease }); callbacks.current = { onReady, onRelease };
   useEffect(() => () => callbacks.current.onRelease(), []);
-  const validActive = active && document.render.revision === document.info.revision;
-  const shown = validActive ? document : result?.info.revision === document.info.revision ? result : null;
+  const version = engine.getPageVersion?.(document.info.id, pageId) ?? document.info.revision;
+  const validActive = active && (document.pageVersion ?? document.render.revision) === version;
+  const content = validActive ? document : result && (result.pageVersion ?? result.render.revision) === version ? result : null;
+  const shown = useMemo(() => content ? { ...content, info: document.info, name: document.name } : null,
+    [content, document.info, document.name]);
   useEffect(() => {
     if (!host) return;
     const observer = new IntersectionObserver(entries => setVisible(entries[0]?.isIntersecting ?? false), { root: root.current, rootMargin: '350px 0px' });
@@ -126,7 +139,14 @@ function PageSurface({ engine, document, zoom, root, pageId, pageNumber, childre
   }, [host, root]);
   useEffect(() => {
     if (validActive) { setPage(document.page); callbacks.current.onReady(document); return; }
+    // EditorShell owns the active page refresh; do not race it after a commit.
+    if (active) return;
     if (!visible) { setResult(null); callbacks.current.onRelease(); return; }
+    if (result && (result.pageVersion ?? result.render.revision) === version
+        && result.render.width === Math.ceil(result.page.widthPt * zoom)
+        && result.render.height === Math.ceil(result.page.heightPt * zoom)) {
+      callbacks.current.onReady(result); return;
+    }
     let cancelled = false;
     setError('');
     void (async () => {
@@ -134,12 +154,12 @@ function PageSurface({ engine, document, zoom, root, pageId, pageNumber, childre
       if (cancelled) return;
       setPage(model);
       const render = await renderPage(engine, document.info.id, model, zoom, document.info.revision);
-      if (cancelled) return;
-      const next = { info: document.info, name: document.name, page: model, render };
+      if (cancelled || version !== (engine.getPageVersion?.(document.info.id, pageId) ?? render.revision)) return;
+      const next = { info: document.info, name: document.name, page: model, render, pageVersion: version };
       setResult(next); callbacks.current.onReady(next);
     })().catch(() => { if (!cancelled) setError(t('Unable to display this page.')); });
     return () => { cancelled = true; };
-  }, [engine, document.info.id, document.info.revision, pageId, zoom, visible, validActive, validActive ? document.render : null]);
+  }, [engine, document.info.id, version, pageId, zoom, visible, active, validActive, validActive ? document.render : null]);
   useEffect(() => {
     if (!shown || !visible) return;
     if (shown.render.pixels.byteLength) { drawRender(canvas.current, shown.render); return; }

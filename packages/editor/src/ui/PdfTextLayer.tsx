@@ -46,6 +46,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
   const [targets, setTargets] = useState<TextSelectionTarget[]>([]);
   const [localSelection, setLocalSelection] = useState(true);
   const contextText = useRef('');
+  const textSpans = useRef(new Map<string, HTMLElement>());
+  const displayedSelection = useRef<unknown[]>([]);
   const [caret, setCaret] = useState<Rect | null>(null);
   const [point, setPoint] = useState({ x: 36, y: 36 });
   const contextTargets = useRef<TextSelectionTarget[]>([]);
@@ -80,8 +82,9 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     const selection = window.getSelection();
     if (!layer.current || !selection?.rangeCount) return [];
     const range = selection.getRangeAt(0);
+    if (!range.intersectsNode(layer.current)) return [];
     const result: TextSelectionTarget[] = [];
-    for (const span of layer.current.querySelectorAll<HTMLElement>('[data-text-object]')) {
+    for (const span of textSpans.current.values()) {
       if (!range.intersectsNode(span)) continue;
       const object = byId.get(span.dataset.textObject ?? '');
       if (!object?.textBlock) continue;
@@ -108,9 +111,14 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     return result;
   };
   const showSelection = () => {
-    const next = readSelection(); setTargets(next);
     const selection = window.getSelection();
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const stamp = [range?.startContainer, range?.startOffset, range?.endContainer, range?.endOffset,
+      selection?.focusNode, selection?.focusOffset, affinity.current];
+    if (stamp.every((value, index) => value === displayedSelection.current[index])) return;
+    displayedSelection.current = stamp;
+    const next = readSelection();
+    setTargets(previous => previous.length === 0 && next.length === 0 ? previous : next);
     setLocalSelection(Boolean(range && layer.current?.contains(range.startContainer) && layer.current.contains(range.endContainer)));
     if (selection?.isCollapsed && next.length && layer.current && layer.current.contains(selection.focusNode)) {
       const target = next[0]!, block = byId.get(target.objectId)?.textBlock;
@@ -135,6 +143,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
   useLayoutEffect(() => {
     const root = layer.current;
     if (!root) return;
+    textSpans.current = new Map([...root.querySelectorAll<HTMLElement>('[data-text-object]')].map(span => [span.dataset.textObject!, span]));
+    displayedSelection.current = [];
     setCaret(null); setTargets([]); anchor.current = null; affinity.current = null;
     pageHitTests.set(root, (clientX, clientY) => {
       const rect = root.getBoundingClientRect(), x = (clientX - rect.left) / zoom, y = (clientY - rect.top) / zoom;
@@ -147,16 +157,44 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         const score = dx * dx + dy * dy;
         if (score < distance) { best = { objectId: object.id, offset: hit.offset, bounds: hit.bounds }; distance = score; }
       }
-      const span = best && [...root.querySelectorAll<HTMLElement>('[data-text-object]')].find(node => node.dataset.textObject === best.objectId);
+      const span = best && textSpans.current.get(best.objectId);
       affinity.current = best;
       return best && span ? domTextPoint(span, best.offset) : null;
     });
     return () => { pageHitTests.delete(root); };
-  }, [shown.page, shown.info.revision, zoom]);
+  }, [shown.page, zoom]);
   const copy = async () => {
     try { if (shown.info.permissions.copy) await navigator.clipboard.writeText(contextText.current || text); }
     catch { onError(t('Clipboard access was denied. Use Ctrl/Cmd+C to copy selected text.')); }
   };
+
+  const textNodes = useMemo(() => objects.map((item, objectIndex) => {
+    const block = item.textBlock!, clusters = textClusters(block), value = block.runs.map(run => run.text).join('');
+    const previous = objects[objectIndex - 1];
+    const preceding = previous ? textClusters(previous.textBlock!).at(-1)?.bounds ?? previous.bounds : item.bounds;
+    const first = clusters[0]?.bounds ?? item.bounds;
+    const prefix = prefixes.get(item.id) ?? '';
+    const sameLine = Math.abs(preceding.y - first.y) < Math.max(preceding.height, first.height) * 0.3;
+    let offset = 0;
+    return <Fragment key={item.id}>
+      {prefix && <span className="pdf-text-separator" style={{
+        left: Math.min(shown.page.widthPt - 1, preceding.x + preceding.width) * zoom, top: preceding.y * zoom,
+        width: Math.max(1, sameLine ? first.x - preceding.x - preceding.width : (block.runs[0]?.style.fontSize ?? 12) / 3) * zoom,
+        height: Math.max(2, preceding.height) * zoom, fontSize: prefix.includes('\n') ? 1 : (block.runs[0]?.style.fontSize ?? 12) * zoom,
+      }}>{prefix}</span>}
+      {!clusters.length ? <span data-text-object={item.id} className="pdf-text-fallback" style={{
+        left: item.bounds.x * zoom, top: item.bounds.y * zoom, width: item.bounds.width * zoom,
+        fontSize: (block.runs[0]?.style.fontSize ?? 12) * zoom, lineHeight: block.runs[0]?.style.lineHeight ?? 1.2,
+        letterSpacing: (block.runs[0]?.style.characterSpacing ?? 0) * zoom }}>{value}</span>
+      : <span data-text-object={item.id} className="pdf-text-object">{clusters.map((cluster, index) => {
+        const gap = value.slice(offset, cluster.range[0]); offset = cluster.range[1];
+        return <span key={index} className="pdf-character" style={{ left: cluster.bounds.x * zoom, top: cluster.bounds.y * zoom,
+          width: cluster.bounds.width * zoom, height: cluster.bounds.height * zoom, fontSize: cluster.bounds.height * zoom }}>
+          {gap}{cluster.text}{index === clusters.length - 1 ? value.slice(offset) : ''}
+        </span>;
+      })}</span>}
+    </Fragment>;
+  }), [objects, prefixes, shown.page.widthPt, zoom]);
 
   return <ContextMenu.Root onOpenChange={open => { menuOpen.current = open; }}>
     <ContextMenu.Trigger render={<div />} ref={layer} className="pdf-text-layer" aria-label={t('Select text')} tabIndex={0}
@@ -231,33 +269,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') affinity.current = null;
         if (event.key === 'Enter' && editTarget && canEdit && !disabled) { event.preventDefault(); onEdit(shown, editTarget.objectId, editTarget.range, true); }
       }}>
-      {objects.map((item, objectIndex) => {
-        const block = item.textBlock!, clusters = textClusters(block), value = block.runs.map(run => run.text).join('');
-        const previous = objects[objectIndex - 1];
-        const preceding = previous ? textClusters(previous.textBlock!).at(-1)?.bounds ?? previous.bounds : item.bounds;
-        const first = clusters[0]?.bounds ?? item.bounds;
-        const prefix = prefixes.get(item.id) ?? '';
-        const sameLine = Math.abs(preceding.y - first.y) < Math.max(preceding.height, first.height) * 0.3;
-        let offset = 0;
-        return <Fragment key={item.id}>
-          {prefix && <span className="pdf-text-separator" style={{
-            left: Math.min(shown.page.widthPt - 1, preceding.x + preceding.width) * zoom, top: preceding.y * zoom,
-            width: Math.max(1, sameLine ? first.x - preceding.x - preceding.width : (block.runs[0]?.style.fontSize ?? 12) / 3) * zoom,
-            height: Math.max(2, preceding.height) * zoom, fontSize: prefix.includes('\n') ? 1 : (block.runs[0]?.style.fontSize ?? 12) * zoom,
-          }}>{prefix}</span>}
-          {!clusters.length ? <span data-text-object={item.id} className="pdf-text-fallback" style={{
-            left: item.bounds.x * zoom, top: item.bounds.y * zoom, width: item.bounds.width * zoom,
-            fontSize: (block.runs[0]?.style.fontSize ?? 12) * zoom, lineHeight: block.runs[0]?.style.lineHeight ?? 1.2,
-            letterSpacing: (block.runs[0]?.style.characterSpacing ?? 0) * zoom }}>{value}</span>
-          : <span data-text-object={item.id} className="pdf-text-object">{clusters.map((cluster, index) => {
-            const gap = value.slice(offset, cluster.range[0]); offset = cluster.range[1];
-            return <span key={index} className="pdf-character" style={{ left: cluster.bounds.x * zoom, top: cluster.bounds.y * zoom,
-              width: cluster.bounds.width * zoom, height: cluster.bounds.height * zoom, fontSize: cluster.bounds.height * zoom }}>
-              {gap}{cluster.text}{index === clusters.length - 1 ? value.slice(offset) : ''}
-            </span>;
-          })}</span>}
-        </Fragment>;
-      })}
+      {textNodes}
       <div className="pdf-selection-paint" aria-hidden="true">{mergeTextRects(targets.flatMap(target => target.rects), shown.page.rotation % 180 !== 0).map((rect, index) =>
         <i key={index} style={{ left: rect.x * zoom, top: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom }} />)}</div>
       {caret && <i className="reading-caret" aria-hidden="true" style={{ left: caret.x * zoom, top: caret.y * zoom,

@@ -105,6 +105,7 @@ export type LoadedDocument = {
   name: string;
   page: PageModel;
   render: RenderResult;
+  pageVersion?: number;
 };
 
 export function mergeSavedRevision(current: LoadedDocument, savedRevision: number): LoadedDocument {
@@ -555,7 +556,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
     setActivity('rendering');
     try {
-      const loaded = await loadPage(engine, info, current.name, pageId, zoom);
+      const unchanged = pageId === current.page.id && !result.changedPageIds.includes(pageId)
+        && current.pageVersion !== undefined && current.pageVersion === engine.getPageVersion?.(info.id, pageId);
+      const loaded = unchanged ? { ...current, info } : await loadPage(engine, info, current.name, pageId, zoom);
       const latest = documentRef.current;
       if (!latest || latest.info.id !== result.docId || latest.info.revision !== result.revision) return;
       const refreshed = { ...loaded, info: latest.info };
@@ -786,10 +789,12 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   };
 
   const currentPageIndex = document ? document.info.pageOrder.indexOf(document.page.id) : -1;
-  const selectedObjects = document
-    ? document.page.objects.filter((object) => selectedIds.includes(object.id))
-    : [];
-  const selectedText = document ? selectedTextObject(document.page, selectedIds)?.textBlock : undefined;
+  const selectedObjects = useMemo(() => {
+    const ids = new Set(selectedIds);
+    return document?.page.objects.filter(object => ids.has(object.id)) ?? [];
+  }, [document?.page, selectedIds]);
+  const selectedText = useMemo(() => document ? selectedTextObject(document.page, selectedIds)?.textBlock : undefined,
+    [document?.page, selectedIds]);
   const modalOpen = Boolean(savePrompt || passwordPrompt);
   const operationBusy = activity !== 'idle' || editPending || externalBusy || modalOpen;
   const isBusy = operationBusy || isDraftDirty;
@@ -935,7 +940,6 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     setActivity('editing'); setError(null);
     try {
       const transaction = { id: crypto.randomUUID(), docId: current.info.id, baseRevision: current.info.revision, source: 'manual' as const, commands };
-      await engine.previewTransaction(transaction);
       const result = await new CommandRegistry(engine).execute(transaction, { document: current.info, pages: new Map([[current.page.id, current.page]]),
         fontIds: new Set(fonts.map(font => font.id)), resourceIds,
         ...(host.capabilities.platform === 'web' ? { pageLimit: WEB_LIMITS.pagesPerDocument } : {}) });
@@ -1525,9 +1529,13 @@ async function loadPage(
   pageId: string,
   scale = RENDER_SCALE,
 ): Promise<LoadedDocument> {
+  const pageVersion = engine.getPageVersion?.(info.id, pageId) ?? info.revision;
   const page = await engine.describePage(info.id, pageId);
   const render = await renderPage(engine, info.id, page, scale, info.revision);
-  return { info, name, page, render };
+  if (pageVersion !== (engine.getPageVersion?.(info.id, pageId) ?? render.revision)) {
+    throw new EngineError('STALE_REVISION', 'Page changed while rendering');
+  }
+  return { info, name, page, render, pageVersion };
 }
 
 async function saveCurrentDocument(
