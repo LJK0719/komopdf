@@ -73,6 +73,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
   const loadSequence = useRef(0);
+  const fieldBaseline = useRef<{ documentId: string; fields: FormFieldInfo[] } | null>(null);
   const documentScope = `${document.id}\0${document.revision}`;
   const documentScopeRef = useRef(documentScope); documentScopeRef.current = documentScope;
   const scope = `${documentScope}\0${page.id}`;
@@ -130,14 +131,16 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
       if (loadSequence.current !== sequence || documentScopeRef.current !== expectedScope) return;
       setAnnotations(nextAnnotations);
       setFields(nextFields);
-      setFieldDrafts(Object.fromEntries(nextFields.map(field => [field.id, copyFormValue(field.value)])));
-      setFieldPropertyDrafts(Object.fromEntries(nextFields.map(field => [field.id, {
-        readOnly: field.readOnly,
-        required: field.required,
-        multiple: field.multiple ?? false,
-        tooltip: field.tooltip ?? '',
-        maxLen: field.maxLen !== undefined && field.maxLen > 0 ? String(field.maxLen) : '',
-      }])));
+      if (canReadForms) {
+        const previousFields = fieldBaseline.current?.documentId === document.id ? fieldBaseline.current.fields : [];
+        setFieldDrafts(current => mergeFormValueDrafts(previousFields, nextFields, current));
+        setFieldPropertyDrafts(current => mergeFormPropertyDrafts(previousFields, nextFields, current));
+        fieldBaseline.current = { documentId: document.id, fields: nextFields };
+      } else if (fieldBaseline.current?.documentId !== document.id) {
+        fieldBaseline.current = null;
+        setFieldDrafts({});
+        setFieldPropertyDrafts({});
+      }
       setDataScope(expectedScope);
     }).catch(caught => {
       if (loadSequence.current === sequence && documentScopeRef.current === expectedScope) {
@@ -185,6 +188,13 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     await engine.previewTransaction(transaction);
     if (scopeRef.current !== expectedScope) throw new Error('The document changed while previewing this edit');
     const result = await new CommandRegistry(engine).execute(transaction, context);
+    // Only the successfully applied category is clean; the other draft must survive the reload.
+    if (command.type === 'form.fill') setFieldDrafts(current => {
+      const next = { ...current }; delete next[command.fieldId]; return next;
+    });
+    if (command.type === 'form.update') setFieldPropertyDrafts(current => {
+      const next = { ...current }; delete next[command.fieldId]; return next;
+    });
     await onCommitted(result);
   }
 
@@ -635,6 +645,38 @@ function rgbToHex(color: [number, number, number]): string {
 function hexToRgb(value: string): [number, number, number] {
   if (!/^#[0-9a-f]{6}$/i.test(value)) throw new Error('Color must use #RRGGBB');
   return [1, 3, 5].map(offset => parseInt(value.slice(offset, offset + 2), 16) / 255) as [number, number, number];
+}
+
+function fieldProperties(field: FormFieldInfo): FieldPropertiesDraft {
+  return {
+    readOnly: field.readOnly,
+    required: field.required,
+    multiple: field.multiple ?? false,
+    tooltip: field.tooltip ?? '',
+    maxLen: field.maxLen !== undefined && field.maxLen > 0 ? String(field.maxLen) : '',
+  };
+}
+
+export function mergeFormValueDrafts(previous: FormFieldInfo[], next: FormFieldInfo[], drafts: Record<string, FormValue>): Record<string, FormValue> {
+  const baseline = new Map(previous.map(field => [field.id, field]));
+  return Object.fromEntries(next.map(field => {
+    const before = baseline.get(field.id), draft = drafts[field.id], original = before?.value;
+    const unchanged = Array.isArray(draft) && Array.isArray(original)
+      ? draft.length === original.length && draft.every((value, index) => value === original[index])
+      : draft === original;
+    return [field.id, copyFormValue(before && draft !== undefined && !unchanged ? draft : field.value)];
+  }));
+}
+
+export function mergeFormPropertyDrafts(previous: FormFieldInfo[], next: FormFieldInfo[], drafts: Record<string, FieldPropertiesDraft>): Record<string, FieldPropertiesDraft> {
+  const baseline = new Map(previous.map(field => [field.id, field]));
+  return Object.fromEntries(next.map(field => {
+    const before = baseline.get(field.id), draft = drafts[field.id], properties = fieldProperties(field);
+    if (!before || !draft) return [field.id, properties];
+    const original = fieldProperties(before);
+    return [field.id, Object.fromEntries((Object.keys(properties) as (keyof FieldPropertiesDraft)[])
+      .map(key => [key, draft[key] !== original[key] ? draft[key] : properties[key]])) as FieldPropertiesDraft];
+  }));
 }
 
 function copyFormValue(value: FormValue): FormValue {

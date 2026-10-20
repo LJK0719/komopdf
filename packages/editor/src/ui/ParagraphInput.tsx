@@ -4,6 +4,7 @@ import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { ParagraphSourceSelection, type InputSelection, type SourceSelectionGeometry } from './ParagraphSourceSelection.js';
+import type { TextHit } from './text-geometry.js';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $patchStyleText } from '@lexical/selection';
@@ -12,15 +13,15 @@ import { $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isElem
   COMMAND_PRIORITY_HIGH, FORMAT_TEXT_COMMAND, SKIP_SCROLL_INTO_VIEW_TAG, type LexicalNode, type TextNode } from 'lexical';
 import type { StyledTextRun, TextRange, TextStyle } from '@pdf-editor/contracts';
 import { type EditorFont, loadFontPreview } from './font-resources.js';
-import { resolveSourceFont, sourceFontFamily } from './font-face-matcher.js';
+import { getFontItalic, getFontWeight, resolveSourceFont, sourceFontFamily, sourceFontTraits } from './font-face-matcher.js';
 
 export type ParagraphInputHandle = { format(style: TextStyle, range?: TextRange): void; focus(range?: TextRange): void; isComposing(): boolean };
 type Props = {
   runs: StyledTextRun[]; fonts: EditorFont[]; zoom: number; disabled: boolean; initialRange?: TextRange | null | undefined;
   handle: RefObject<ParagraphInputHandle | null>; label: string; style: TextStyle;
   baseline?: number | undefined; frameHeight?: number | undefined; fixedFrame?: boolean | undefined;
-  pristine?: boolean | undefined; sourceGeometry?: SourceSelectionGeometry | undefined;
-  onChange(text: string, runs: StyledTextRun[], dirty: boolean): void; onSelect(range: TextRange): void; onFinish(): void; onCancel(): void;
+  pristine?: boolean | undefined; sourceGeometry?: SourceSelectionGeometry | undefined; initialHit?: TextHit | undefined;
+  onChange(text: string, runs: StyledTextRun[], dirty: boolean): void; onSelect(range: TextRange, insertionStyle?: TextStyle): void; onFinish(): void; onCancel(): void;
   onFormat(format: 'bold' | 'italic' | 'underline'): void;
 };
 
@@ -35,21 +36,32 @@ function css(style: TextStyle, fonts: EditorFont[], text = ''): Record<string, s
     const font = previewFace(style, fonts, text);
     const family = font?.family ?? (style.fontId.startsWith('pdf:') ? sourceFontFamily(style.fontId.slice(4)) : 'sans-serif');
     result['--pdf-font-id'] = JSON.stringify(style.fontId); result['font-family'] = JSON.stringify(family);
-    if (font) { result['font-weight'] = String(font.weight ?? 400); result['font-style'] = font.italic ? 'italic' : 'normal'; }
+    const traits = font && !style.fontId.startsWith('pdf:')
+      ? { weight: getFontWeight(font), italic: getFontItalic(font) } : sourceFontTraits(style);
+    result['font-weight'] = String(traits.weight); result['font-style'] = traits.italic ? 'italic' : 'normal';
+    // Keep source metadata separate from the face used to display the draft.
+    result['--pdf-weight'] = style.weight === undefined ? 'auto' : String(style.weight);
+    result['--pdf-italic'] = style.italic === undefined ? 'auto' : String(style.italic);
   }
   if (style.fontSize !== undefined) result['font-size'] = `${style.fontSize}px`;
   if (style.characterSpacing !== undefined) result['letter-spacing'] = `${style.characterSpacing}px`;
   if (style.color) result.color = `rgb(${style.color.map(value => Math.round(value * 255)).join(',')})`;
-  if (style.weight !== undefined) result['font-weight'] = String(style.weight);
-  if (style.italic !== undefined) result['font-style'] = style.italic ? 'italic' : 'normal';
+  if (!style.fontId && style.weight !== undefined) result['--pdf-weight'] = result['font-weight'] = String(style.weight);
+  if (!style.fontId && style.italic !== undefined) {
+    result['--pdf-italic'] = String(style.italic); result['font-style'] = style.italic ? 'italic' : 'normal';
+  }
   if (style.underline !== undefined) result['text-decoration'] = style.underline ? 'underline' : 'none';
   return result;
 }
 const cssString = (style: TextStyle, fonts: EditorFont[], text: string) => Object.entries(css(style, fonts, text)).map(([name, value]) => `${name}:${value}`).join(';');
 
 function sourceStyle(node: TextNode, base: TextStyle): TextStyle {
+  return sourceCssStyle(node.getStyle(), base, node);
+}
+
+function sourceCssStyle(cssText: string, base: TextStyle, node: Pick<TextNode, 'hasFormat'>): TextStyle {
   const declaration = document.createElement('span').style;
-  declaration.cssText = node.getStyle();
+  declaration.cssText = cssText;
   const result = { ...base };
   const font = declaration.getPropertyValue('--pdf-font-id').trim();
   if (font) { try { result.fontId = JSON.parse(font) as string; } catch { /* External paste has no PDF font identity. */ } }
@@ -57,8 +69,12 @@ function sourceStyle(node: TextNode, base: TextStyle): TextStyle {
   if (declaration.letterSpacing && declaration.letterSpacing !== 'normal') result.characterSpacing = parseFloat(declaration.letterSpacing);
   const color = declaration.color.match(/[\d.]+/g)?.map(Number);
   if (color?.length === 3) result.color = color.map(value => value / 255) as [number, number, number];
-  result.weight = declaration.fontWeight ? Number(declaration.fontWeight) || 400 : node.hasFormat('bold') ? 700 : base.weight ?? 400;
-  result.italic = declaration.fontStyle ? declaration.fontStyle === 'italic' : node.hasFormat('italic') || Boolean(base.italic);
+  const weight = declaration.getPropertyValue('--pdf-weight').trim();
+  const italic = declaration.getPropertyValue('--pdf-italic').trim();
+  if (weight === 'auto') delete result.weight;
+  else result.weight = weight ? Number(weight) : declaration.fontWeight ? Number(declaration.fontWeight) || 400 : node.hasFormat('bold') ? 700 : base.weight ?? 400;
+  if (italic === 'auto') delete result.italic;
+  else result.italic = italic ? italic === 'true' : declaration.fontStyle ? declaration.fontStyle === 'italic' : node.hasFormat('italic') || Boolean(base.italic);
   result.underline = declaration.textDecoration ? declaration.textDecoration.includes('underline') : node.hasFormat('underline') || Boolean(base.underline);
   return result;
 }
@@ -103,6 +119,7 @@ function Controls(props: Props) {
   const lastContent = useRef(''), originalContent = useRef('');
   const draft = useRef<ReturnType<typeof readDraft> | null>(null);
   const selected = useRef<InputSelection | null>(null);
+  const selectedStyle = useRef('');
   useLayoutEffect(() => { editor.getEditorState().read(() => {
     draft.current = readDraft(props.style, props.zoom);
     originalContent.current = lastContent.current = JSON.stringify(draft.current.runs);
@@ -119,20 +136,36 @@ function Controls(props: Props) {
     };
     return { anchor: offset(selection.anchor), focus: offset(selection.focus) };
   };
+  const updatePreviewFamilies = (families: ReadonlyMap<string, string>) => {
+    editor.update(() => {
+      const updated = new Map<string, string>();
+      for (const node of $getRoot().getAllTextNodes()) {
+        const face = previewFace(sourceStyle(node, latest.current.style), latest.current.fonts, node.getTextContent());
+        const family = face && families.get(face.id);
+        if (!family) continue;
+        const previous = node.getStyle(), declaration = document.createElement('span').style;
+        declaration.cssText = previous; declaration.fontFamily = JSON.stringify(family);
+        node.setStyle(declaration.cssText); updated.set(previous, declaration.cssText);
+      }
+      const selection = $getSelection();
+      if ($isRangeSelection(selection) && selection.isCollapsed()) {
+        const style = updated.get(selection.style);
+        if (style !== undefined) selection.setStyle(style);
+      }
+    }, { tag: 'font-preview' });
+  };
   useImperativeHandle(props.handle, () => ({
     format(style, range) {
       editor.update(() => {
-        if (range) selectRange(range, draft.current!.positions);
+        const current = selectionOffsets();
+        if (range && (!current || current.anchor !== range[0] || current.focus !== range[1])) selectRange(range, draft.current!.positions);
         const selection = $getSelection();
         if ($isRangeSelection(selection)) $patchStyleText(selection, css(style, latest.current.fonts));
       });
       const font = style.fontId && latest.current.fonts.find(face => face.id === style.fontId);
       if (font) void loadFontPreview(font).then(family => {
         if (!editor.getRootElement()) return;
-        editor.update(() => {
-          for (const node of $getRoot().getAllTextNodes())
-            if (sourceStyle(node, latest.current.style).fontId === font.id) node.setStyle(`${node.getStyle()};font-family:${JSON.stringify(family)}`);
-        }, { tag: 'font-preview' });
+        updatePreviewFamilies(new Map([[font.id, family]]));
       }).catch(() => undefined);
       editor.focus();
     },
@@ -155,23 +188,12 @@ function Controls(props: Props) {
     return () => { enter(); escape(); format(); };
   }, [editor]);
   useEffect(() => { editor.setEditable(!props.disabled); }, [editor, props.disabled]);
-  useEffect(() => {
-    editor.update(() => selectRange(props.initialRange ?? [0, 0], draft.current!.positions), { tag: SKIP_SCROLL_INTO_VIEW_TAG, discrete: true });
-    editor.getRootElement()?.focus({ preventScroll: true });
-  }, [editor]);
   const fontKey = props.fonts.map(font => font.id).join('\0');
   useEffect(() => {
     const faces = new Map(props.runs.map(run => previewFace(run.style, props.fonts, run.text)).filter((font): font is EditorFont => Boolean(font)).map(font => [font.id, font]));
     let active = true;
     void Promise.all([...faces.values()].map(async font => [font.id, await loadFontPreview(font)] as const))
-      .then(families => { if (active) editor.update(() => {
-        for (const node of $getRoot().getAllTextNodes()) {
-          const style = sourceStyle(node, props.style);
-          const face = previewFace(style, props.fonts, node.getTextContent());
-          const family = families.find(([id]) => id === face?.id)?.[1];
-          if (family) node.setStyle(`${node.getStyle()};font-family:${JSON.stringify(family)}`);
-        }
-      }, { tag: 'font-preview' }); }).catch(() => undefined);
+      .then(families => { if (active) updatePreviewFamilies(new Map(families)); }).catch(() => undefined);
     return () => { active = false; };
   }, [editor, fontKey]);
   useEffect(() => editor.registerUpdateListener(({ editorState, dirtyElements, dirtyLeaves, tags }) => editorState.read(() => {
@@ -183,14 +205,21 @@ function Controls(props: Props) {
         current.onChange(draft.current.text, draft.current.runs, content !== originalContent.current);
       lastContent.current = content;
     }
-    const next = selectionOffsets();
-    if (next && (next.anchor !== selected.current?.anchor || next.focus !== selected.current?.focus)) {
-      selected.current = next;
-      current.onSelect([Math.min(next.anchor, next.focus), Math.max(next.anchor, next.focus)]);
+    const next = selectionOffsets(), selection = $getSelection();
+    const insertion = $isRangeSelection(selection) && selection.isCollapsed()
+      ? sourceCssStyle(selection.style, current.style, selection) : undefined;
+    const signature = JSON.stringify(insertion) ?? '';
+    if (next && (next.anchor !== selected.current?.anchor || next.focus !== selected.current?.focus || signature !== selectedStyle.current)) {
+      selected.current = next; selectedStyle.current = signature;
+      current.onSelect([Math.min(next.anchor, next.focus), Math.max(next.anchor, next.focus)], insertion);
     }
   })), [editor]);
+  useEffect(() => {
+    editor.update(() => selectRange(props.initialRange ?? [0, 0], draft.current!.positions), { tag: SKIP_SCROLL_INTO_VIEW_TAG, discrete: true });
+    editor.getRootElement()?.focus({ preventScroll: true });
+  }, [editor]);
   return props.sourceGeometry && <ParagraphSourceSelection geometry={props.sourceGeometry} enabled={Boolean(props.pristine)}
-    text={props.runs.map(run => run.text).join('')}
+    text={props.runs.map(run => run.text).join('')} initialHit={props.initialHit}
     readSelection={() => editor.getEditorState().read(selectionOffsets)}
     select={selection => selectRange([selection.anchor, selection.focus], draft.current!.positions)} />;
 }
@@ -204,7 +233,8 @@ function baselineOffset(props: Props, previewFamily?: string): number {
   if (!context) return 0;
   const family = previewFamily ?? previewFace(style, props.fonts, run.text)?.family ?? sourceFontFamily(style.fontId?.replace(/^pdf:/, '') ?? 'sans-serif');
   const size = style.fontSize ?? 12;
-  context.font = `${style.italic ? 'italic' : 'normal'} ${style.weight ?? 400} ${size}px ${JSON.stringify(family)}`;
+  const display = css(style, props.fonts, run.text);
+  context.font = `${display['font-style'] ?? 'normal'} ${display['font-weight'] ?? 400} ${size}px ${JSON.stringify(family)}`;
   const metrics = context.measureText(run.text.split('\n')[0]!);
   const ascent = metrics.fontBoundingBoxAscent, descent = metrics.fontBoundingBoxDescent;
   const height = props.style.lineSpacing || size * (props.style.lineHeight ?? 1.2);

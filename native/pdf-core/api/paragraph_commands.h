@@ -267,7 +267,7 @@ bool UpdateParagraphStyles(pdf_editor::ParagraphRequest* request,
     }
     selected_font = static_cast<uint32_t>(fonts->size());
     for (uint32_t index = 0; index < fonts->size(); ++index) {
-      if ((*fonts)[index]->id == command.font_id) { selected_font = index; break; }
+      if ((*fonts)[index]->id == command.font_id && !(*fonts)[index]->source_font) { selected_font = index; break; }
     }
     if (selected_font == fonts->size()) fonts->push_back(selected->second);
   }
@@ -310,6 +310,31 @@ bool UpdateParagraphStyles(pdf_editor::ParagraphRequest* request,
 }
 
 #include "source_paragraph.h"
+
+bool ApplyInitialParagraphStyles(pdf_editor::ParagraphRequest* request,
+    std::vector<std::shared_ptr<const FontResource>>* fonts,
+    std::span<const EditCommand> commands,
+    const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
+    uint32_t fragment_start = 0) {
+  if (commands.empty()) return true;
+  LayoutText decoded;
+  std::vector<bool> boundaries;
+  if (!DecodeLayoutText(request->utf8, &decoded) ||
+      !CollectUnicodeBreaks(UBRK_CHARACTER, decoded.utf16, &boundaries)) return false;
+  const uint32_t length = static_cast<uint32_t>(decoded.utf16.size());
+  for (const auto& command : commands) {
+    const uint32_t start = (command.flags & kTextStyleRangeFlag) ? command.start_utf16 + fragment_start : 0;
+    const uint32_t end = (command.flags & kTextStyleRangeFlag) ? command.end_utf16 + fragment_start : length;
+    if (start >= end || end > length || !boundaries[start] || !boundaries[end]) {
+      SetError("INVALID_REQUEST", "Paragraph style ranges must preserve complete graphemes.");
+      return false;
+    }
+    if (!UpdateParagraphStyles(request, fonts, command, start, end, length, resources)) return false;
+    if (command.flags & (1U | 2U | 4U | 8U | kTextStyleUnderlineFlag))
+      RemapSourceGlyphs(request, start, end, end - start);
+  }
+  return true;
+}
 
 bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
     CandidateMetadata* metadata, const EditCommand& command,
@@ -399,23 +424,8 @@ bool ApplyParagraphInsert(const Document& document, FPDF_DOCUMENT pdf,
       : (command.flags & 32U) ? pdf_editor::ParagraphAlignment::kCenter
       : (command.flags & 64U) ? pdf_editor::ParagraphAlignment::kRight
                               : pdf_editor::ParagraphAlignment::kLeft;
-  if (!initial_styles.empty()) {
-    LayoutText decoded;
-    std::vector<bool> boundaries;
-    if (!DecodeLayoutText(request.utf8, &decoded) ||
-        !CollectUnicodeBreaks(UBRK_CHARACTER, decoded.utf16, &boundaries)) return false;
-    const uint32_t length = static_cast<uint32_t>(decoded.utf16.size());
-    for (const auto& style : initial_styles) {
-      const uint32_t start = (style.flags & kTextStyleRangeFlag) ? style.start_utf16 : 0;
-      const uint32_t end = (style.flags & kTextStyleRangeFlag) ? style.end_utf16 : length;
-      if (start >= end || end > length || !boundaries[start] || !boundaries[end]) {
-        SetError("INVALID_REQUEST", "Paragraph style ranges must preserve complete graphemes.");
-        return false;
-      }
-      if (!UpdateParagraphStyles(&request, &fonts, style, start, end, length, resources)) return false;
-    }
-    CompactParagraphFonts(&request, &fonts);
-  }
+  if (!ApplyInitialParagraphStyles(&request, &fonts, initial_styles, resources)) return false;
+  if (!initial_styles.empty()) CompactParagraphFonts(&request, &fonts);
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;
   std::unique_ptr<CPDF_PageObject> object(CPDFPageObjectFromFPDFPageObject(paragraph.object));
@@ -703,8 +713,10 @@ bool ApplyParagraphStyle(const Document& document, FPDF_DOCUMENT pdf,
   request.height = info->GetFloatFor("Height");
   if (!flow && ParagraphNeedsFixedFrame(page, target.object)) request.fixed_frame = true;
   request.utf8 = original;
-  if (!UpdateParagraphStyles(&request, &fonts, command, start, end,
-      static_cast<uint32_t>(decoded.utf16.size()), resources)) return false;
+  if (std::any_of(fonts.begin(), fonts.end(), [](const auto& font) { return font->source_font != nullptr; }) &&
+      !ReadParagraphSourceGlyphs(pdf, target.object, original, &request)) return false;
+  if (!ApplyInitialParagraphStyles(&request, &fonts,
+      std::span<const EditCommand>(&command, 1), resources, fragment_start)) return false;
   CompactParagraphFonts(&request, &fonts);
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;
@@ -749,7 +761,8 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
     CandidateMetadata* metadata, size_t page_index, const ObjectTarget& target,
     const EditCommand& command,
     const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
-    Rect* layout_bounds, bool* overflow, TextInsertLayoutResult* paragraph_layout) {
+    Rect* layout_bounds, bool* overflow, TextInsertLayoutResult* paragraph_layout,
+    std::span<const EditCommand> initial_styles) {
   const auto info = ParagraphMetadata(target.object);
   const auto flow = info->GetDictFor("Flow");
   const auto logical = flow ? flow : info;
@@ -783,6 +796,10 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
     return false;
   }
   if (updated.empty()) {
+    if (!initial_styles.empty()) {
+      SetError("INVALID_REQUEST", "Paragraph style ranges must preserve complete graphemes.");
+      return false;
+    }
     if (!flow && ParagraphNeedsFixedFrame(page, target.object)) {
       if (!native_page->RemovePageObject(old_object)) return false;
       identities.erase(identities.begin() + index);
@@ -806,22 +823,7 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
   request.height = info->GetFloatFor("Height");
   if (!flow && ParagraphNeedsFixedFrame(page, target.object)) request.fixed_frame = true;
   const bool source_paragraph = std::any_of(fonts.begin(), fonts.end(), [](const auto& font) { return font->source_font != nullptr; });
-  if (source_paragraph) {
-    if (flow) {
-      for (int p = 0; p < FPDF_GetPageCount(pdf); ++p) {
-        ScopedPage fragment(FPDF_LoadPage(pdf, p));
-        for (int i = 0; i < FPDFPage_CountObjects(fragment.get()); ++i) {
-          auto object = FPDFPage_GetObject(fragment.get(), i);
-          const auto stored = ParagraphMetadata(object);
-          const auto shared = stored ? stored->GetDictFor("Flow") : nullptr;
-          if (!shared || shared->GetObjNum() != flow->GetObjNum()) continue;
-          if (!ReadSourceParagraphGlyphs(object, original, &request,
-              static_cast<uint32_t>(stored->GetIntegerFor("FlowStart")))) return false;
-        }
-      }
-      std::sort(request.source_glyphs.begin(), request.source_glyphs.end(), [](const auto& a, const auto& b) { return a.range.start < b.range.start; });
-    } else if (!ReadSourceParagraphGlyphs(target.object, original, &request)) return false;
-  }
+  if (source_paragraph && !ReadParagraphSourceGlyphs(pdf, target.object, original, &request)) return false;
   std::optional<uint32_t> replacement_font;
   if (!command.font_id.empty() && !(command.flags & kTextPreserveSourceFlag)) {
     const auto selected = resources.find(command.font_id);
@@ -859,11 +861,13 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
     request.styles = std::move(styles);
   }
   request.utf8 = updated;
-  if (source_paragraph) {
+  if (source_paragraph)
     RemapSourceGlyphs(&request, start, end, static_cast<uint32_t>(inserted.utf16.size()));
-    if (!replacement_font && !CompleteSourceParagraphFonts(&request, &fonts, start,
-        start + static_cast<uint32_t>(inserted.utf16.size()), command.font_id, resources)) return false;
-  }
+  // Explicit range fonts must participate before source subset completion and
+  // layout; a temporary inherited font may not cover the inserted text.
+  if (!ApplyInitialParagraphStyles(&request, &fonts, initial_styles, resources, fragment_start)) return false;
+  if (source_paragraph && !replacement_font && !CompleteSourceParagraphFonts(&request, &fonts, start,
+      start + static_cast<uint32_t>(inserted.utf16.size()), command.font_id, resources)) return false;
   CompactParagraphFonts(&request, &fonts);
   pdf_editor::ParagraphResult paragraph;
   if (!CreateParagraphObject(pdf, fonts, request, &paragraph)) return false;

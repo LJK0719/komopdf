@@ -8,7 +8,7 @@ import { sourceLineRange } from './inline-text-geometry.js';
 export type InputSelection = { anchor: number; focus: number };
 export type SourceSelectionGeometry = { clusters: TextCluster[]; host: HTMLElement; zoom: number };
 type Props = {
-  geometry: SourceSelectionGeometry; enabled: boolean; text: string;
+  geometry: SourceSelectionGeometry; enabled: boolean; text: string; initialHit?: TextHit | undefined;
   readSelection(): InputSelection | null;
   select(selection: InputSelection): void;
 };
@@ -19,7 +19,7 @@ export function ParagraphSourceSelection(props: Props) {
   const [selection, setSelection] = useState<InputSelection | null>(null);
   const [focused, setFocused] = useState(false);
   const [composing, setComposing] = useState(false);
-  const affinity = useRef<TextHit | null>(null);
+  const affinity = useRef<TextHit | null>(props.initialHit ?? null);
   const enabled = props.enabled && !composing;
 
   useEffect(() => {
@@ -109,9 +109,7 @@ export function ParagraphSourceSelection(props: Props) {
     };
     const startComposition = () => { anchor = null; root.removeAttribute('data-source-selection'); setComposing(true); };
     const endComposition = () => setComposing(false);
-    const update = editor.registerUpdateListener(({ dirtyElements, dirtyLeaves }) => {
-      if (!dirtyElements.size && !dirtyLeaves.size) show();
-    });
+    const update = editor.registerUpdateListener(show);
     props.geometry.host.addEventListener('pointerdown', down, true);
     root.addEventListener('pointermove', move);
     root.addEventListener('pointerup', up);
@@ -151,7 +149,7 @@ export function ParagraphSourceSelection(props: Props) {
   const rects = collapsed ? [] : selectionRects(clusters, [Math.min(selection.anchor, selection.focus), Math.max(selection.anchor, selection.focus)]);
   return createPortal(<div className="pdf-selection-paint inline-source-selection" aria-hidden="true">
     {rects.map((rect, index) => <i key={index} style={{ left: rect.x * zoom, top: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom }} />)}
-    {caret && <span className="inline-source-caret" data-offset={selection.focus} style={{ left: caret.x * zoom, top: caret.y * zoom,
+    {caret && <span key={`${selection.focus}:${caret.x}:${caret.y}`} className="inline-source-caret" data-offset={selection.focus} style={{ left: caret.x * zoom, top: caret.y * zoom,
       width: Math.max(1.5, caret.width * zoom), height: Math.max(1.5, caret.height * zoom) }} />}
   </div>, host);
 }

@@ -4331,7 +4331,9 @@ int main(int argc, char** argv) {
     TestScaledAndNegativeBearingSourceParagraph();
     TestUnregisteredSessionFontIdentity();
     TestSourceParagraphGapsAndFlow();
-    if (argc == 3) TestSubsetSourceParagraphEdit(argv[2]);
+    TestSourceParagraphRangeStyles();
+    if (argc >= 3) TestSubsetSourceParagraphEdit(argv[2]);
+    if (argc >= 4) TestSourceReplacementInitialStyles(argv[2], argv[3]);
     pde_shutdown();
     std::puts("PASS targeted source-font paragraph edit, subset completion, resize and save/reopen");
     return 0;

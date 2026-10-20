@@ -277,3 +277,24 @@ bool ReadSourceParagraphGlyphs(FPDF_PAGEOBJECT object, const std::string& origin
   }
   return true;
 }
+
+bool ReadParagraphSourceGlyphs(FPDF_DOCUMENT pdf, FPDF_PAGEOBJECT object,
+    const std::string& original, pdf_editor::ParagraphRequest* request) {
+  const auto info = ParagraphMetadata(object);
+  const auto flow = info->GetDictFor("Flow");
+  if (!flow) return ReadSourceParagraphGlyphs(object, original, request);
+  for (int p = 0; p < FPDF_GetPageCount(pdf); ++p) {
+    ScopedPage fragment(FPDF_LoadPage(pdf, p));
+    for (int i = 0; i < FPDFPage_CountObjects(fragment.get()); ++i) {
+      auto child = FPDFPage_GetObject(fragment.get(), i);
+      const auto stored = ParagraphMetadata(child);
+      const auto shared = stored ? stored->GetDictFor("Flow") : nullptr;
+      if (!shared || shared->GetObjNum() != flow->GetObjNum()) continue;
+      if (!ReadSourceParagraphGlyphs(child, original, request,
+          static_cast<uint32_t>(stored->GetIntegerFor("FlowStart")))) return false;
+    }
+  }
+  std::sort(request->source_glyphs.begin(), request->source_glyphs.end(),
+      [](const auto& a, const auto& b) { return a.range.start < b.range.start; });
+  return true;
+}

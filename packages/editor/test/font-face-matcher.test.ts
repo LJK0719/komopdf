@@ -13,7 +13,7 @@ import {
   type EditorFont,
 } from '../src/ui/font-resources.js';
 import { packCommands, EDIT_COMMAND_STRIDE } from '../src/worker/abi3-commands.js';
-import { resolveFormattingFont, resolveSourceFont } from '../src/ui/font-face-matcher.js';
+import { resolveFormattingFont, resolveSourceFont, sourceFontTraits } from '../src/ui/font-face-matcher.js';
 
 const mockFonts: EditorFont[] = [
   { id: 'noto-sans-cjk-sc-regular', family: 'Noto Sans CJK SC', style: 'Regular', weight: 400, italic: false, format: 'otf' },
@@ -46,6 +46,19 @@ class MockAllocator {
 }
 
 describe('font-face-matcher and font-resources', () => {
+  it('uses named source face traits rather than absent or contradictory PDF estimates', () => {
+    expect(sourceFontTraits({ fontId: 'pdf:Helvetica-Bold' })).toEqual({ weight: 700, italic: false });
+    expect(sourceFontTraits({ fontId: 'pdf:Helvetica-Oblique', italic: false })).toEqual({ weight: 400, italic: true });
+    expect(sourceFontTraits({ fontId: 'pdf:ABCDEF+Arial-BoldItalicMT', weight: 350, italic: false })).toEqual({ weight: 700, italic: true });
+    expect(sourceFontTraits({ fontId: 'pdf:CustomFamily', weight: 500, italic: true })).toEqual({ weight: 500, italic: true });
+    const faces: EditorFont[] = [400, 700].flatMap(weight => [false, true].map(italic => ({
+      id: `arial-${weight}-${italic}`, family: 'Arial', style: '', format: 'ttf', weight, italic,
+    })));
+    expect(resolveSourceFont(faces, { fontId: 'pdf:ABCDEF+Arial-BoldItalicMT', weight: 350, italic: false })?.id).toBe('arial-700-true');
+    const block = { runs: [{ text: 'text', style: { fontId: 'pdf:Helvetica-Oblique', italic: false }, sourceObjectIds: [] }] } as unknown as TextBlock;
+    expect(findSelectionFontInfo(block, [0, 1], [])).toMatchObject({ weight: 400, italic: true });
+    expect(resolveSourceFont(mockFonts, { fontId: 'liberation-sans-bold-italic', weight: 350, italic: false })?.id).toBe('liberation-sans-bold-italic');
+  });
   it('matches subset Song fonts to the installed face without crossing to Noto', () => {
     const song: EditorFont = { id: 'system-font-song', family: 'SimSun', style: 'Regular', format: 'ttf',
       aliases: ['宋体', 'SimSun'], faceIndex: 0, weight: 400, italic: false };

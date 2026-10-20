@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
   EngineError,
@@ -20,7 +20,7 @@ import { DocumentViewport, type PageView, type PointerTool, type ViewportSize } 
 import { useViewZoom } from './use-view-zoom.js';
 import { usePanelResize, AI_PANEL_DEFAULT_WIDTH, AI_PANEL_MIN_WIDTH, AI_PANEL_MAX_WIDTH } from './usePanelResize.js';
 import { captureReadingZoomAnchor, readingZoomScrollDelta, type ReadingZoomAnchor } from './view-zoom.js';
-import { AnnotationDrawingLayer } from './AnnotationDrawingLayer.js';
+import { AnnotationDrawingLayer, type AnnotationDraftHandle } from './AnnotationDrawingLayer.js';
 import type { AnnotationDrawingOptions } from './annotation-drawing.js';
 import { SignaturePlacementLayer } from './SignaturePlacementLayer.js';
 import type { SignatureDraft } from './signature-placement.js';
@@ -43,7 +43,8 @@ import { PdfSearchPanel } from './PdfSearchPanel.js';
 import { PageThumbnail } from './PageThumbnail.js';
 import { PageOrganizer, PageContextMenu, usePageTools, type PageAction } from './PageOrganizer.js';
 import type { TextSelectionTarget } from './PdfTextLayer.js';
-import { mergeTextRects } from './text-geometry.js';
+import { mergeTextRects, type TextHit } from './text-geometry.js';
+import { adjacentPageId } from './page-navigation.js';
 import { readingRegions } from './reading-order.js';
 import { renderPage } from './draw-render.js';
 import { ObjectSelectionLayer as SelectionLayer } from './ObjectSelectionLayer.js';
@@ -73,6 +74,7 @@ type EditorShellProps = {
   renderAiPanel?: (context: EditorAiContext) => ReactNode;
   source?: DocumentSource | null;
   onSourceConsumed?: (opened: boolean) => void;
+  onSaved?: (docId: string) => void;
   onDocumentChange?: (state: { document: DocumentInfo | null; busy: boolean; draftDirty: boolean }) => void;
   closeDocumentRef?: { current: (() => Promise<boolean>) | null };
   externalBusy?: boolean;
@@ -116,7 +118,7 @@ type Activity = 'idle' | 'opening' | 'rendering' | 'saving' | 'editing';
 type WebDocumentSession = { loaded: LoadedDocument; history: { canUndo: boolean; canRedo: boolean }; zoom: number; selectedIds: string[] };
 
 export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, renderAiPanel,
-  source: externalSource, onSourceConsumed, onDocumentChange, closeDocumentRef, externalBusy = false, allowReadOnlyNavigation = false, onActivityChange, headerActions,
+  source: externalSource, onSourceConsumed, onSaved, onDocumentChange, closeDocumentRef, externalBusy = false, allowReadOnlyNavigation = false, onActivityChange, headerActions,
   workspacePanel, workspaceId, workspacePreview }: EditorShellProps) {
   useI18n();
   const [activeTool, setActiveTool] = useState<EditorTool | null>(null);
@@ -135,6 +137,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [overviewColumns, setOverviewColumns] = useState(3);
   const [inlineRange, setInlineRange] = useState<[number, number] | null>(null);
   const [inlineRangeIsLogical, setInlineRangeIsLogical] = useState(false);
+  const [inlineHit, setInlineHit] = useState<TextHit | null>(null);
   const [pagePanelSection, setPagePanelSection] = useState<'number' | 'watermark' | 'header' | null>(null);
   const objectContextPoint = useRef({ x: 36, y: 36 });
   const [pageHost, setPageHost] = useState<HTMLDivElement | null>(null);
@@ -184,7 +187,19 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [editPending, setEditPending] = useState(false);
   const [textDraftDirty, setTextDraftDirty] = useState(false);
   const [paragraphDraftDirty, setParagraphDraftDirty] = useState(false);
-  const isDraftDirty = textDraftDirty || paragraphDraftDirty;
+  const [noteDraftPage, setNoteDraftPage] = useState<string | null>(null);
+  const noteDraft = useRef<{ pageId: string; handle: AnnotationDraftHandle } | null>(null);
+  const isTextDraftDirty = textDraftDirty || paragraphDraftDirty;
+  const isDraftDirty = isTextDraftDirty || noteDraftPage !== null;
+  const registerNoteDraft = useCallback((pageId: string, handle: AnnotationDraftHandle | null) => {
+    if (handle) { noteDraft.current = { pageId, handle }; setNoteDraftPage(pageId); }
+    else if (noteDraft.current?.pageId === pageId) { noteDraft.current = null; setNoteDraftPage(null); }
+  }, []);
+  const finishDrafts = async (): Promise<boolean> => {
+    if (isTextDraftDirty && !await textEditor.current?.finish()) return false;
+    if (noteDraft.current && !await noteDraft.current.handle.finish()) return false;
+    return true;
+  };
   const [zoom, setZoom] = useState(RENDER_SCALE);
   const [savePrompt, setSavePrompt] = useState<SavePrompt | null>(null);
   const saveResolver = useRef<((choice: SaveChoice) => void) | null>(null);
@@ -295,6 +310,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     documentRef.current = updated;
     setDocument(updated);
     triggerAutoRecovery(updated.info, updated.name);
+    onSaved?.(docId);
   };
 
   const restorePendingRecovery = async (): Promise<void> => {
@@ -462,7 +478,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
   const switchPage = async (pageId: string, targetTopPt?: number): Promise<void> => {
     if (previewActive || navigationBusy) return;
-    if (isDraftDirty && !await textEditor.current?.finish()) return;
+    if (isDraftDirty && !await finishDrafts()) return;
     if (!document) return;
     if (document.page.id === pageId) { requestAnimationFrame(() => scrollToPage(pageId, targetTopPt)); return; }
     setActivity('rendering');
@@ -486,7 +502,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   };
 
   const saveDocument = async (saveAs = false): Promise<SaveConfirmation | null> => {
-    if (isDraftDirty && !await textEditor.current?.finish()) return null;
+    if (isDraftDirty && !await finishDrafts()) return null;
     const current = documentRef.current;
     if (!current) return null;
     return saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, saveAs);
@@ -494,7 +510,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
   const exportDocument = async (options: ExportSettings, signal: AbortSignal,
     progress: (value: import('@pdf-editor/contracts').ConversionProgress) => void): Promise<string[]> => {
-    if (isDraftDirty && !await textEditor.current?.finish()) throw new Error('Apply or discard the text draft before exporting');
+    if (isDraftDirty && !await finishDrafts()) throw new Error('Apply or discard the text draft before exporting');
     const current = documentRef.current;
     if (!current) throw new Error('Open a PDF first');
     signal.throwIfAborted();
@@ -651,7 +667,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       setSelectedIds(current => normalizeSelection(page, !additive ? ids : ids.every(id => current.includes(id))
         ? current.filter(id => !ids.includes(id)) : [...new Set([...current, ...ids])]));
     };
-    if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) select(); }); return; }
+    if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) select(); }); return; }
     select();
   };
 
@@ -890,12 +906,12 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     if (previewActive && tool !== 'ai') return;
     if (tool === 'edit') { chooseTab('edit'); return; }
     if (tool === 'ai' && !hasAi) return;
-    if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) setActiveTool(tool); }); return; }
+    if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) setActiveTool(tool); }); return; }
     setActiveTool(tool);
   };
   const chooseTab = (next: RibbonTab) => {
     if (previewActive) return;
-    if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) chooseTabAfterSave(next); }); return; }
+    if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) chooseTabAfterSave(next); }); return; }
     chooseTabAfterSave(next);
   };
   const chooseTabAfterSave = (next: RibbonTab) => {
@@ -1050,8 +1066,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       await transformObjects(selectedIds, [0, sign, -sign, 0, cx + sign * cy, cy - sign * cx]);
     }
   };
-  const editTextAt = (loaded: LoadedDocument, id: string, range: [number, number] | null = null, rangeIsLogical = false) => {
+  const editTextAt = (loaded: LoadedDocument, id: string, range: [number, number] | null = null, rangeIsLogical = false, hit?: TextHit) => {
     if (isBusy || loaded.info.revision !== documentRef.current?.info.revision) return;
+    setInlineHit(hit ?? null);
     const flow = loaded.page.objects.find(object => object.id === id)?.textBlock?.flow;
     const activate = (target: LoadedDocument, objectId: string, selection: [number, number] | null) => {
       activateVisiblePage(target); setTab('edit'); setPointer('edit'); setSelectedIds(objectSelectionIds(target.page, objectId)); setInlineRange(selection); setInlineRangeIsLogical(rangeIsLogical); setInlineTextId(objectId);
@@ -1068,6 +1085,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           if (!first) continue;
           const target = await loadPage(engine, loaded.info, loaded.name, pageId, zoom);
           if (documentRef.current?.info.id !== loaded.info.id || documentRef.current.info.revision !== loaded.info.revision) return;
+          setInlineHit(null);
           activate(target, first.id, range ? [range[0] + flow.start, range[1] + flow.start] : null);
           requestAnimationFrame(() => scrollToPage(pageId, first.bounds.y));
           return;
@@ -1182,7 +1200,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       if (!typing && !inMenu && pointer === 'edit' && (event.key === 'Delete' || event.key === 'Backspace') && selectedIds.length) { event.preventDefault(); void runRibbonAction('delete'); return; }
       if (!typing && !inMenu && tab !== 'pages' && (presenting || !continuous) && ['ArrowLeft', 'ArrowRight', 'PageDown', 'PageUp', ' '].includes(event.key)) {
         event.preventDefault(); const step = ['ArrowLeft', 'PageUp'].includes(event.key) ? -1 : 1;
-        const id = document?.info.pageOrder[currentPageIndex + step * (view === 'double' ? 2 : 1)]; if (id) void switchPage(id); return;
+        const id = document && adjacentPageId(document.info.pageOrder, currentPageIndex, step, view); if (id) void switchPage(id); return;
       }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       const key = event.key.toLowerCase();
@@ -1207,7 +1225,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       {savePrompt && <SaveChangesDialog prompt={savePrompt} />}
       {passwordPrompt && <PasswordDialog prompt={passwordPrompt} />}
       <ImportPagesDialog {...pageTools.importDialogProps} />
-      <EditorTopbar productName={productName} name={workspacePreview?.name ?? document?.name} dirty={!previewActive && Boolean(document && document.info.revision !== document.info.savedRevision)}
+      <EditorTopbar productName={productName} name={workspacePreview?.name ?? document?.name} dirty={!previewActive && Boolean(document && (isDraftDirty || document.info.revision !== document.info.savedRevision))}
         showAi={hasAi} busy={operationBusy} documentActionsDisabled={previewActive} canUndo={!previewActive && history.canUndo} canRedo={!previewActive && history.canRedo} saving={activity === 'saving'} tool={activeTool}
         onTool={chooseTool} onOpen={() => void openDocument()} onClose={() => { if (!previewActive) void closeDocument(); }}
         onSave={() => { if (!previewActive) void saveDocument(); }} {...(host.capabilities.nativeFiles && !previewActive ? { onSaveAs: () => void saveDocument(true) } : {})}
@@ -1226,7 +1244,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       </nav>}
 
       <EditorRibbon tab={tab} onTab={chooseTab} pointer={pointer} onPointer={next => {
-        if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) setPointer(next); }); return; }
+        if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) setPointer(next); }); return; }
         if (tab === 'pages') chooseTabAfterSave('home');
         setPointer(next); setInlineTextId(null); setSelectedIds([]); setCropImage(false); setCropPage(false); setPlacement(null); setAnnotationDrawing(null); setPendingSignature(null);
       }} annotationTool={annotationDrawing?.tool ?? null} canAnnotate={Boolean(document?.info.permissions.annotate && document.info.capabilities.includes('annotation.add'))}
@@ -1236,9 +1254,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         hasDocument={Boolean(document)} busy={operationBusy} ocr={host.capabilities.ocr} railOpen={railOpen} onToggleRail={() => setRailOpen(value => !value)}
         selection={selectedText ? 'text' : selectedObjects.length === 1 && selectedObjects[0]?.type === 'image' ? 'image' : selectedObjects.length ? 'objects' : null}>
         {document && <DirectTextEditor document={document.info} page={document.page} selectedIds={selectedIds} inlineId={inlineTextId}
-          host={pageHost} render={document.render} engine={engine} disabled={operationBusy} handle={textEditor} initialRange={inlineRange} initialRangeIsLogical={inlineRangeIsLogical}
-          onClose={() => { setInlineTextId(null); setInlineRange(null); }} onEdit={() => { if (selectedIds[0]) editTextAt(document, selectedIds[0]); }} onManageFonts={() => chooseTool('fonts')}
-          onParagraph={id => { setSelectedIds([id]); setInlineRange(null); setInlineTextId(id); }}
+          host={pageHost} render={document.render} engine={engine} disabled={operationBusy} handle={textEditor} initialRange={inlineRange} initialRangeIsLogical={inlineRangeIsLogical} initialHit={inlineHit}
+          onClose={() => { setInlineTextId(null); setInlineRange(null); setInlineHit(null); }} onEdit={() => { if (selectedIds[0]) editTextAt(document, selectedIds[0]); }} onManageFonts={() => chooseTool('fonts')}
+          onParagraph={id => { setSelectedIds([id]); setInlineRange(null); setInlineHit(null); setInlineTextId(id); }}
           copiedFormat={copiedTextFormat} onCopyFormat={setCopiedTextFormat}
           onDraftChange={setTextDraftDirty} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
       </EditorRibbon>
@@ -1339,7 +1357,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
               root={stageRef} locked={previewActive || navigationBusy || cropImage || cropPage || Boolean(pendingSignature)} pointer={pointer} onActive={activateVisiblePage} onHost={setPageHost}
               onViewSize={setViewSize} drawing={Boolean(annotationDrawing || pendingSignature)}
               renderOverlay={shown => annotationDrawing && <AnnotationDrawingLayer document={shown.info} page={shown.page} engine={engine}
-                options={annotationDrawing} disabled={isBusy} onBusyChange={setEditPending}
+                options={annotationDrawing} disabled={operationBusy || isTextDraftDirty || (noteDraftPage !== null && noteDraftPage !== shown.page.id)} onBusyChange={setEditPending}
+                onDraftChange={registerNoteDraft}
                 onCommitted={handleCommitted} onCancel={() => setAnnotationDrawing(null)} />}
               onEditText={editTextAt} onInsertText={insertTextAt} onAnnotate={annotateSelection} onError={setError}>
               {(shown) => <>
@@ -1366,9 +1385,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                     <SelectionLayer page={shown.page} render={shown.render} selectedIds={selectedIds} onSelect={selectObject}
                       onBoxSelect={ids => {
                         const select = () => { setSelectedIds(ids); setSearchSelection(null); setInlineTextId(null); };
-                        if (isDraftDirty) { void textEditor.current?.finish().then(ok => { if (ok) select(); }); } else select();
+                        if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) select(); }); } else select();
                       }}
-                      onEditText={id => editTextAt(shown, id)}
+                      onEditText={(id, hit) => editTextAt(shown, id, hit ? [hit.offset, hit.offset] : null, false, hit)}
                       disabled={operationBusy} canTransform={shown.info.permissions.modify && shown.info.capabilities.includes('objects.transform')}
                       onMove={moveObjects} onTransform={transformObjects}
                       onResizeText={shown.info.capabilities.includes('text.resize') ? resizeTextFrames : undefined} />

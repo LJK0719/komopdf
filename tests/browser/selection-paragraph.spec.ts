@@ -59,6 +59,7 @@ test('tracking survives typing and bold; recognized paragraphs keep line spacing
   await expect(line).toHaveValue('1.6');
   await page.getByRole('combobox', { name: 'Paragraph alignment', exact: true }).selectOption('center');
   await input.fill('Alto text.\nBrave text.');
+  await input.press('Control+A');
   await page.getByRole('button', { name: 'Bold', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Bold', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(spacing).toHaveValue('3');

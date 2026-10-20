@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 import type { PageModel, RenderResult } from '@pdf-editor/contracts';
-import { ObjectSelectionLayer } from '../src/ui/ObjectSelectionLayer.js';
+import { keyboardScaleMatrix, ObjectSelectionLayer } from '../src/ui/ObjectSelectionLayer.js';
 import { pickObject } from '../src/ui/object-selection.js';
 
 const dummyPage: PageModel = {
@@ -40,6 +40,20 @@ const dummyRender: RenderResult = {
 };
 
 describe('ObjectSelectionLayer', () => {
+  it.each([
+    ['e', [1.1, 0, 0, 1, -5, 0]],
+    ['w', [1.1, 0, 0, 1, -15, 0]],
+    ['n', [1, 0, 0, 1.1, 0, -13]],
+    ['s', [1, 0, 0, 1.1, 0, -5]],
+    ['se', [1.1, 0, 0, 1.1, -5, -5]],
+  ] as const)('keyboard scaling %s keeps the opposite anchor and only changes the handle axes', (handle, expected) => {
+    const matrix = keyboardScaleMatrix(handle, {
+      minX: 50, minY: 50, maxX: 150, maxY: 130,
+      widthPt: 100, heightPt: 80, cxPt: 100, cyPt: 90,
+      boxLeft: 50, boxTop: 50, boxWidth: 100, boxHeight: 80,
+    }, 1.1);
+    matrix.forEach((value, index) => expect(value).toBeCloseTo(expected[index]!, 8));
+  });
   it('prefers nested text over a Form with identical bounds', () => {
     const form = { ...dummyPage.objects[0]!, type: 'form' as const };
     const text = { ...form, id: 'nested-text', type: 'text' as const,

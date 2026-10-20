@@ -1,10 +1,13 @@
 import { translate as t, useI18n } from './i18n.js';
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { EditableObject, PageModel, Rect, RenderResult } from '@pdf-editor/contracts';
 import { frameBounds, localFrameDelta, resizedTextFrame, selectionTextFrame, type TextFrame } from './text-frame.js';
 import { containsRect, isContainerInterior, normalizeSelection, pickObject, selectionScope } from './object-selection.js';
+import { hitText, textClusters, type TextHit } from './text-geometry.js';
 
 type ScaleHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+export type SelectionPointerStart = Pick<PointerEvent, 'pointerId' | 'button' | 'clientX' | 'clientY' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>;
+export const ObjectSelectionStartContext = createContext<{ current: SelectionPointerStart | null } | null>(null);
 
 type Props = {
   page: PageModel;
@@ -14,7 +17,7 @@ type Props = {
   canTransform: boolean;
   onSelect(id: string, additive: boolean): void;
   onBoxSelect(ids: string[]): void;
-  onEditText(id: string): void;
+  onEditText(id: string, hit?: TextHit): void;
   onMove(ids: string[], dx: number, dy: number): Promise<void>;
   onTransform?(ids: string[], matrix: [number, number, number, number, number, number]): Promise<void>;
   onResizeText?: ((ids: string[], frame: Rect) => Promise<void>) | undefined;
@@ -75,6 +78,13 @@ function getScaleAnchor(handle: ScaleHandle, b: SelectionBounds): { ax: number; 
     case 'w': return { ax: b.maxX, ay: b.cyPt, originX: '100%', originY: '50%' };
     case 'e': return { ax: b.minX, ay: b.cyPt, originX: '0%', originY: '50%' };
   }
+}
+
+export function keyboardScaleMatrix(handle: ScaleHandle, bounds: SelectionBounds, factor: number): [number, number, number, number, number, number] {
+  const sx = handle === 'n' || handle === 's' ? 1 : factor;
+  const sy = handle === 'e' || handle === 'w' ? 1 : factor;
+  const { ax, ay } = getScaleAnchor(handle, bounds);
+  return [sx, 0, 0, sy, (1 - sx) * ax, (1 - sy) * ay];
 }
 
 function computeScaleMatrix(
@@ -248,6 +258,30 @@ export function ObjectSelectionLayer({
     };
   }, [selectedObjects, textFrame, scaleX, scaleY]);
 
+  const beginSelection = (event: SelectionPointerStart, layer: HTMLDivElement) => {
+    if (disabled || event.button !== 0) return;
+    const rect = layer.getBoundingClientRect();
+    const startX = event.clientX - rect.left, startY = event.clientY - rect.top;
+    const object = hitAt(event.clientX, event.clientY);
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+    const box = !object || !canTransform || event.altKey || additive ||
+      isContainerInterior(object, objects, startX / scaleX, startY / scaleY, 6 / Math.max(scaleX, scaleY));
+    gesture.current = box
+      ? { type: 'box', pointerId: event.pointerId, startX, startY, additive, ...(object ? { clickId: object.id } : {}) }
+      : { type: 'move', pointerId: event.pointerId, startX, startY, additive, clickId: object.id,
+          ids: idsFor(object).some(id => selectedIds.includes(id)) ? selectedIds : idsFor(object) };
+    moved.current = false;
+    layer.setPointerCapture(event.pointerId);
+  };
+  const activationStart = useContext(ObjectSelectionStartContext);
+  useLayoutEffect(() => {
+    const start = activationStart?.current;
+    if (!start || !layerRef.current) return;
+    activationStart.current = null;
+    // Continue the pointer that activated this page; subsequent real move/up events use the usual gesture path.
+    beginSelection(start, layerRef.current);
+  }, [activationStart]);
+
   const handleHandlePointerDown = (
     event: ReactPointerEvent<HTMLButtonElement>,
     handle: ScaleHandle | 'rotate',
@@ -314,8 +348,7 @@ export function ObjectSelectionLayer({
           void onResizeText(textFrame.objectIds, resizedTextFrame(textFrame, scaleHandle, dx, dy));
           return;
         }
-        const { ax, ay } = getScaleAnchor(scaleHandle, bounds);
-        matrix = [factor, 0, 0, factor, (1 - factor) * ax, (1 - factor) * ay];
+        matrix = keyboardScaleMatrix(scaleHandle, bounds, factor);
       }
     } else if (type === 'rotate') {
       let degrees = 0;
@@ -378,23 +411,23 @@ export function ObjectSelectionLayer({
           const path = [...object.locator.containerPath, object.locator.objectIndex];
           onBoxSelect(page.objects.filter(child => child.locator.containerPath.length === path.length &&
             path.every((part, i) => child.locator.containerPath[i] === part)).map(child => child.id));
-        } else if (object?.textBlock) onEditText(object.id);
+        } else if (object?.textBlock) {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const x = (event.clientX - rect.left) / scaleX, y = (event.clientY - rect.top) / scaleY;
+          const ids = new Set(object.textBlock.sourceObjectIds);
+          const sources = page.objects.filter(item => item.id === object.id || ids.has(item.id));
+          let nearest: { id: string; hit: TextHit } | undefined, distance = Infinity;
+          for (const source of sources) {
+            if (!source.textBlock) continue;
+            const hit = hitText(textClusters(source.textBlock), x, y);
+            if (!hit) continue;
+            const b = hit.bounds, score = (x - b.x - b.width / 2) ** 2 + (y - b.y - b.height / 2) ** 2;
+            if (score < distance) { nearest = { id: source.id, hit }; distance = score; }
+          }
+          onEditText(nearest?.id ?? object.id, nearest?.hit);
+        }
       }}
-      onPointerDown={event => {
-        if (disabled || event.button !== 0) return;
-        const rect = event.currentTarget.getBoundingClientRect();
-        const startX = event.clientX - rect.left, startY = event.clientY - rect.top;
-        const object = hitAt(event.clientX, event.clientY);
-        const additive = event.ctrlKey || event.metaKey || event.shiftKey;
-        const box = !object || !canTransform || event.altKey || additive ||
-          isContainerInterior(object, objects, startX / scaleX, startY / scaleY, 6 / Math.max(scaleX, scaleY));
-        gesture.current = box
-          ? { type: 'box', pointerId: event.pointerId, startX, startY, additive, ...(object ? { clickId: object.id } : {}) }
-          : { type: 'move', pointerId: event.pointerId, startX, startY, additive, clickId: object.id,
-              ids: idsFor(object).some(id => selectedIds.includes(id)) ? selectedIds : idsFor(object) };
-        moved.current = false;
-        event.currentTarget.setPointerCapture(event.pointerId);
-      }}
+      onPointerDown={event => beginSelection(event, event.currentTarget)}
       onPointerLeave={() => setHoveredId(null)}
       onPointerMove={event => {
         const active = gesture.current;

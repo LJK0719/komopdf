@@ -3306,7 +3306,8 @@ bool ReplaceParagraphText(const Document& document, FPDF_DOCUMENT pdf, FPDF_PAGE
     CandidateMetadata* metadata, size_t page_index, const ObjectTarget& target,
     const EditCommand& command,
     const std::map<std::string, std::shared_ptr<const FontResource>>& resources,
-    Rect* layout_bounds, bool* overflow, TextInsertLayoutResult* paragraph_layout);
+    Rect* layout_bounds, bool* overflow, TextInsertLayoutResult* paragraph_layout,
+    std::span<const EditCommand> initial_styles);
 
 bool ApplyTextReplace(
     const Document& document,
@@ -3317,7 +3318,8 @@ bool ApplyTextReplace(
     CandidateFontCache* font_cache,
     Rect* layout_bounds,
     bool* overflow,
-    TextInsertLayoutResult* paragraph_layout) {
+    TextInsertLayoutResult* paragraph_layout,
+    std::span<const EditCommand> initial_styles = {}) {
   size_t page_index = 0;
   ScopedPage page(nullptr);
   if (!LoadCommandPage(pdf, metadata, command.page_id, &page_index, &page)) {
@@ -3337,7 +3339,7 @@ bool ApplyTextReplace(
   }
   if (ParagraphMetadata(target.object)) {
     return ReplaceParagraphText(document, pdf, page.get(), metadata, page_index, target,
-                                command, resources, layout_bounds, overflow, paragraph_layout);
+                                command, resources, layout_bounds, overflow, paragraph_layout, initial_styles);
   }
   CPDF_PageObject* native_object =
       CPDFPageObjectFromFPDFPageObject(target.object);
@@ -5859,7 +5861,7 @@ bool ApplyCommand(
   switch (command.type) {
     case EditType::kTextReplace:
       return ApplyTextReplace(document, pdf, metadata, command, resources,
-                              font_cache, layout_bounds, overflow, text_insert_layout);
+                              font_cache, layout_bounds, overflow, text_insert_layout, initial_paragraph_styles);
     case EditType::kTextStyle:
       return ApplyTextStyle(document, pdf, metadata, command, resources,
                             font_cache, batch_new_ids);
@@ -5964,25 +5966,34 @@ bool ApplyTransactionToPdf(
     TextInsertLayoutResult* command_insert_layout =
         text_insert_layout && single_command ? text_insert_layout : nullptr;
     const auto& original = transaction.commands[index];
-    size_t style_count = 0;
-    if (original.type == EditType::kTextReflow ||
-        (original.type == EditType::kTextInsert && (original.flags & kTextParagraphFlag))) {
-      // Reflow and its initial range styles are one paragraph construction.
-      // A temporary single-font paragraph may not cover the mixed text at all,
-      // and can paginate before the actual sizes/fonts have been applied.
-      for (size_t next = index + 1; next < transaction.commands.size(); ++next) {
-        const auto& style = transaction.commands[next];
-        if (style.type != EditType::kTextStyle || style.page_id != original.page_id ||
-            style.ids.size() != 1 || style.ids[0] != original.target_id + ":text") break;
-        ++style_count;
-      }
-    }
-    const auto initial_styles = std::span<const EditCommand>(transaction.commands).subspan(index + 1, style_count);
     const auto current_page = [&](const std::string& block) {
       const auto moved = metadata->paragraph_relocations.find(block);
       return moved != metadata->paragraph_relocations.end() && moved->second.first == original.page_id
           ? moved->second.second : original.page_id;
     };
+    size_t style_count = 0;
+    const bool replace = original.type == EditType::kTextReplace;
+    if (replace || original.type == EditType::kTextReflow ||
+        (original.type == EditType::kTextInsert && (original.flags & kTextParagraphFlag))) {
+      // Construction/replacement and adjacent range styles share one layout.
+      // The temporary inherited font may not cover the mixed text at all.
+      const std::string block_id = replace ? original.target_id : original.target_id + ":text";
+      for (size_t next = index + 1; next < transaction.commands.size(); ++next) {
+        const auto& style = transaction.commands[next];
+        if (style.type != EditType::kTextStyle || style.page_id != original.page_id ||
+            style.ids.size() != 1 || style.ids[0] != block_id) break;
+        ++style_count;
+      }
+      if (replace && style_count) {
+        size_t page_index = 0;
+        ScopedPage page(nullptr);
+        ObjectTarget target;
+        if (!LoadCommandPage(pdf, metadata, current_page(block_id), &page_index, &page) ||
+            !FindObjectTarget(page.get(), &metadata->pages[page_index], block_id, true, &target)) return false;
+        if (!ParagraphMetadata(target.object)) style_count = 0;
+      }
+    }
+    const auto initial_styles = std::span<const EditCommand>(transaction.commands).subspan(index + 1, style_count);
     std::vector<EditCommand> commands;
     if (original.type == EditType::kTextStyle) {
       std::map<std::string, std::vector<std::string>> groups;

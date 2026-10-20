@@ -197,9 +197,7 @@ export function findSelectionFontInfo(
       const name = run.style.fontId.slice(4).replace(/^[A-Z]{6}\+/, '');
       const parsed = sourceFontFamily(name);
       const family = resolveSourceFont(fonts, run.style)?.family ?? parsed;
-      font = { id: run.style.fontId, family, style: name, format: 'ttf',
-        weight: run.style.weight ?? getFontWeight({ id: name, family, style: name, format: 'ttf' }),
-        italic: run.style.italic ?? /italic|oblique/i.test(name) };
+      font = { id: run.style.fontId, family, style: name, format: 'ttf', ...sourceFontTraits(run.style) };
     }
     if (!font) return null;
     if (!detectedFamilies.includes(font.family)) {
@@ -235,6 +233,17 @@ export function sourceFontFamily(name: string): string {
   return known[normalizeFamily(clean)] ?? clean;
 }
 
+/** Named source faces are stronger evidence than PDF stem/italic estimates. */
+export function sourceFontTraits(style: TextStyle): { weight: number; italic: boolean } {
+  const name = style.fontId?.startsWith('pdf:') ? style.fontId.slice(4).replace(/^[A-Z]{6}\+/, '') : '';
+  const suffix = name.match(/[-,\s]((?:extra[-\s]?)?(?:bold|light)|semi[-\s]?bold|demi[-\s]?bold|black|heavy|medium|thin|regular|roman|italic|oblique)[\w\s-]*(?:MT)?$/i)?.[0] ?? '';
+  const named = { id: name, family: '', style: suffix, format: 'ttf' as const };
+  return {
+    weight: suffix && !/^[-,\s]*(italic|oblique)(?:MT)?$/i.test(suffix) ? getFontWeight(named) : style.weight ?? 400,
+    italic: /italic|oblique/i.test(suffix) || Boolean(style.italic),
+  };
+}
+
 const sourceFaces = new WeakMap<readonly EditorFont[], Map<string, EditorFont | undefined>>();
 
 /** Match a source PDF face without substituting a different family. */
@@ -256,8 +265,7 @@ function matchSourceFont(fonts: readonly EditorFont[], style: TextStyle): Editor
   const name = style.fontId.slice(4).replace(/^[A-Z]{6}\+/, '');
   const family = sourceFontFamily(name);
   const source = normalizeFamily(family);
-  const weight = style.weight ?? getFontWeight({ id: name, family, style: name, format: 'ttf' });
-  const italic = style.italic ?? /italic|oblique/i.test(name);
+  const { weight, italic } = sourceFontTraits(style);
   const matches = fonts.filter(font => font.supported !== false && [font.family, font.postscriptName ?? '', ...(font.aliases ?? [])]
     .some(alias => normalizeFamily(sourceFontFamily(alias)) === source));
   return matches.filter(font => getFontItalic(font) === italic)

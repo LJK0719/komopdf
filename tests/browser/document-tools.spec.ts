@@ -1,6 +1,52 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
+test('form value and property drafts survive applying the other category and committed drafts follow undo', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('komopdf.ui.language', 'en'));
+  await page.goto('/editor/');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await (await chooser).setFiles({ name: 'form-drafts.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await page.locator('.ribbon-tabs').getByRole('button', { name: 'Comment', exact: true }).click();
+  await page.getByRole('button', { name: 'Fill & forms', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Field name', exact: true }).fill('DraftField');
+  await page.getByRole('button', { name: 'Create field', exact: true }).click();
+  const field = page.locator('.document-field').filter({ hasText: 'DraftField' });
+  const value = field.getByRole('textbox', { name: 'Value', exact: true });
+  const tooltip = field.getByRole('textbox', { name: 'Tooltip', exact: true });
+  const applyProperties = field.getByRole('button', { name: 'Apply field properties', exact: true });
+  const undo = page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true });
+  const redo = page.getByRole('button', { name: 'Redo (Ctrl Shift Z)', exact: true });
+  await expect(value).toBeVisible();
+
+  await value.fill('Pending value');
+  await tooltip.fill(' Saved tooltip ');
+  await applyProperties.click();
+  await expect(tooltip).toHaveValue('Saved tooltip');
+  await expect(value).toHaveValue('Pending value');
+  await expect(applyProperties).toBeDisabled();
+  await undo.click();
+  await expect(tooltip).toHaveValue('');
+  await expect(value).toHaveValue('Pending value');
+  await redo.click();
+  await expect(tooltip).toHaveValue('Saved tooltip');
+
+  await tooltip.fill('Pending tooltip');
+  await field.getByRole('button', { name: 'Apply value', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(value).toHaveValue('Pending value');
+  await expect(tooltip).toHaveValue('Pending tooltip');
+  await expect(applyProperties).toBeEnabled();
+  await undo.click();
+  await expect(value).toHaveValue('');
+  await expect(tooltip).toHaveValue('Pending tooltip');
+  await redo.click();
+  await expect(value).toHaveValue('Pending value');
+  await expect(tooltip).toHaveValue('Pending tooltip');
+  await expect(page.locator('.status-dot-error')).toHaveCount(0);
+});
+
 test('real WASM creates form fields, fills them, adds annotations, and retains them after save and reopen', async ({ page }) => {
   const posts: string[] = [];
   page.on('request', request => { if (request.method() === 'POST') posts.push(request.url()); });

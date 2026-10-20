@@ -1,4 +1,29 @@
-import type { TextBlock, TextRange } from '@pdf-editor/contracts';
+import type { StyledTextRun, TextBlock, TextRange, TextStyle } from '@pdf-editor/contracts';
+
+/** Compare styles in the final text coordinates without replacing untouched fonts. */
+export function textStyleChanges(before: StyledTextRun[], after: StyledTextRun[]): { range: TextRange; style: TextStyle }[] {
+  const original = before.filter(run => run.text), desired = after.filter(run => run.text);
+  const changes: { range: TextRange; style: TextStyle }[] = [];
+  let left = 0, right = 0, start = 0, leftEnd = original[0]?.text.length ?? 0, rightEnd = desired[0]?.text.length ?? 0;
+  while (left < original.length && right < desired.length) {
+    const end = Math.min(leftEnd, rightEnd), a = original[left]!.style, b = desired[right]!.style;
+    const style: TextStyle = {};
+    if (b.fontId && b.fontId !== a.fontId) style.fontId = b.fontId;
+    if (b.fontSize !== undefined && b.fontSize !== a.fontSize) style.fontSize = b.fontSize;
+    if ((b.characterSpacing ?? 0) !== (a.characterSpacing ?? 0)) style.characterSpacing = b.characterSpacing ?? 0;
+    if (Boolean(b.underline) !== Boolean(a.underline)) style.underline = Boolean(b.underline);
+    if (JSON.stringify(b.color ?? [0, 0, 0]) !== JSON.stringify(a.color ?? [0, 0, 0])) style.color = b.color ?? [0, 0, 0];
+    if (Object.keys(style).length) {
+      const previous = changes.at(-1);
+      if (previous && previous.range[1] === start && JSON.stringify(previous.style) === JSON.stringify(style)) previous.range[1] = end;
+      else changes.push({ range: [start, end], style });
+    }
+    start = end;
+    if (leftEnd === end) leftEnd += original[++left]?.text.length ?? 0;
+    if (rightEnd === end) rightEnd += desired[++right]?.text.length ?? 0;
+  }
+  return changes;
+}
 
 export function textChange(before: string, after: string): { range: TextRange; text: string } {
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });

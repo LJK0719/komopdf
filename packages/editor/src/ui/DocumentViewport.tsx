@@ -4,6 +4,7 @@ import type { LoadedDocument } from './EditorShell.js';
 import { drawRender, mountVisiblePageTiles, renderPage } from './draw-render.js';
 import { useI18n } from './i18n.js';
 import { PdfTextLayer, type TextSelectionTarget, type ReadingAction } from './PdfTextLayer.js';
+import { ObjectSelectionStartContext, type SelectionPointerStart } from './ObjectSelectionLayer.js';
 
 export type PageView = 'single' | 'double';
 export type PointerTool = 'hand' | 'select' | 'edit';
@@ -118,6 +119,7 @@ function PageSurface({ engine, document, zoom, root, pageId, pageNumber, childre
   const [host, setHost] = useState<HTMLDivElement | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const tiles = useRef<HTMLDivElement>(null);
+  const selectionStart = useRef<SelectionPointerStart | null>(null);
   const active = document.page.id === pageId;
   const [visible, setVisible] = useState(active);
   useEffect(() => { if (active) onHost(host); }, [active, host, onHost]);
@@ -169,13 +171,22 @@ function PageSurface({ engine, document, zoom, root, pageId, pageNumber, childre
   const size = page ?? estimatedSize.current;
   return <div ref={setHost} className="page-wrap" data-document-page={pageId} data-page-number={pageNumber}
     style={{ width: Math.ceil(size.widthPt * zoom), height: Math.ceil(size.heightPt * zoom) }}
-    onPointerDownCapture={() => { if (!active && shown && !locked) onActive(shown); }}>
+    onPointerDownCapture={event => {
+      if (active || !shown || locked) return;
+      if (pointer === 'edit' && !drawing && event.button === 0) {
+        const { pointerId, button, clientX, clientY, ctrlKey, metaKey, shiftKey, altKey } = event;
+        selectionStart.current = { pointerId, button, clientX, clientY, ctrlKey, metaKey, shiftKey, altKey };
+      }
+      onActive(shown);
+    }}
+    onPointerUpCapture={() => { selectionStart.current = null; }}
+    onPointerCancelCapture={() => { selectionStart.current = null; }}>
     {shown && visible ? <>
       {shown.render.pixels.byteLength ? <canvas ref={canvas} className="pdf-canvas" aria-label={t('Page {page}', { page: pageNumber })} />
         : <div ref={tiles} className="pdf-tile-layer" role="img" aria-label={t('Page {page}', { page: pageNumber })} />}
       {!drawing && pointer === 'select' && document.info.permissions.copy && <PdfTextLayer document={shown} zoom={zoom} disabled={locked}
         onEdit={onEditText} onInsert={onInsertText} onAnnotate={onAnnotate} onError={onError} />}
-      {active && children(shown, host)}
+      {active && <ObjectSelectionStartContext.Provider value={selectionStart}>{children(shown, host)}</ObjectSelectionStartContext.Provider>}
       {renderOverlay?.(shown, host)}
     </> : <span className="page-placeholder">{error || t('Page {page}', { page: pageNumber })}</span>}
     <span className="page-caption" aria-hidden="true">{pageNumber}</span>

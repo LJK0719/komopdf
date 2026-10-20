@@ -193,6 +193,116 @@ void TestSourceParagraphGapsAndFlow() {
   pde_close(reopened); pde_close(doc);
 }
 
+void TestSourceParagraphRangeStyles() {
+  for (const bool flow : {false, true}) {
+    const std::string source = Pdf({"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        Stream("BT /F1 18 Tf 0.6 Tc 2 Tw 20 150 Td [(Original) 20 ( text)] TJ ET"),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"});
+    const auto doc = pde_open_memory(reinterpret_cast<const uint8_t*>(source.data()), source.size(), "source-range-style", "synthetic-source-style", nullptr);
+    const auto before = RequireResult(pde_describe_page(doc, 0), "describe source style fixture");
+    const auto page = PageIdFromDescription(before), block = TextBlockIds(before).front(); const char* ids[] = {block.c_str()};
+    const auto original_pixels = RenderPixels(doc, 0, 300, 200);
+    std::string text = "Original text\nTail";
+    if (flow) for (int i = 0; i < 24; ++i) text += "\nTail";
+    PdeEditCommand reflow{}; reflow.type = 20; reflow.page_id = page.c_str(); reflow.target_id = "source-style-paragraph";
+    reflow.ids = ids; reflow.id_count = 1; reflow.text_utf8 = text.c_str(); reflow.flags = 2 | 1024;
+    reflow.values[0] = JsonNumberAfter(before, "\"bounds\":{\"x\":"); reflow.values[1] = JsonNumberAfter(before, "\"y\":");
+    reflow.values[2] = 260; reflow.values[3] = 100; reflow.values[4] = 18;
+    Require(pde_apply_commands(doc, 0, "materialize-range-style", &reflow, 1) != nullptr, "materialize source style fixture");
+    const auto described = RequireResult(pde_describe_page(doc, 0), "describe materialized style fixture");
+    const auto paragraph_block = TextBlockIds(described).front(); const char* paragraph_ids[] = {paragraph_block.c_str()};
+    PdeEditCommand style{}; style.type = 2; style.page_id = page.c_str(); style.ids = paragraph_ids; style.id_count = 1;
+    style.start_utf16 = 14; style.end_utf16 = 18;
+    uint32_t revision = 1;
+    for (const uint32_t flag : {2U, 8U, 4U, 32U}) {
+      style.flags = 16 | flag;
+      style.values[0] = 20; style.values[1] = 0.8; style.values[2] = 0.1; style.values[3] = 0.2;
+      style.values[4] = 1.2; style.values[5] = 1;
+      const auto prior = RenderPixels(doc, 0, 300, 200);
+      const std::string transaction = "local-source-style-" + std::to_string(flag);
+      Require(pde_apply_commands(doc, revision++, transaction.c_str(), &style, 1) != nullptr,
+          "local size, tracking, color and underline edit succeeds for source and flow paragraphs");
+      const auto styled = RenderPixels(doc, 0, 300, 200);
+      Require(styled != prior, "requested local source formatting changes visible pixels");
+      Require(std::memcmp(original_pixels.data(), styled.data(), 55 * 300 * 4) == 0,
+          "local style preserves untouched first-line glyphs, TJ/Tc/Tw spacing and baseline, including flow");
+    }
+    const auto styled = RenderPixels(doc, 0, 300, 200);
+    Require(pde_save_memory(doc) != nullptr, "save source range styles");
+    const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+    const auto reopened = pde_open_memory(saved.data(), saved.size(), "source-range-reopen", "synthetic-styled-source", nullptr);
+    Require(RenderPixels(reopened, 0, 300, 200) == styled, "source range formatting and untouched pixels survive save/reopen");
+    Require(pde_undo(doc) != nullptr && pde_redo(doc) != nullptr && RenderPixels(doc, 0, 300, 200) == styled,
+        "source range styles remain ordinary atomic undo/redo transactions");
+    if (flow) Require(pde_describe_page(doc, 1) != nullptr, "range style fixture really spans pages");
+    pde_close(reopened); pde_close(doc);
+  }
+}
+
+void TestSourceReplacementInitialStyles(const std::string& regular_path, const std::string& bold_path) {
+  const auto regular = ReadTestFile(regular_path), bold = ReadTestFile(bold_path);
+  Require(pde_register_font("source-explicit-regular", regular.data(), regular.size(), 0) != nullptr &&
+      pde_register_font("source-explicit-bold", bold.data(), bold.size(), 0) != nullptr, "register explicit insertion font faces");
+  const std::string source = Pdf({"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+      Stream("BT /F1 18 Tf 0.6 Tc 2 Tw 20 150 Td [(Original) 20 ( text)] TJ ET"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"});
+  const auto doc = pde_open_memory(reinterpret_cast<const uint8_t*>(source.data()), source.size(), "source-initial-styles", "synthetic-initial-styles", nullptr);
+  const auto before = RequireResult(pde_describe_page(doc, 0), "describe initial style fixture");
+  const auto page = PageIdFromDescription(before), block = TextBlockIds(before).front(); const char* ids[] = {block.c_str()};
+  const auto original_pixels = RenderPixels(doc, 0, 300, 200);
+  PdeEditCommand commands[4]{};
+  auto& reflow = commands[0]; reflow.type = 20; reflow.page_id = page.c_str(); reflow.target_id = "initial-style-paragraph";
+  reflow.ids = ids; reflow.id_count = 1; reflow.text_utf8 = "Original text"; reflow.flags = 2 | 1024 | 65536;
+  reflow.values[0] = JsonNumberAfter(before, "\"bounds\":{\"x\":"); reflow.values[1] = JsonNumberAfter(before, "\"y\":");
+  reflow.values[2] = 260; reflow.values[3] = 100; reflow.values[4] = 18;
+  auto& replace = commands[1]; replace.type = 1; replace.page_id = page.c_str(); replace.target_id = "initial-style-paragraph:text";
+  replace.start_utf16 = 0; replace.end_utf16 = 13; replace.text_utf8 = "Original text\n\xC4\x80\xC5\x90"; replace.flags = 65536;
+  const char* paragraph_ids[] = {"initial-style-paragraph:text"};
+  for (size_t i = 2; i < 4; ++i) {
+    auto& style = commands[i]; style.type = 2; style.page_id = page.c_str(); style.ids = paragraph_ids; style.id_count = 1;
+    style.flags = 1 | 16; style.start_utf16 = static_cast<uint32_t>(12 + i); style.end_utf16 = style.start_utf16 + 1;
+    style.font_id = i == 2 ? "source-explicit-regular" : "source-explicit-bold";
+  }
+  Require(pde_preview_commands(doc, 0, commands, 2) == nullptr && std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
+      std::string(pde_describe_page(doc, 0)) == before, "uncovered added source glyph is still rejected atomically");
+  Require(pde_preview_commands(doc, 0, commands, 4) != nullptr && std::string(pde_describe_page(doc, 0)) == before,
+      "replacement preview sees all adjacent explicit font ranges before subset completion");
+  Require(pde_apply_commands(doc, 0, "materialize-replace-mixed-style", commands, 4) != nullptr,
+      "source materialization, replacement and two explicit new fonts commit in one transaction");
+  const auto result = RequireResult(pde_describe_page(doc, 0), "describe initial style result");
+  Require(result.find("source-explicit-regular") != std::string::npos && result.find("source-explicit-bold") != std::string::npos,
+      "both explicit insertion fonts are retained as style runs");
+  const auto mixed_pixels = RenderPixels(doc, 0, 300, 200);
+  Require(std::memcmp(original_pixels.data(), mixed_pixels.data(), 55 * 300 * 4) == 0,
+      "mixed-font insertion preserves every unchanged source glyph and source spacing");
+  PdeEditCommand style = commands[3]; style.start_utf16 = 9; style.end_utf16 = 13;
+  Require(pde_apply_commands(doc, 1, "bold-local-source-word", &style, 1) != nullptr, "local source font change preserves all other source runs");
+  PdeEditCommand append = replace; append.start_utf16 = 16; append.end_utf16 = 16; append.text_utf8 = "Z"; append.font_id = "source-explicit-bold";
+  Require(pde_apply_commands(doc, 2, "type-after-local-bold", &append, 1) != nullptr, "typing continues after a local source bold edit");
+  Require(pde_save_memory(doc) != nullptr, "save source paragraph after mixed-font insertion and continued typing");
+  const std::vector<uint8_t> saved(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  const auto reopened = pde_open_memory(saved.data(), saved.size(), "mixed-source-reopen", "synthetic-mixed-source", nullptr);
+  Require(RenderPixels(reopened, 0, 300, 200) == RenderPixels(doc, 0, 300, 200), "mixed source fonts and local bold survive save/reopen");
+  const auto reopened_description = RequireResult(pde_describe_page(reopened, 0), "describe reopened mixed source");
+  const auto reopened_page = PageIdFromDescription(reopened_description), reopened_block = TextBlockIds(reopened_description).front();
+  const char* reopened_ids[] = {reopened_block.c_str()};
+  PdeEditCommand continued[3] = {replace, commands[2], commands[3]};
+  continued[0].page_id = reopened_page.c_str(); continued[0].target_id = reopened_block.c_str();
+  continued[0].start_utf16 = 17; continued[0].end_utf16 = 17; continued[0].text_utf8 = "\xC4\x92\xC5\xB0";
+  for (size_t i = 1; i < 3; ++i) {
+    continued[i].page_id = reopened_page.c_str(); continued[i].ids = reopened_ids;
+    continued[i].start_utf16 = static_cast<uint32_t>(16 + i); continued[i].end_utf16 = continued[i].start_utf16 + 1;
+  }
+  Require(pde_apply_commands(reopened, 0, "reuse-explicit-source-font-faces", continued, 3) != nullptr,
+      "explicit styles use registered full faces instead of saved subsets with the same font IDs");
+  Require(pde_undo(doc) != nullptr && pde_undo(doc) != nullptr && pde_undo(doc) != nullptr &&
+      std::string(pde_describe_page(doc, 0)) == before && pde_redo(doc) != nullptr && RenderPixels(doc, 0, 300, 200) == mixed_pixels,
+      "materialize, replace and explicit fonts are one atomic undo/redo step");
+  pde_close(reopened); pde_close(doc);
+}
+
 void TestSubsetSourceParagraphEdit(const std::string& path) {
   const auto font_bytes = ReadTestFile(path);
   Require(pde_register_font("source-completion", font_bytes.data(), font_bytes.size(), 0) != nullptr,

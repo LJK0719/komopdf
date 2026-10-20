@@ -5,6 +5,8 @@ import { annotationBounds, annotationNoteBounds, annotationPointFromClient, buil
 import { useI18n } from './i18n.js';
 import './annotations.css';
 
+export type AnnotationDraftHandle = { finish(): Promise<boolean> };
+
 type Props = {
   document: DocumentInfo;
   page: PageModel;
@@ -14,12 +16,13 @@ type Props = {
   onBusyChange(busy: boolean): void;
   onCommitted(result: CommitResult): Promise<void>;
   onCancel(): void;
+  onDraftChange?(pageId: string, draft: AnnotationDraftHandle | null): void;
 };
 type Gesture = { scope: string; pointerId: number; points: AnnotationPoint[]; startClient: AnnotationPoint; distance: number };
 type Draft = { scope: string; points: AnnotationPoint[] };
 type Note = { scope: string; point: AnnotationPoint; text: string };
 
-export function AnnotationDrawingLayer({ document: info, page, engine, options, disabled, onBusyChange, onCommitted, onCancel }: Props) {
+export function AnnotationDrawingLayer({ document: info, page, engine, options, disabled, onBusyChange, onCommitted, onCancel, onDraftChange }: Props) {
   const { t } = useI18n();
   const svg = useRef<SVGSVGElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -29,6 +32,9 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
   const [note, setNote] = useState<Note | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const composing = useRef(false);
+  const latestFinish = useRef<() => Promise<boolean>>(async () => true);
+  const draftHandle = useRef<AnnotationDraftHandle>({ finish: () => latestFinish.current() });
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const generation = useRef(0);
   const mounted = useRef(true);
@@ -45,6 +51,7 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
     const active = gesture.current;
     gesture.current = null;
     if (active && svg.current?.hasPointerCapture(active.pointerId)) svg.current.releasePointerCapture(active.pointerId);
+    composing.current = false;
     setDraft(null); setNote(null);
   }
 
@@ -53,7 +60,14 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
     return () => { mounted.current = false; generation.current += 1; cancelAnimationFrame(previewFrame.current); };
   }, []);
   useEffect(() => { clearDraft(); setFeedback(null); }, [scope]);
-  useEffect(() => { if ((disabled && !busyRef.current) || !allowed) clearDraft(); }, [disabled, allowed]);
+  useEffect(() => {
+    if (!allowed || (disabled && gesture.current)) clearDraft();
+  }, [disabled, allowed]);
+  useEffect(() => {
+    if (!visibleNote) return;
+    onDraftChange?.(page.id, draftHandle.current);
+    return () => onDraftChange?.(page.id, null);
+  }, [Boolean(visibleNote), page.id, onDraftChange]);
   useEffect(() => { if (visibleNote) textarea.current?.focus(); }, [visibleNote?.scope, visibleNote?.point]);
   useEffect(() => {
     if (!options) return;
@@ -66,27 +80,40 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
     return () => window.removeEventListener('keydown', escape, true);
   }, [Boolean(options)]);
 
-  async function submit(points: AnnotationPoint[], text = options?.text ?? ''): Promise<void> {
-    if (!options || locked || busyRef.current) return;
+  async function submit(points: AnnotationPoint[], text = options?.text ?? ''): Promise<boolean> {
+    if (!options || locked || busyRef.current || composing.current) return false;
     const expectedScope = scope, expectedGeneration = generation.current;
     const isCurrent = () => mounted.current && scopeRef.current === expectedScope && generation.current === expectedGeneration;
+    let committed = false;
     busyRef.current = true; setBusy(true); onBusyChange(true); setFeedback(null);
     try {
       const command = buildDrawnAnnotation(page, { ...options, text }, points);
-      if (!command) return;
+      if (!command) return false;
       await commitDrawnAnnotation(engine, info, page, command, isCurrent, async result => {
-        clearDraft();
         await onCommitted(result);
-        if (mounted.current) setFeedback({ error: false, text: 'Annotation added.' });
+        committed = true;
+        if (mounted.current && generation.current === expectedGeneration) {
+          clearDraft();
+          setFeedback({ error: false, text: 'Annotation added.' });
+        }
       });
+      return committed;
     } catch (caught) {
       if (isCurrent()) setFeedback({ error: true, text: caught instanceof Error ? caught.message : 'Could not add the annotation.' });
+      return false;
     } finally {
       busyRef.current = false;
       if (mounted.current) setBusy(false);
       onBusyChange(false);
     }
   }
+
+  latestFinish.current = async () => {
+    if (!visibleNote) return true;
+    if (locked || busyRef.current || composing.current) return false;
+    if (!visibleNote.text.trim()) { clearDraft(); return true; }
+    return submit([visibleNote.point], visibleNote.text);
+  };
 
   function appendPoint(event: ReactPointerEvent<SVGSVGElement>): void {
     const active = gesture.current;
@@ -158,12 +185,14 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
       style={{ left: `clamp(6px, ${visibleNote.point[0] / page.widthPt * 100}%, max(6px, calc(100% - 292px)))`,
         top: `clamp(6px, ${visibleNote.point[1] / page.heightPt * 100}%, max(6px, calc(100% - 200px)))` }}
       onPointerDown={event => event.stopPropagation()} onKeyDown={event => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') return;
         event.stopPropagation();
         if (!event.nativeEvent.isComposing && (event.ctrlKey || event.metaKey) && event.key === 'Enter' && visibleNote.text.trim()) {
           event.preventDefault(); void submit([visibleNote.point], visibleNote.text);
         }
       }} onSubmit={event => { event.preventDefault(); void submit([visibleNote.point], visibleNote.text); }}>
-      <label>{t('New note')}<textarea ref={textarea} rows={4} value={visibleNote.text} disabled={busy}
+      <label>{t('New note')}<textarea ref={textarea} rows={4} value={visibleNote.text} disabled={locked}
+        onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
         placeholder={t('Write a note…')} onChange={event => setNote({ ...visibleNote, text: event.target.value })} /></label>
       <div className="annotation-note-actions">
         <span>{t('Ctrl/⌘ + Enter to save')}</span>
