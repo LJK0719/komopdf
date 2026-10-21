@@ -1,5 +1,5 @@
 import { translate as t, useI18n } from './i18n.js';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, type RefObject } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
   type CommitResult,
@@ -15,8 +15,13 @@ import {
 import { useFontResources } from './font-resources.js';
 import { annotationTypeLabels, filterAnnotations, type AnnotationDrawingOptions } from './annotation-drawing.js';
 import './annotations.css';
+import './panel-refresh.css';
+
+export type DocumentToolsDraftHandle = { finish(): Promise<boolean>; discard(): void };
 
 type Props = {
+  draftRef?: RefObject<DocumentToolsDraftHandle | null>;
+  onDraftDirtyChange?(dirty: boolean): void;
   mode?: 'comment' | 'forms';
   active?: boolean;
   document: DocumentInfo;
@@ -43,7 +48,7 @@ type FieldPropertiesDraft = {
 
 const DEFAULT_FORM_FONT_ID = 'noto-sans-cjk-sc-regular';
 
-export function DocumentToolsPanel({ mode = 'comment', active = true, document, page, selectedIds, engine, disabled, drawing = null, onDrawingChange, onNavigate, onBusyChange, onCommitted }: Props) {
+export function DocumentToolsPanel({ mode = 'comment', active = true, document, page, selectedIds, engine, disabled, drawing = null, draftRef, onDraftDirtyChange, onDrawingChange, onNavigate, onBusyChange, onCommitted }: Props) {
   useI18n();
   const [boundsDraft, setBoundsDraft] = useState<BoundsDraft>({ x: '36', y: '36', width: '180', height: '48' });
   const [annotationText, setAnnotationText] = useState('');
@@ -163,38 +168,70 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     subtype: annotationType, text: annotationSearch });
   const selectedAnnotation = currentAnnotations.find(annotation => annotation.id === selectedAnnotationId && annotation.pageId === page.id);
 
-  async function execute(command: EditCommand): Promise<void> {
+  const draftFields = fieldBaseline.current?.documentId === document.id ? fieldBaseline.current.fields : [];
+  const dirty = draftFields.some(field => isFormValueDirty(field, fieldDrafts[field.id])
+    || isFormPropertiesDirty(field, fieldPropertyDrafts[field.id]));
+  useEffect(() => { onDraftDirtyChange?.(dirty); }, [dirty, onDraftDirtyChange]);
+  useEffect(() => () => { onDraftDirtyChange?.(false); }, [onDraftDirtyChange]);
+  useImperativeHandle(draftRef, () => ({ finish: finishDrafts, discard: discardDrafts }));
+
+  function discardDrafts(): void {
+    setFieldDrafts({}); setFieldPropertyDrafts({}); setError('');
+    onDraftDirtyChange?.(false);
+  }
+
+  async function finishDrafts(): Promise<boolean> {
+    if (!dirty) return true;
+    if (locked || loading) {
+      setError('Wait for the current operation, then apply the form changes.');
+      return false;
+    }
     const expectedScope = scope;
+    setBusy(true); onBusyChange(true); setError('');
+    try {
+      if (!engine.describeForms) throw new Error('Form inspection is unavailable in this adapter.');
+      const latestFields = await engine.describeForms(document.id);
+      if (scopeRef.current !== expectedScope) throw new Error('The document changed while previewing this edit');
+      const values = mergeFormValueDrafts(draftFields, latestFields, fieldDrafts);
+      const properties = mergeFormPropertyDrafts(draftFields, latestFields, fieldPropertyDrafts);
+      const commands = buildFormDraftCommands(latestFields, values, properties);
+      if (commands.length) await execute(commands, latestFields);
+      discardDrafts();
+      return true;
+    } catch (caught) {
+      setError(formatError(caught));
+      return false;
+    } finally {
+      setBusy(false); onBusyChange(false);
+    }
+  }
+
+  async function execute(command: EditCommand | EditCommand[], formFields = dataScope === documentScope ? fields : []): Promise<void> {
+    const expectedScope = scope;
+    const commands = Array.isArray(command) ? command : [command];
     const transaction: EditTransaction = {
-      id: crypto.randomUUID(),
-      docId: document.id,
-      baseRevision: document.revision,
-      source: 'manual',
-      commands: [command],
+      id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision, source: 'manual', commands,
     };
-    const targetPageId = 'pageId' in command ? command.pageId : page.id;
-    const targetPage = targetPageId === page.id ? page : await engine.describePage(document.id, targetPageId);
+    const targetPageIds = new Set(commands.flatMap(item => 'pageId' in item ? [item.pageId] : []));
+    const pages = new Map([[page.id, page]]);
+    await Promise.all([...targetPageIds].filter(id => id !== page.id).map(async id => {
+      pages.set(id, await engine.describePage(document.id, id));
+    }));
     if (scopeRef.current !== expectedScope) throw new Error('The document changed while previewing this edit');
     const context = {
-      document,
-      pages: new Map([[page.id, page], [targetPage.id, targetPage]]),
-      fields: buildFieldContext(dataScope === documentScope ? fields : [], page.id),
+      document, pages, fields: buildFieldContext(formFields),
       annotations: new Map(currentAnnotations.map(annotation => [annotation.id,
         { pageId: annotation.pageId, subtype: annotation.subtype }])),
-      ...(command.type === 'form.create' && command.fontId
-        ? { fontIds: new Set([command.fontId]) }
-        : {}),
+      fontIds: new Set(commands.flatMap(item => item.type === 'form.create' && item.fontId ? [item.fontId] : [])),
     };
     await engine.previewTransaction(transaction);
     if (scopeRef.current !== expectedScope) throw new Error('The document changed while previewing this edit');
     const result = await new CommandRegistry(engine).execute(transaction, context);
-    // Only the successfully applied category is clean; the other draft must survive the reload.
-    if (command.type === 'form.fill') setFieldDrafts(current => {
-      const next = { ...current }; delete next[command.fieldId]; return next;
-    });
-    if (command.type === 'form.update') setFieldPropertyDrafts(current => {
-      const next = { ...current }; delete next[command.fieldId]; return next;
-    });
+    // Only successfully applied categories are clean; unrelated drafts survive the reload.
+    const filled = new Set(commands.flatMap(item => item.type === 'form.fill' ? [item.fieldId] : []));
+    const updated = new Set(commands.flatMap(item => item.type === 'form.update' ? [item.fieldId] : []));
+    setFieldDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !filled.has(id))));
+    setFieldPropertyDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !updated.has(id))));
     await onCommitted(result);
   }
 
@@ -258,14 +295,14 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   }
 
   async function updateAnnotation(annotation: PdfAnnotationInfo): Promise<void> {
-    if (annotation.subtype === 'other' || annotation.subtype === 'link') throw new Error('This annotation subtype cannot be rebuilt');
+    if (annotation.subtype === 'other' || annotation.subtype === 'link' || annotation.subtype === 'ink') {
+      throw new Error('This annotation cannot be edited without replacing its original geometry.');
+    }
     await execute({
       type: 'annotation.update', pageId: page.id, annotationId: annotation.id,
       subtype: annotation.subtype, bounds: readBounds(boundsDraft), text: annotationText,
       color: hexToRgb(annotationColor), opacity: readOpacity(opacity),
-      ...(annotation.subtype === 'rectangle' || annotation.subtype === 'ink'
-        ? { strokeWidth: readPositive(strokeWidth, 'Stroke width') } : {}),
-      ...(annotation.subtype === 'ink' ? { points: parseInkPoints(inkPoints) } : {}),
+      ...(annotation.subtype === 'rectangle' ? { strokeWidth: readPositive(strokeWidth, 'Stroke width') } : {}),
     });
   }
 
@@ -307,23 +344,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
 
   async function updateField(field: FormFieldInfo): Promise<void> {
     const draft = fieldPropertyDrafts[field.id];
-    if (!draft) return;
-    const trimmedTooltip = draft.tooltip.trim();
-    const parsedMaxLen = draft.maxLen.trim() === '' ? 0 : Number(draft.maxLen.trim());
-    if (Number.isNaN(parsedMaxLen) || parsedMaxLen < 0 || !Number.isInteger(parsedMaxLen)) {
-      setError('Maximum length must be a non-negative integer');
-      return;
-    }
-    await execute({
-      type: 'form.update',
-      fieldId: field.id,
-      readOnly: draft.readOnly,
-      required: draft.required,
-      ...(field.choiceKind === 'list' ? { multiple: draft.multiple } : {}),
-      ...(trimmedTooltip !== (field.tooltip ?? '') ? { tooltip: trimmedTooltip === '' ? null : trimmedTooltip } : {}),
-      ...(field.type === 'text' && parsedMaxLen !== (field.maxLen ?? 0)
-        ? { maxLen: parsedMaxLen === 0 ? null : parsedMaxLen } : {}),
-    });
+    if (draft) await execute(buildFormPropertyCommand(field, draft));
   }
 
   function useSelectionBounds(): void {
@@ -345,8 +366,9 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     } catch (caught) { setError(formatError(caught)); }
   }
 
-  return <section className="text-edit-panel document-tools-panel" aria-label={t("Annotations and forms")}>
-    <span className="eyebrow">{t("Document Tools")}</span>
+  return <section className="text-edit-panel document-tools-panel task-panel" aria-label={t("Annotations and forms")}>
+    <header className="task-panel-header"><h2>{t(mode === 'forms' ? 'Forms' : 'Document annotations')}</h2></header>
+    <div className="task-panel-body">
 
     {mode === 'comment' && onDrawingChange ? <div className="annotation-drawing-tools" role="group" aria-label={t('Draw annotations')}>
       <div className="annotation-drawing-tool-buttons">
@@ -382,7 +404,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
         }} /></label>
     </div> : null}
 
-    <details open={mode === 'forms'}>
+    <details>
       <summary>{t('Placement coordinates')}</summary>
       <div className="document-tools-grid">
         {boundsInput('X', 'x', boundsDraft, setBoundsDraft, locked)}
@@ -439,7 +461,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
         <details open={Boolean(selectedAnnotation)}><summary>{t(selectedAnnotation ? 'Edit selected annotation' : 'Advanced annotation controls')}</summary>
         <label>{t("Annotation text")}<textarea rows={2} value={annotationText} disabled={locked || !supportsAnnotations}
           onChange={event => { setAnnotationText(event.target.value); if (drawing) onDrawingChange?.({ ...drawing, text: event.target.value }); }} /></label>
-        {canUpdateAnnotation && selectedAnnotation && selectedAnnotation.subtype !== 'other' && selectedAnnotation.subtype !== 'link' && <button type="button"
+        {canUpdateAnnotation && selectedAnnotation && selectedAnnotation.subtype !== 'other' && selectedAnnotation.subtype !== 'link' && selectedAnnotation.subtype !== 'ink' && <button type="button"
           disabled={locked || !document.permissions.annotate} onClick={() => void run(() => updateAnnotation(selectedAnnotation))}>{t("Update selected annotation")}</button>}
         <div className="text-edit-actions">
           <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('text'))}>{t("Add note")}</button>
@@ -447,9 +469,9 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
           <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('rectangle'))}>{t("Add rectangle")}</button>
         </div>
         <label>{t("Ink points (x,y; x,y; …)")}<textarea rows={2} value={inkPoints}
-          disabled={locked || (!canAddAnnotation && !(canUpdateAnnotation && selectedAnnotation?.subtype === 'ink'))}
+          disabled={locked || !canAddAnnotation}
           onChange={event => setInkPoints(event.target.value)} /></label>
-        {selectedAnnotation?.subtype === 'ink' && <p>{t("Updating ink replaces its stroke with these points.")}</p>}
+        {selectedAnnotation?.subtype === 'ink' ? <p role="status">{t('Existing ink is read-only here to keep its original strokes. Draw a new stroke to add ink.')}</p> : null}
         <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(addInk)}>{t("Add ink")}</button>
         </details>
         {!document.permissions.annotate ? <p role="alert">{t("This document does not permit annotations.")}</p> : null}
@@ -472,13 +494,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
               tooltip: field.tooltip ?? '',
               maxLen: field.maxLen !== undefined && field.maxLen > 0 ? String(field.maxLen) : '',
             };
-            const currentTooltip = field.tooltip ?? '';
-            const currentMaxLen = field.maxLen !== undefined && field.maxLen > 0 ? String(field.maxLen) : '';
-            const tooltipChanged = properties.tooltip.trim() !== currentTooltip;
-            const maxLenChanged = field.type === 'text' && (properties.maxLen.trim() !== currentMaxLen);
-            const propertiesChanged = properties.readOnly !== field.readOnly || properties.required !== field.required ||
-              (field.choiceKind === 'list' && properties.multiple !== (field.multiple ?? false)) ||
-              tooltipChanged || maxLenChanged;
+            const propertiesChanged = isFormPropertiesDirty(field, properties);
             return <div className="document-field" key={field.id}>
               <div className="document-field-heading">
                 <strong>{field.name}</strong>
@@ -489,7 +505,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
               })}
               <button type="button" disabled={locked || field.readOnly || !supportsFormFill || !document.permissions.fillForms}
                 onClick={() => void run(() => fillField(field))}>{t("Apply value")}</button>
-              {supportsFormUpdate && <div role="group" aria-label={`Properties for ${field.name}`}>
+              {supportsFormUpdate && <details><summary>{t('Field properties')}</summary><div role="group" aria-label={t('Properties for {name}', { name: field.name })}>
                 <label><input type="checkbox" checked={properties.readOnly} disabled={locked || !document.permissions.modify}
                   onChange={event => setFieldPropertyDrafts(current => ({ ...current,
                     [field.id]: { ...properties, readOnly: event.target.checked } }))} />{t("Read-only")}</label>
@@ -511,13 +527,13 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
                     [field.id]: { ...properties, maxLen: event.target.value } }))} /></label>}
                 <button type="button" disabled={locked || !document.permissions.modify || !propertiesChanged}
                   onClick={() => void run(() => updateField(field))}>{t("Apply field properties")}</button>
-              </div>}
+              </div></details>}
             </div>;
           })}
         </div> : null}
         {supportsFormFill && !document.permissions.fillForms ? <p role="alert">{t("This document does not permit form filling.")}</p> : null}
 
-        {supportsFormCreate ? <fieldset disabled={locked || !document.permissions.modify}>
+        {supportsFormCreate ? <details><summary>{t('Create a field')}</summary><fieldset disabled={locked || !document.permissions.modify}>
           <legend>{t("Create a field")}</legend>
           <label>{t("Field name")}<input value={fieldName} onChange={event => setFieldName(event.target.value)} /></label>
           <label>{t("Field type")}<select value={fieldType} onChange={event => setFieldType(event.target.value as typeof fieldType)}>
@@ -540,13 +556,24 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
           {fieldType === 'list' && <label><input type="checkbox" checked={fieldMultiple}
             onChange={event => setFieldMultiple(event.target.checked)} />{t("Allow multiple selections")}</label>}
           <button type="button" disabled={fieldType !== 'checkbox' && fieldType !== 'radio' && !chosenFont} onClick={() => void run(createField)}>{t("Create field")}</button>
-        </fieldset> : null}
+        </fieldset></details> : null}
         {supportsFormCreate && !document.permissions.modify ? <p role="alert">{t("This document does not permit creating fields.")}</p> : null}
       </>}
     </details>
 
     {loadError ? <p role="alert">{t("Unable to read document tools:")} {loadError}</p> : null}
-    {error ? <p role="alert">{t(error)}</p> : null}
+    </div>
+    <footer className="task-panel-footer">
+      {error ? <p role="alert">{t(error)}</p> : null}
+      {mode === 'forms' || dirty ? <>
+        <p role="status">{t(dirty ? 'Form changes are not applied yet.' : 'All form changes are applied.')}</p>
+        <div className="text-edit-actions">
+          <button type="button" className="task-panel-primary" disabled={locked || loading || !dirty}
+            onClick={() => void finishDrafts()}>{t('Apply all form changes')}</button>
+          <button type="button" disabled={locked || !dirty} onClick={discardDrafts}>{t('Discard draft')}</button>
+        </div>
+      </> : <p role="status">{t(drawing ? 'Drawing tool active. Esc cancels.' : 'Select an annotation or choose a drawing tool.')}</p>}
+    </footer>
   </section>;
 }
 
@@ -587,10 +614,10 @@ function fieldEditor(field: FormFieldInfo, value: FormValue, disabled: boolean, 
     onChange={event => onChange(event.target.value)} /></label>;
 }
 
-function buildFieldContext(fields: FormFieldInfo[], currentPageId: string) {
-  return new Map(fields.flatMap(field => field.widgets.some(widget => widget.pageId === currentPageId)
+function buildFieldContext(fields: FormFieldInfo[]) {
+  return new Map(fields.flatMap(field => field.widgets[0]
     ? [[field.id, {
-      pageId: currentPageId,
+      pageId: field.widgets[0].pageId,
       type: field.type,
       options: field.options,
       readOnly: field.readOnly,
@@ -655,6 +682,51 @@ function fieldProperties(field: FormFieldInfo): FieldPropertiesDraft {
     tooltip: field.tooltip ?? '',
     maxLen: field.maxLen !== undefined && field.maxLen > 0 ? String(field.maxLen) : '',
   };
+}
+
+export function isFormValueDirty(field: FormFieldInfo, draft: FormValue | undefined): boolean {
+  if (draft === undefined) return false;
+  const original = field.value;
+  return Array.isArray(draft) && Array.isArray(original)
+    ? draft.length !== original.length || draft.some((value, index) => value !== original[index])
+    : draft !== original;
+}
+
+export function isFormPropertiesDirty(field: FormFieldInfo, draft: FieldPropertiesDraft | undefined): boolean {
+  if (!draft) return false;
+  return draft.readOnly !== field.readOnly || draft.required !== field.required
+    || (field.choiceKind === 'list' && draft.multiple !== (field.multiple ?? false))
+    || draft.tooltip.trim() !== (field.tooltip ?? '')
+    || (field.type === 'text' && (draft.maxLen.trim() === '' ? 0 : Number(draft.maxLen)) !== (field.maxLen ?? 0));
+}
+
+function buildFormPropertyCommand(field: FormFieldInfo, draft: FieldPropertiesDraft): Extract<EditCommand, { type: 'form.update' }> {
+  const tooltip = draft.tooltip.trim();
+  const maxLen = draft.maxLen.trim() === '' ? 0 : Number(draft.maxLen);
+  if (field.type === 'text' && (!Number.isSafeInteger(maxLen) || maxLen < 0)) {
+    throw new Error('Maximum length must be a non-negative integer');
+  }
+  return {
+    type: 'form.update', fieldId: field.id, readOnly: draft.readOnly, required: draft.required,
+    ...(field.choiceKind === 'list' ? { multiple: draft.multiple } : {}),
+    ...(tooltip !== (field.tooltip ?? '') ? { tooltip: tooltip || null } : {}),
+    ...(field.type === 'text' && maxLen !== (field.maxLen ?? 0) ? { maxLen: maxLen || null } : {}),
+  };
+}
+
+export function buildFormDraftCommands(fields: FormFieldInfo[], values: Record<string, FormValue>, properties: Record<string, FieldPropertiesDraft>): EditCommand[] {
+  return fields.flatMap(field => {
+    const fill: EditCommand[] = isFormValueDirty(field, values[field.id])
+      ? [{ type: 'form.fill', fieldId: field.id, value: values[field.id]! }] : [];
+    const update = isFormPropertiesDirty(field, properties[field.id]) ? buildFormPropertyCommand(field, properties[field.id]!) : null;
+    // Fill before locking or shortening a field; unlock/expand first when the new value needs it.
+    const value = values[field.id];
+    const updateFirst = update && ((field.readOnly && update.readOnly === false)
+      || (Array.isArray(value) && value.length > 1 && !field.multiple && update.multiple === true)
+      || (typeof value === 'string' && field.maxLen && value.length > field.maxLen
+        && update.maxLen !== undefined && (update.maxLen === null || update.maxLen >= value.length)));
+    return update ? updateFirst ? [update, ...fill] : [...fill, update] : fill;
+  });
 }
 
 export function mergeFormValueDrafts(previous: FormFieldInfo[], next: FormFieldInfo[], drafts: Record<string, FormValue>): Record<string, FormValue> {

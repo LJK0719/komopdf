@@ -1,3 +1,4 @@
+import { setEditorLanguage, ribbonControl, clickRibbonCommand } from './editor-ui-helpers';
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
@@ -8,7 +9,7 @@ test.beforeEach(async ({ page }) => {
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'interaction.pdf', mimeType: 'application/pdf', buffer: samplePdf() });
   await expect(page.locator('.document-pages .page-wrap')).toHaveCount(3, { timeout: 60_000 });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
 });
 
 test('continuous reading, facing pages, single-page navigation and hand tool', async ({ page }) => {
@@ -19,16 +20,17 @@ test('continuous reading, facing pages, single-page navigation and hand tool', a
   await expect(page.getByRole('spinbutton', { name: 'Page', exact: true })).toHaveValue('2');
   await page.getByRole('button', { name: 'Open page 3', exact: true }).click();
   await expect(page.getByRole('spinbutton', { name: 'Page', exact: true })).toHaveValue('3');
-  await page.getByRole('button', { name: 'Facing pages', exact: true }).click();
+  await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'View', exact: true }).click();
+  await clickRibbonCommand(page, 'Facing pages');
   await expect(page.locator('.document-pages')).toHaveClass(/document-pages-double/);
-  await page.getByRole('button', { name: 'Continuous scrolling', exact: true }).click();
+  await clickRibbonCommand(page, 'Continuous scrolling');
   await expect(page.locator('.document-pages .page-wrap')).toHaveCount(1);
-  await page.getByRole('button', { name: 'Single page', exact: true }).click();
+  await clickRibbonCommand(page, 'Single page');
   await page.getByRole('button', { name: 'Previous page', exact: true }).click();
   await expect(page.getByRole('spinbutton', { name: 'Page', exact: true })).toHaveValue('2');
   await page.getByRole('button', { name: 'Hand', exact: true }).click();
   await expect(page.locator('.canvas-stage')).toHaveClass(/hand-tool/);
-  await page.getByRole('combobox', { name: 'Language' }).selectOption('zh-CN');
+  await setEditorLanguage(page, 'zh-CN');
   await expect(page.getByRole('button', { name: '连续阅读', exact: true })).toBeVisible();
   await page.screenshot({ path: 'tmp/browser/ribbon-reading-zh.png' });
 });
@@ -92,7 +94,7 @@ test('edit text in place, format, context menu, delete, undo, save and reopen', 
   await expect(text).toBeVisible();
   await page.screenshot({ path: 'tmp/browser/ribbon-text-edit.png' });
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   const chooser = page.waitForEvent('filechooser');
   await page.keyboard.press('Control+o');
@@ -131,9 +133,36 @@ test('save confirmation stays above objects and blocks background shortcuts', as
   await page.getByRole('button', { name: 'File', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Close document', exact: true }).click();
   await expect(dialog).toBeVisible();
-  await dialog.getByRole('button', { name: 'Don’t save', exact: true }).focus();
+  await dialog.getByRole('button', { name: 'Close without downloading', exact: true }).focus();
   await page.keyboard.press('Enter');
   await expect(dialog).toHaveCount(0);
+  await expect(page.locator('.document-pages')).toHaveCount(0);
+});
+
+test('web close downloads a real copy and waits for explicit close confirmation', async ({ page }) => {
+  await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.locator('.object-hitbox[data-object-type="text"]').first().dblclick();
+  const input = page.getByRole('textbox', { name: 'Page text', exact: true });
+  await input.fill('Alto');
+  await input.press('Control+Enter');
+  await expect(input).toHaveCount(0);
+  await page.getByRole('button', { name: 'File', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Close document', exact: true }).click();
+  const save = page.getByRole('dialog', { name: 'Save your changes?', exact: true });
+  const download = page.waitForEvent('download');
+  await save.getByRole('button', { name: 'Download copy', exact: true }).click();
+  const bytes = await readFile((await (await download).path())!);
+  expect(bytes.equals(samplePdf())).toBe(false);
+  const confirm = page.getByRole('dialog', { name: 'Ready to close this PDF?', exact: true });
+  await expect(confirm).toBeVisible();
+  await expect(page.locator('.document-pages .page-wrap')).toHaveCount(3);
+  await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(confirm).toHaveCount(0);
+  await expect(page.locator('.save-state')).toHaveText('Download started');
+  await page.getByRole('button', { name: 'File', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Close document', exact: true }).click();
+  await confirm.getByRole('button', { name: 'Close document', exact: true }).click();
+  await expect(confirm).toHaveCount(0);
   await expect(page.locator('.document-pages')).toHaveCount(0);
 });
 
@@ -164,7 +193,8 @@ test('image contextual tools crop and replace real PDF content', async ({ page }
 });
 
 test('search and replace, insert text, and save edits by clicking outside', async ({ page }) => {
-  await page.getByRole('navigation', { name: 'Quick tools' }).getByRole('button', { name: 'Find & replace' }).click();
+  await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Home', exact: true }).click();
+  await clickRibbonCommand(page, 'Find & replace');
   await page.getByRole('textbox', { name: 'Find text', exact: true }).fill('Bravo');
   await page.getByRole('button', { name: 'Find', exact: true }).click();
   await page.getByRole('button', { name: 'Page 2: Bravo', exact: true }).click();
@@ -217,7 +247,7 @@ test('font family and bold italic remain consistent after edits and a fresh reop
   await bold.click();
   await expect(bold).toHaveAttribute('aria-pressed', 'true');
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   page.once('dialog', dialog => void dialog.accept());
   await page.reload();
@@ -270,7 +300,7 @@ test('Chinese text uses its own bold and oblique faces without asking to choose 
   await expect(page.getByRole('button', { name: 'Bold', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('button', { name: 'Italic', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.property-error')).toHaveCount(0);
-  await page.getByRole('combobox', { name: 'Language' }).selectOption('zh-CN');
+  await setEditorLanguage(page, 'zh-CN');
   await page.screenshot({ path: 'tmp/browser/font-chinese-bold-oblique.png' });
 });
 
@@ -293,8 +323,8 @@ test('local font metadata does not add an embedding-permission gate', async ({ p
   let checksum = 0;
   for (let pos = 0; pos < fontBytes.length; pos += 4) checksum = (checksum + fontBytes.readUInt32BE(pos)) >>> 0;
   fontBytes.writeUInt32BE((0xb1b0afba - checksum) >>> 0, head + 8);
-  await page.locator('.ribbon-tabs').getByRole('button', { name: 'View', exact: true }).click();
-  await page.getByRole('button', { name: 'Fonts', exact: true }).click();
+  await page.locator('.ribbon-tabs').getByRole('button', { name: 'Edit', exact: true }).click();
+  await clickRibbonCommand(page, 'Fonts');
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Import font file', exact: true }).click();
   await (await chooser).setFiles({ name: 'font-metadata-fixture.ttf', mimeType: 'font/ttf', buffer: fontBytes });
@@ -327,15 +357,16 @@ test('page overview supports standard multiselect, snapshot copy/paste, delete a
   await tiles.nth(0).click();
   await tiles.nth(2).click({ modifiers: ['Shift'] });
   await expect(page.locator('.organizer-page[aria-selected=true]')).toHaveCount(3);
-  await expect(page.getByRole('button', { name: 'Delete selected pages', exact: true })).toBeDisabled();
+  await expect(await ribbonControl(page, 'Delete selected pages')).toBeDisabled();
+  await page.keyboard.press('Escape');
   await tiles.nth(1).click({ modifiers: ['Control'] });
   await tiles.nth(2).click({ button: 'right' });
   await expect(page.locator('.organizer-page[aria-selected=true]')).toHaveCount(2);
   await page.getByRole('menuitem', { name: 'Copy pages', exact: false }).click();
   await expect(page.locator('.status-message')).toHaveText('Pages copied. Paste them anywhere in this PDF.');
-  await page.getByRole('button', { name: 'Delete selected pages', exact: true }).click();
+  await clickRibbonCommand(page, 'Delete selected pages');
   await expect(tiles).toHaveCount(1);
-  await page.getByRole('button', { name: 'Paste pages', exact: true }).click();
+  await clickRibbonCommand(page, 'Paste pages');
   await expect(tiles).toHaveCount(3);
   await expect(page.locator('.organizer-page[aria-selected=true]')).toHaveCount(2);
   await tiles.nth(1).dblclick();
@@ -367,11 +398,11 @@ test('page overview zoom, Mac modifiers, drag reorder and saved order', async ({
   await expect.poll(async () => (await tiles.first().locator('canvas').boundingBox())!.width).toBeGreaterThan(thumbnailWidth);
   await expect.poll(() => tiles.evaluateAll(nodes => new Set(nodes.map(node => node.getBoundingClientRect().top)).size)).toBeGreaterThan(1);
   await page.getByRole('combobox', { name: 'Page columns' }).selectOption('3');
-  await page.getByRole('combobox', { name: 'Language' }).selectOption('zh-CN');
+  await setEditorLanguage(page, 'zh-CN');
   await page.screenshot({ path: 'tmp/browser/page-overview-zh.png' });
-  await page.getByRole('combobox', { name: '语言' }).selectOption('en');
+  await setEditorLanguage(page, 'en');
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   const chooser = page.waitForEvent('filechooser');
   await page.keyboard.press('Control+o');
@@ -421,7 +452,7 @@ test('reading text context applies actual highlight and underline commands', asy
   await expect(page.locator('.status-message')).toHaveText('Changes applied');
   await selectText();
   await page.getByRole('menuitem', { name: 'Underline text' }).click();
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
   await selectText();
   await page.getByRole('menuitem', { name: 'Edit selected text' }).click();
   await expect(page.getByRole('button', { name: 'Underline', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -430,8 +461,9 @@ test('reading text context applies actual highlight and underline commands', asy
 });
 
 test('crop current page with a rectangle and open page decoration tools directly', async ({ page }) => {
-  await page.locator('.ribbon-tabs').getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.getByRole('button', { name: 'Crop current page', exact: true }).click();
+  await page.locator('.ribbon-tabs').getByRole('button', { name: 'Pages', exact: true }).click();
+  await page.getByRole('button', { name: 'More tools', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Crop current page', exact: true }).click();
   const crop = await page.locator('.page-crop-overlay').boundingBox();
   await page.mouse.move(crop!.x + 40, crop!.y + 90); await page.mouse.down();
   await page.mouse.move(crop!.x + 400, crop!.y + 420, { steps: 4 }); await page.mouse.up();
@@ -441,9 +473,9 @@ test('crop current page with a rectangle and open page decoration tools directly
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await expect(page.locator('.page-wrap[data-page-number="1"]')).toHaveCSS('width', '525px');
   await page.locator('.ribbon-tabs').getByRole('button', { name: 'Insert', exact: true }).click();
-  await page.getByRole('button', { name: 'Watermark', exact: true }).click();
+  await clickRibbonCommand(page, 'Watermark');
   await expect(page.getByRole('combobox', { name: 'Decoration', exact: true })).toHaveValue('watermark');
-  await page.getByRole('button', { name: 'Header & footer', exact: true }).click();
+  await clickRibbonCommand(page, 'Header & footer');
   await expect(page.getByRole('combobox', { name: 'Decoration', exact: true })).toHaveValue('header');
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });

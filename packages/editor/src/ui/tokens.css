@@ -1,0 +1,20 @@
+:root {
+  --komo-font: 'Inter', 'Segoe UI Variable', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --komo-ink: #20362c;
+  --komo-muted: #65736c;
+  --komo-accent: #217b5e;
+  --komo-accent-strong: #184e3d;
+  --komo-accent-soft: #e8f3ed;
+  --komo-surface: #ffffff;
+  --komo-canvas: #f2f4f2;
+  --komo-surface-subtle: #f8faf8;
+  --komo-line: #dfe5e0;
+  --komo-danger: #ad3c32;
+  --komo-danger-soft: #fff2ef;
+  --komo-warning: #89631c;
+  --komo-warning-soft: #fff8e9;
+  --komo-radius: 8px;
+  --komo-control-height: 36px;
+  --komo-focus: 0 0 0 3px #217b5e24;
+  --komo-shadow: 0 12px 36px #183e331a;
+}

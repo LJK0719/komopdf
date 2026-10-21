@@ -1,3 +1,4 @@
+import { clickRibbonCommand } from './editor-ui-helpers';
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
@@ -6,11 +7,11 @@ async function openPdf(page: Page, name: string, buffer = syntheticPdf()) {
   if (await page.getByRole('button', { name: 'Open PDF', exact: true }).isVisible()) {
     await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   } else {
-    await page.keyboard.press('Control+o');
+    await page.getByRole('button', { name: 'Open', exact: true }).click();
   }
   await (await chooser).setFiles({ name, mimeType: 'application/pdf', buffer });
-  await expect(page.locator('.document-title strong')).toHaveText(name, { timeout: 60_000 });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true', { timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
 }
 
 async function startNote(page: Page, text: string) {
@@ -23,8 +24,8 @@ async function startNote(page: Page, text: string) {
 }
 
 async function showComments(page: Page) {
-  await page.getByRole('navigation', { name: 'Document navigation' })
-    .getByRole('button', { name: 'Comment', exact: true }).click();
+  await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Comment', exact: true }).click();
+  await clickRibbonCommand(page, 'Comment');
 }
 
 test.beforeEach(async ({ page }) => {
@@ -40,7 +41,7 @@ for (const action of ['Save', 'Ctrl+S'] as const) {
     // The registered handle must read the latest text, not its initial render.
     await input.fill('Latest note saved directly');
     const download = page.waitForEvent('download');
-    if (action === 'Save') await page.getByRole('button', { name: 'Save', exact: true }).click();
+    if (action === 'Save') await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
     else await input.press('Control+s');
     const saved = await readFile((await (await download).path())!);
     await expect(input).toHaveCount(0);
@@ -58,7 +59,7 @@ test('cancelling a note draft does not write it into the PDF', async ({ page }) 
   await page.getByRole('form', { name: 'New note', exact: true }).getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(input).toHaveCount(0);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   await openPdf(page, 'cancelled-note-reopened.pdf', saved);
   await showComments(page);

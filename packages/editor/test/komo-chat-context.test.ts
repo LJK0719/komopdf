@@ -96,9 +96,12 @@ describe('lightweight komo context', () => {
     expect(input.engine.render).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects oversized text rather than claiming a partial summary is exhaustive', async () => {
+  it('labels oversized ordinary-question context as excerpts instead of claiming exhaustive coverage', async () => {
     const input = options(vi.fn(async () => [block('p1', 'a'.repeat(CHAT_TEXT_LIMIT + 1))]));
-    await expect(prepareChatContext(input)).rejects.toThrow('no partial document was sent');
+    const result = await prepareChatContext({ ...input, instruction: 'What does this passage discuss?' });
+    expect(result.coverage[0]?.kind).toBe('excerpts');
+    expect(result.request.context.sourceDocuments?.[0]?.coverage?.kind).toBe('excerpts');
+    expect(result.request.context.evidence.reduce((total, evidence) => total + evidence.text.length, 0)).toBeLessThanOrEqual(CHAT_TEXT_LIMIT);
   });
 
   it('does not collect document content after cancellation', async () => {

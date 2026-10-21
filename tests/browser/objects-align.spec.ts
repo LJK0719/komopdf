@@ -42,7 +42,7 @@ test('real WASM aligns multiple native PDF objects in one transaction and preser
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect.poll(async () => Math.abs((await x(0)) - (await x(1)))).toBeLessThan(0.1);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
   chooser = page.waitForEvent('filechooser');
@@ -75,7 +75,7 @@ test('real WASM crops a page using its native CropBox and restores it through hi
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect.poll(width).toBeLessThan(before);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
   chooser = page.waitForEvent('filechooser');
@@ -105,7 +105,7 @@ test('real WASM distributes three vector objects by center, then saves their geo
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect.poll(() => x(1)).toBeCloseTo(after, 1);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
   chooser = page.waitForEvent('filechooser');

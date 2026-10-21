@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { AiClientError } from '@pdf-editor/ai-client';
-import { chatHistory, chatFailure, type ChatExchange } from '../src/ui/komo-chat-state.js';
+import { canRetryContext, createChatSession, chatHistory, chatFailure, type ChatExchange, type ChatRequestContext } from '../src/ui/komo-chat-state.js';
 import { AiMarkdown } from '../src/ui/AiMarkdown.js';
 
 describe('komo conversation state and display', () => {
@@ -11,6 +11,29 @@ describe('komo conversation state and display', () => {
     expect(chatHistory([completed, { id: 'two', prompt: 'stopped', status: 'cancelled' },
       { id: 'three', prompt: 'failed', status: 'failed' }, { id: 'four', prompt: 'pending', status: 'pending' }]))
       .toEqual([{ role: 'user', text: 'question' }, { role: 'assistant', text: 'answer' }]);
+  });
+  it('keeps old answers in display state without sharing them as current-version history', () => {
+    const requestContext: ChatRequestContext = { documentId: 'd', revision: 1, scope: 'page', pageId: 'p2', selectedIds: [], visualMode: 'text' };
+    const session = createChatSession();
+    session.instruction = 'Unsent draft';
+    session.exchanges.push({ id: 'one', prompt: 'Old question', status: 'complete', answer: 'Old answer', requestContext });
+    expect(chatHistory(session.exchanges, 2)).toEqual([]);
+    expect(chatHistory(session.exchanges, 1)).toHaveLength(2);
+    expect(session.exchanges[0]?.answer).toBe('Old answer');
+    expect(session.instruction).toBe('Unsent draft');
+    expect(createChatSession()).toMatchObject({ exchanges: [], instruction: '', consent: false });
+  });
+  it('validates the saved request scope without substituting the newly active page or selection', () => {
+    const document = { id: 'd', revision: 1, pageOrder: ['p1', 'p2'] };
+    const request: ChatRequestContext = { documentId: 'd', revision: 1, scope: 'selection', pageId: 'p2', selectedIds: ['old-object'], visualMode: 'always' };
+    expect(canRetryContext(request, document)).toBe(true);
+    expect(request).toMatchObject({ pageId: 'p2', selectedIds: ['old-object'], visualMode: 'always' });
+    expect(canRetryContext(request, { ...document, revision: 2 })).toBe(false);
+    expect(canRetryContext(request, { ...document, id: 'other' })).toBe(false);
+    expect(canRetryContext(request, { ...document, pageOrder: ['p1'] })).toBe(false);
+    expect(canRetryContext({ ...request, selectedIds: [] }, document)).toBe(false);
+    expect(canRetryContext(undefined, document)).toBe(false);
+    expect(canRetryContext(request, null)).toBe(false);
   });
   it('explains rate limits, network failures and oversized requests without upstream text', () => {
     expect(chatFailure(new AiClientError('HTTP_ERROR', 'private upstream', 429)).message).toContain('Wait a moment');

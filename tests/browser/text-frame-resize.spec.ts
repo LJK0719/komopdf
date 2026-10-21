@@ -38,7 +38,7 @@ async function resize(page: Page, handle: string, dx: number, dy: number) {
   await page.mouse.move(x, y); await page.mouse.down();
   await page.mouse.move(x + dx, y + dy, { steps: 6 }); await page.mouse.up();
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
 }
 
 async function firstGlyphHeight(page: Page): Promise<number> {
@@ -109,7 +109,7 @@ test('undoing a reopened flow resize refreshes retained continuation thumbnails'
   await expect(input).toHaveCount(0);
   await expect.poll(() => page.locator('.page-chip').count()).toBeGreaterThan(1);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   const chooser = page.waitForEvent('filechooser'); await page.keyboard.press('Control+o');
   await (await chooser).setFiles({ name: 'saved-flow.pdf', mimeType: 'application/pdf', buffer: bytes });
@@ -130,7 +130,7 @@ test('fixed frame retains new lines through resizing, undo and PDF reopen', asyn
   await page.locator('.object-hitbox[data-object-type="text"]').first().click();
   // Helvetica cannot encode Chinese; selecting a Chinese face is an explicit user choice, not a silent fallback.
   await page.getByRole('combobox', { name: 'Font', exact: true }).selectOption('Noto Sans CJK SC');
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
   await resize(page, 's', 0, 20);
   await page.locator('.object-hitbox[data-object-type="text"]').first().dblclick();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });
@@ -152,7 +152,7 @@ test('fixed frame retains new lines through resizing, undo and PDF reopen', asyn
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await expect.poll(async () => (await page.locator('.selection-box').boundingBox())?.height ?? 0).toBeCloseTo(small, 1);
   await page.getByRole('button', { name: 'Redo (Ctrl Shift Z)', exact: true }).click();
-  const download = page.waitForEvent('download'); await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const download = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   const chooser = page.waitForEvent('filechooser'); await page.keyboard.press('Control+o');
   await (await chooser).setFiles({ name: 'resized.pdf', mimeType: 'application/pdf', buffer: bytes });

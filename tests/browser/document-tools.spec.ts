@@ -7,8 +7,8 @@ test('form value and property drafts survive applying the other category and com
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'form-drafts.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
-  await page.locator('.ribbon-tabs').getByRole('button', { name: 'Comment', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await page.locator('.ribbon-tabs').getByRole('button', { name: 'Fill & sign', exact: true }).click();
   await page.getByRole('button', { name: 'Fill & forms', exact: true }).click();
   await page.getByRole('textbox', { name: 'Field name', exact: true }).fill('DraftField');
   await page.getByRole('button', { name: 'Create field', exact: true }).click();
@@ -34,7 +34,7 @@ test('form value and property drafts survive applying the other category and com
 
   await tooltip.fill('Pending tooltip');
   await field.getByRole('button', { name: 'Apply value', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
   await expect(value).toHaveValue('Pending value');
   await expect(tooltip).toHaveValue('Pending tooltip');
   await expect(applyProperties).toBeEnabled();
@@ -159,7 +159,7 @@ test('real WASM creates form fields, fills them, adds annotations, and retains t
 
   // 5. Save the modified document and verify changes were written
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.equals(original)).toBe(false);
 
@@ -209,7 +209,7 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   await expect(objects).toHaveCount(1);
 
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   const reopen = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
@@ -226,9 +226,9 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   await page.getByRole('button', { name: 'Duplicate selected objects' }).click();
   await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(2);
   const copiedDownload = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const copied = await readFile((await (await copiedDownload).path())!);
-  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: /^group-source\.pdf/ }).click();
+  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('tab', { name: /^group-source\.pdf/ }).click();
   page.once('dialog', async dialog => {
     page.once('dialog', discard => discard.accept());
     await dialog.dismiss();
@@ -271,7 +271,7 @@ test('real WASM saves a multi-stroke handwritten visual signature as one undoabl
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect(list.locator('li')).toHaveCount(2);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   const reopen = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
@@ -309,7 +309,7 @@ test('real WASM persists a required multi-select List and atomic read-only chang
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect(value).toBeDisabled();
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   const reopen = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
@@ -349,7 +349,7 @@ test('text field tooltip and maximum length survive native save and reject confl
   await field.getByRole('button', { name: 'Apply value' }).click();
   await expect(forms.getByRole('alert')).toContainText('Text value exceeds field maximum length');
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.toString('latin1')).toContain('/MaxLen 6');
   const reopen = page.waitForEvent('filechooser');

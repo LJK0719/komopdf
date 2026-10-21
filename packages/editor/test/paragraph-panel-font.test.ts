@@ -120,7 +120,10 @@ describe('ParagraphPanel - Real Font Face Selection for text.reflow and text.ins
       })
     );
 
-    expect(html).toContain('<summary>Paragraph</summary>');
+    expect(html).toContain('<h2>Paragraph</h2>');
+    expect(html).toContain('task-panel-body');
+    expect(html).toContain('task-panel-footer');
+    expect(html.indexOf('task-panel-footer')).toBeLessThan(html.indexOf('Preview paragraph'));
     expect(html).toContain('Font');
     expect(html).toContain('Preview paragraph');
     expect(html).toContain('Reflow selected text');

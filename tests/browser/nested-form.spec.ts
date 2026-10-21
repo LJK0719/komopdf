@@ -33,7 +33,7 @@ test('real WASM isolates one nested Form text instance across pages and save/reo
   let chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'shared-form.pdf', mimeType: 'application/pdf', buffer: sharedNestedPdf() });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 60_000 });
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
   const hitboxes = page.locator('.object-hitbox[data-object-type="text"]');
   await expect(hitboxes).toHaveCount(2, { timeout: 60_000 });
@@ -53,7 +53,7 @@ test('real WASM isolates one nested Form text instance across pages and save/reo
   await draft.press('Escape');
 
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   chooser = page.waitForEvent('filechooser');
   await page.keyboard.press('Control+o');

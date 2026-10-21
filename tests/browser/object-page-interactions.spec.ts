@@ -33,7 +33,7 @@ async function tab(page: Page, name: 'Edit' | 'View') {
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name, exact: true }).click();
 }
 async function ready(page: Page) {
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 }
 async function inactiveSecondPage(page: Page) {
@@ -53,6 +53,8 @@ test('facing-page keyboard navigation reaches an odd final page from a right-han
   await page.getByRole('button', { name: 'Facing pages', exact: true }).click();
   await page.getByRole('button', { name: 'Continuous scrolling', exact: true }).click();
   await page.getByRole('button', { name: 'Open page 2', exact: true }).click();
+  await expect(page.getByLabel('Page', { exact: true })).toHaveValue('2');
+  await ready(page);
   const stage = (await page.locator('.canvas-stage').boundingBox())!;
   await page.mouse.click(stage.x + stage.width - 25, stage.y + 25);
   await page.keyboard.press('PageDown');
@@ -116,11 +118,11 @@ test('an inactive page accepts its first click, modifier selection and ordinary 
   await expect(page.locator('.object-hitbox-selected')).toHaveCount(1);
   await page.keyboard.down('Control'); await page.mouse.click(next.x, next.y); await page.keyboard.up('Control');
   await expect(page.locator('.object-hitbox-selected')).toHaveCount(2);
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await page.locator('.object-hitbox[data-object-type="text"]').dblclick();
   await expect(page.getByRole('textbox', { name: 'Page text', exact: true })).toHaveText('PAGE 2');
   await page.keyboard.press('Escape');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
 });
 
 test('the first inactive-page marquee selects only its enclosed objects without changing content', async ({ page }) => {
@@ -130,5 +132,5 @@ test('the first inactive-page marquee selects only its enclosed objects without 
   await page.mouse.move(end.x, end.y, { steps: 8 }); await page.mouse.up();
   await expect(page.locator('.object-hitbox-selected')).toHaveCount(2);
   await expect(page.locator('.object-hitbox-selected[data-object-type="path"]')).toHaveCount(2);
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
 });

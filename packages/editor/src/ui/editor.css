@@ -1,5 +1,6 @@
 @import './workspace.css';
 @import './ribbon.css';
+@import './task-panels.css';
 
 
   .pdf-canvas { display: block; }

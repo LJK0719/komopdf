@@ -23,7 +23,7 @@ test('real WASM edits original text, undoes, redoes and reopens the saved PDF', 
   await expect(originalText).toHaveJSProperty('selectionEnd', 9);
   await expect(page.getByRole('textbox', { name: 'Replacement', exact: true })).toHaveValue('PDF');
   await page.getByRole('textbox', { name: 'Replacement', exact: true }).fill('AI');
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Preview layout', exact: true }).click();
   await expect(page.getByText('Fits current text bounds', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Commit replacement', exact: true }).click();
@@ -41,7 +41,7 @@ test('real WASM edits original text, undoes, redoes and reopens the saved PDF', 
   await expect(page.getByRole('textbox', { name: 'Original text', exact: true })).toHaveValue('Edited');
 
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.equals(original)).toBe(false);
   // A download event cannot confirm a disk write. We read the actual file above,
@@ -106,7 +106,7 @@ test('real WASM formats a character range and retains it after save and reopen',
   await expect(originalText).toHaveValue('PDF');
 
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.equals(original)).toBe(false);
 
@@ -204,7 +204,7 @@ test('real WASM manages pages, transforms objects and inserts vector PDF content
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect(form).toHaveCount(1);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
@@ -223,9 +223,9 @@ test('real WASM manages pages, transforms objects and inserts vector PDF content
   await page.getByRole('button', { name: 'Select Text object', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Original text', exact: true })).toHaveValue('Bold text');
   const fontDownload = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const withFont = await readFile((await (await fontDownload).path())!);
-  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: /^objects\.pdf/ }).click();
+  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('tab', { name: /^objects\.pdf/ }).click();
   page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
   await page.getByRole('button', { name: 'Close PDF', exact: true }).click();
   chooser = page.waitForEvent('filechooser');
@@ -260,7 +260,7 @@ test('real WASM embeds CJK OpenType faces and preserves searchable text after re
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(4);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.includes(Buffer.from('/FontFile3'))).toBe(true);
   expect(saved.includes(Buffer.from('/CIDFontType0'))).toBe(true);
@@ -323,7 +323,7 @@ test('real WASM imports a chosen collection face for editing and save/reopen', a
   await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.includes(Buffer.from('LiberationSerif-Italic'))).toBe(true);
   page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
@@ -367,7 +367,7 @@ test('real WASM lays out multiline text boxes and rejects overflow before commit
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect(objects).toHaveCount(3);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
   chooser = page.waitForEvent('filechooser');
@@ -401,7 +401,7 @@ test('real browser authorizes local font access and registers a system face with
   await expect(page.getByRole('combobox', { name: 'Font face', exact: true }).locator('option')).toContainText(['Arial']);
   await page.getByRole('button', { name: 'Add selected font', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Added Arial' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toHaveCount(0);
 });
 
 test('real local export protects, opens with a password, and removes protection without resetting history', async ({ page }) => {
@@ -438,7 +438,7 @@ test('real local export protects, opens with a password, and removes protection 
   await page.getByRole('button', { name: 'Commit replacement', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Original text', exact: true })).toHaveValue('Edited');
   download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const preserved = await readFile((await (await download).path())!);
   expect(preserved.includes(Buffer.from('/Encrypt'))).toBe(true);
   await page.getByRole('combobox', { name: 'Copy protection', exact: true }).selectOption('remove');
@@ -449,7 +449,7 @@ test('real local export protects, opens with a password, and removes protection 
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Original text', exact: true })).toHaveValue('Hello PDF Editor');
-  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: 'protection.pdf' }).click();
+  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('tab', { name: 'protection.pdf' }).click();
   await page.getByRole('button', { name: 'Close PDF', exact: true }).click();
   chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
@@ -506,7 +506,7 @@ test(`real WASM reads and preserves ${fixture.name} PDF without uploading it`, a
   }, fixture)).toEqual([255, 0, 0, 255]);
   await expect(page.locator('.object-hitbox')).toHaveCount(2);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const file = await download;
   expect(file.suggestedFilename()).toBe('reader-smoke.pdf');
   const saved = await readFile((await file.path())!);
@@ -520,7 +520,7 @@ test('web editor retains two independent PDFs and refuses a third until one clos
   let chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'first.pdf', mimeType: 'application/pdf', buffer: syntheticPdf() });
-  await expect(page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: 'first.pdf' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('tab', { name: 'first.pdf' })).toBeVisible();
   await page.getByRole('button', { name: 'Select Text object' }).click();
   await page.getByRole('textbox', { name: 'Replacement' }).fill('Hello AI Editor');
   await page.getByRole('button', { name: 'Preview layout' }).click();
@@ -532,14 +532,14 @@ test('web editor retains two independent PDFs and refuses a third until one clos
   const second = Buffer.from(syntheticPdf().toString('latin1').replaceAll('Hello PDF Editor', 'Other PDF Editor'), 'latin1');
   await (await chooser).setFiles({ name: 'second.pdf', mimeType: 'application/pdf', buffer: second });
   const tabs = page.getByRole('navigation', { name: 'Open PDFs' });
-  await expect(tabs.getByRole('button')).toHaveCount(2);
-  await expect(tabs.getByRole('button', { name: /first\.pdf/ })).toContainText('●');
+  await expect(tabs.getByRole('tab')).toHaveCount(2);
+  await expect(tabs.getByRole('tab', { name: /first\.pdf/ })).toContainText('●');
   await page.getByRole('button', { name: 'Select Text object' }).click();
   await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Other PDF Editor');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await expect(page.getByText(/can keep only 2 PDFs open/)).toBeVisible();
 
-  await tabs.getByRole('button', { name: /first\.pdf/ }).click();
+  await tabs.getByRole('tab', { name: /first\.pdf/ }).click();
   await page.getByRole('button', { name: 'Select Text object' }).click();
   await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Hello AI Editor');
   page.once('dialog', async dialog => {
@@ -547,8 +547,8 @@ test('web editor retains two independent PDFs and refuses a third until one clos
     await dialog.dismiss();
   });
   await page.getByRole('button', { name: 'Close PDF' }).click();
-  await expect(tabs.getByRole('button')).toHaveCount(1);
-  await expect(tabs.getByRole('button', { name: 'second.pdf' })).toHaveAttribute('aria-current', 'page');
+  await expect(tabs.getByRole('tab')).toHaveCount(1);
+  await expect(tabs.getByRole('tab', { name: 'second.pdf' })).toHaveAttribute('aria-selected', 'true');
 });
 
 test('PDF search locates each occurrence at its UTF-16 text range', async ({ page }) => {

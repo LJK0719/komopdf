@@ -2,17 +2,24 @@
 
 import * as React from 'react';
 import { EditorLoading } from './editor-loading';
-import { EditorShell, KomoChatPanel, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient, type EditorAiContext } from '@pdf-editor/editor';
+import { EditorShell, KomoChatPanel, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient, createKomoChatStore, type KomoChatStore, type EditorAiContext } from '@pdf-editor/editor';
 import { AccountProvider, AccountStrip, useKomoAccount } from './account-provider';
 import '../app/account/account.css';
 
-function AccountChat({ context }: { context: EditorAiContext }) {
-  const { account, signedIn, authenticatedFetch, refresh } = useKomoAccount();
-  return <><AccountStrip /><KomoChatPanel key={signedIn ? account?.userId ?? 'loading-account' : 'signed-out'} context={{ ...context, disabled: context.disabled || !signedIn || !account || (account.plan === 'free' && account.remainingCredits <= 0) }}
-    fetch={authenticatedFetch} onComplete={() => void refresh()} /></>;
+function AccountChat({ context, store }: { context: EditorAiContext; store: KomoChatStore }) {
+  const { account, signedIn, ready, authenticatedFetch, refresh } = useKomoAccount();
+  // Hide a known owner's private draft/history until the next identity is known.
+  const identityPending = store.owner != null && (!ready || (signedIn && !account));
+  const sessionOwner = account?.userId ?? (!signedIn && ready ? null : undefined);
+  return <><AccountStrip /><div className="komo-account-chat" hidden={identityPending}><KomoChatPanel store={store} {...(sessionOwner !== undefined ? { sessionOwner } : {})}
+    context={{ ...context, handoff: identityPending ? null : context.handoff ?? null,
+      disabled: context.disabled || !signedIn || !account || (account.plan === 'free' && account.remainingCredits <= 0) }}
+    disabledReason={!signedIn ? 'Sign in to start using KOMO.' : !account ? 'Your account is currently unavailable.' : account.plan === 'free' && account.remainingCredits <= 0 ? 'Not enough credits. Open Account to continue.' : undefined}
+    fetch={authenticatedFetch} onComplete={() => void refresh()} /></div></>;
 }
 
 export default function EditorClient() {
+  const [chatStore] = React.useState(createKomoChatStore);
   const [instances, setInstances] = React.useState<{
     engine: WasmEngineAdapter;
     host: WebHostAdapter;
@@ -46,5 +53,5 @@ export default function EditorClient() {
   if (!instances) return <EditorLoading />;
 
   return <EditorShell engine={instances.engine} host={instances.host}
-    renderAiPanel={context => <AccountProvider><AccountChat context={context} /></AccountProvider>} />;
+    renderAiPanel={context => <AccountProvider><AccountChat context={context} store={chatStore} /></AccountProvider>} />;
 }

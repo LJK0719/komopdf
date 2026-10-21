@@ -29,7 +29,7 @@ test('tagged text edits and grouping survive undo, save and reopen', async ({ pa
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await expect(texts).toHaveCount(2);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   chooser = page.waitForEvent('filechooser');
   await page.keyboard.press('Control+o');

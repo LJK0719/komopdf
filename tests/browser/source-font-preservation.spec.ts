@@ -7,7 +7,7 @@ async function open(page: import('@playwright/test').Page, bytes: Buffer) {
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'source-font.pdf', mimeType: 'application/pdf', buffer: bytes });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 60_000 });
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
 }
 
@@ -51,7 +51,7 @@ test('text selection has one painted frame and entering edit leaves the PDF unto
   await expect(input).toHaveCount(0);
   await expect(page.locator('.property-error')).toHaveCount(0);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.toString('latin1')).toContain('/Helvetica');
   expect(saved.toString('latin1')).not.toContain('/LiberationSans');
@@ -91,7 +91,7 @@ test('SimSun subset uses installed SimSun only for added Chinese glyphs and keep
   await expect(input).toHaveCount(0);
   await expect(page.locator('.property-error')).toHaveCount(0);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   await open(page, saved);
   await page.locator('[data-object-type="text"]').first().click({ position: { x: 12, y: 6 } });

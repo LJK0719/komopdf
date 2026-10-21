@@ -20,6 +20,8 @@ import { finishSse, sendEvent, sendEventBestEffort, splitUtf8, startSse } from '
 import { prepareProviderInput } from './templates.js';
 import { protectKomoIdentity } from './komo-identity.js';
 import { OutputValidationError, parseAndValidateResult } from './validation.js';
+import { registerTextActionRoute } from './text-actions.js';
+import { registerKolmoService } from './kolmo-service.js';
 
 const ERROR_RESPONSE_SCHEMA = {
   type: 'object',
@@ -355,8 +357,8 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       reply.raw.once('close', () => release(request));
     });
   }
-  const admissionHook = (image: boolean, agent = false) => async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    if (!options.allowUnauthenticatedForTests) {
+  const admissionHook = (image: boolean, agent = false, authenticate = true) => async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    if (authenticate && !options.allowUnauthenticatedForTests) {
       try {
         if (!options.accounts) throw new AccountError('ACCOUNTS_NOT_CONFIGURED', 503, 'KOMO account service is not configured. PDF editing remains free.');
         users.set(request, await options.accounts.authenticate(request));
@@ -391,6 +393,9 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
     admittedAt.set(request, Date.now());
     reply.raw.once('close', result.release);
   };
+
+  registerTextActionRoute(app, { provider, limits: options.config.limits, admit: admissionHook(false, false, false) });
+  registerKolmoService(app, { admit: admissionHook(false, false, false) });
 
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/api/v1/capabilities', async () => ({

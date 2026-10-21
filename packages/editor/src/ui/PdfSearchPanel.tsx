@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useId, useRef, useState, type RefObject }
 import type { CommitResult, DocumentInfo, EngineAdapter } from '@pdf-editor/contracts';
 import { CommandRegistry } from '@pdf-editor/commands';
 import { findSearchRanges, nextSearchIndex, type SearchOptions } from './search-matching.js';
+import './panel-refresh.css';
 
 type Match = {
   pageId: string; blockId: string; pageNumber: number; range: { start: number; end: number }; excerpt: string;
@@ -22,7 +23,7 @@ const SearchResult = memo(function SearchResult({ match, selected, disabled, sel
   const { t } = useI18n();
   const start = Math.min(35, match.range.start), end = start + match.range.end - match.range.start;
   return <button type="button" ref={selected ? selectedButton : undefined} aria-pressed={selected} disabled={disabled}
-    style={{ textAlign: 'start', overflowWrap: 'anywhere', ...(selected ? { background: '#edf7f2', borderColor: 'var(--accent)', fontWeight: 600 } : {}) }}
+    className="pdf-search-result"
     onClick={() => onLocate(match)}>{t('Page {page}', { page: match.pageNumber })}: {match.excerpt.slice(0, start)}<mark>{match.excerpt.slice(start, end)}</mark>{match.excerpt.slice(end)}</button>;
 });
 
@@ -63,6 +64,7 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
   const [selected, setSelected] = useState<Match | null>(null);
   const [replacing, setReplacing] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [result, setResult] = useState<SearchState | null>(null);
   const queryInput = useRef<HTMLInputElement>(null);
   const selectedButton = useRef<HTMLButtonElement>(null);
@@ -91,10 +93,13 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
   const searching = visible?.status === 'searching';
   const selectedIndex = selected && visible ? visible.matches.indexOf(selected) : -1;
   const canNavigate = !disabled && !replacing && !searching && !!visible?.matches.length;
+  const canContinue = !disabled && !replacing && !searching && Boolean(document && query.trim())
+    && (!visible || visible.matches.length > 0);
+  useEffect(() => { setNotice(''); }, [document?.id]);
 
   function invalidateSearch() {
     operation.current?.abort(); operation.current = null; cancelProgress();
-    setResult(null); setSelected(null); setError('');
+    setResult(null); setSelected(null); setError(''); setNotice('');
   }
 
   const locate = useCallback((match: Match) => {
@@ -110,7 +115,7 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
 
   async function search(direction: 1 | -1 = 1) {
     if (!document || !query.trim() || disabled || replacing) return;
-    operation.current?.abort(); cancelProgress(); setError(''); setSelected(null);
+    operation.current?.abort(); cancelProgress(); setError(''); setNotice(''); setSelected(null);
     const controller = new AbortController();
     operation.current = controller;
     const snapshot: SearchSnapshot = { id: document.id, revision: document.revision, pageOrder: [...document.pageOrder] };
@@ -180,14 +185,16 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
         commands: [{ type: 'text.replace', pageId: page.id, blockId: selected.blockId, range, text: replacement }] }, { document, pages: new Map([[page.id, page]]) });
       await onCommitted(result);
       invalidateSearch();
+      setNotice('Match replaced. Choose Next match or press Enter to continue searching.');
     } catch (caught) { setError(caught instanceof Error ? caught.message : t('Replace failed')); }
     finally { setReplacing(false); onBusyChange?.(false); }
   }
 
   const count = visible?.matches.length ?? 0;
   const countLabel = t('{current} of {count}', { current: selectedIndex + 1, count });
-  return <section className="text-edit-panel" aria-label={t('Find in document')}>
-    <details open><summary>{t('Find in document')}</summary>
+  return <section className="text-edit-panel task-panel pdf-search-panel" aria-label={t('Find in document')}>
+    <header className="task-panel-header"><h2>{t('Find in document')}</h2></header>
+    <div className="task-panel-body">
       <form onSubmit={event => { event.preventDefault(); if (!searching) void search(); }}>
         {/* Cross-page locate briefly makes the host busy; readOnly preserves query focus. */}
         <label>{t('Find text')}<input ref={queryInput} value={query} disabled={!document || replacing}
@@ -209,35 +216,40 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
             setResult(previous => (progress ?? previous) && ({ ...(progress ?? previous)!, status: 'stopped' }));
           }}>{t('Stop search')}</button>}
         </div>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 10 }}>
+        <details><summary>{t('Search options')}</summary>
+        <div className="panel-refresh-row">
           <label style={{ display: 'flex', alignItems: 'center' }}><input type="checkbox" checked={matchCase}
             disabled={!document || disabled || replacing} onChange={event => { setMatchCase(event.target.checked); invalidateSearch(); }} />{t('Match case')}</label>
           <label style={{ display: 'flex', alignItems: 'center' }}><input type="checkbox" checked={wholeWord} aria-describedby={wordHelpId}
             disabled={!document || disabled || replacing} onChange={event => { setWholeWord(event.target.checked); invalidateSearch(); }} />{t('Whole words')}</label>
         </div>
-        <p id={wordHelpId} style={{ marginTop: 6 }}>{t('Whole words use Unicode letter/number boundaries, not Chinese word segmentation.')}</p>
+        <p id={wordHelpId} className="panel-refresh-muted">{t('Whole words use Unicode letter/number boundaries, not Chinese word segmentation.')}</p>
+        </details>
       </form>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button type="button" disabled={!canNavigate} title={t('Previous match (Shift+Enter / Shift+F3)')}
-          onClick={() => navigate(-1)}>{t('Previous match')}</button>
-        <button type="button" disabled={!canNavigate} title={t('Next match (Enter / F3)')}
-          onClick={() => navigate(1)}>{t('Next match')}</button>
-      </div>
       <p role="status" id={statusId} aria-live="polite" aria-atomic="true">
         {searching ? t('Searching… {pages} / {total} pages · {count} matches', { pages: visible.scannedPages, total: document?.pageOrder.length ?? 0, count })
           : visible?.status === 'stopped' ? `${t('Search stopped')} · ${countLabel}`
           : visible?.status === 'failed' ? `${t('Search failed')} · ${countLabel}`
           : visible ? count ? countLabel : t('No matches found') : t('Enter text and press Enter to search.')}
       </p>
-      {onCommitted && document?.permissions.modify && document.capabilities.includes('text.replace') && <>
-        <label>{t('Replace with')}<input value={replacement} disabled={disabled || replacing} onChange={event => setReplacement(event.target.value)} /></label>
-        <button type="button" disabled={!canNavigate || !selected} onClick={() => void replace()}>{t('Replace selected match')}</button>
-      </>}
-      {error && <p role="alert">{t(error)}</p>}
-      {!!count && <div style={{ display: 'grid', gap: 6, maxHeight: 280, overflowY: 'auto' }} aria-label={t('Search results')}>
+      {notice ? <p role="status" className="layout-result">{t(notice)}</p> : null}
+      {!!count && <div className="pdf-search-results" aria-label={t('Search results')}>
         {visible?.matches.map(match => <SearchResult key={`${match.pageId}:${match.blockId}:${match.range.start}:${match.range.end}`}
           match={match} selected={selected === match} disabled={!canNavigate} selectedButton={selectedButton} onLocate={locate} />)}
       </div>}
-    </details>
+    </div>
+    <footer className="task-panel-footer">
+      {error ? <p role="alert">{t(error)}</p> : null}
+      <div className="text-edit-actions">
+        <button type="button" disabled={!canContinue} title={t('Previous match (Shift+Enter / Shift+F3)')}
+          onClick={() => navigateOrSearch(-1)}>{t('Previous match')}</button>
+        <button type="button" className="task-panel-primary" disabled={!canContinue} title={t('Next match (Enter / F3)')}
+          onClick={() => navigateOrSearch(1)}>{t('Next match')}</button>
+      </div>
+      {onCommitted && document?.permissions.modify && document.capabilities.includes('text.replace') ? <>
+        <label>{t('Replace with')}<input value={replacement} disabled={disabled || replacing} onChange={event => setReplacement(event.target.value)} /></label>
+        <button type="button" disabled={!canNavigate || !selected} onClick={() => void replace()}>{t('Replace selected match')}</button>
+      </> : null}
+    </footer>
   </section>;
 }

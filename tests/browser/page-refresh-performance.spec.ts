@@ -39,7 +39,7 @@ test('editing one page preserves other visible page canvases and thumbnails', as
   const start = performance.now();
   await page.keyboard.press('Delete');
   await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
   // Let optional thumbnail and recovery work settle before collecting request counts.
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const stats = await page.evaluate(() => (window as any).refreshStats);

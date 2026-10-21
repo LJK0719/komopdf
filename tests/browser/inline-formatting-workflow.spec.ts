@@ -19,7 +19,7 @@ async function open(page: Page, bytes = fixture()) {
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'formatting.pdf', mimeType: 'application/pdf', buffer: bytes });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 60_000 });
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
   await page.locator('[data-object-type="text"]').first().dblclick();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });
@@ -36,7 +36,7 @@ test('collapsed formatting changes only subsequent input and survives commit/reo
   expect(await page.evaluate(() => getSelection()?.toString())).toBe('');
   await expect(page.getByRole('button', { name: 'Bold', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('button', { name: 'Italic', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await page.keyboard.type('X');
   await expect(input).toHaveText('Alpha Xbravo charlie delta');
   await expect(input.locator('[data-lexical-text]').filter({ hasText: /^X$/ })).toHaveCSS('font-weight', '700');
@@ -49,7 +49,7 @@ test('collapsed formatting changes only subsequent input and survives commit/reo
   await expect(input).toHaveCount(0);
   await expect(page.locator('.property-error')).toHaveCount(0);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   await page.reload();
   const reopened = await open(page, bytes);
@@ -68,7 +68,7 @@ test('Enter in font size consumes the key without replacing the selected word', 
   await expect(input.locator('[data-lexical-text]').filter({ hasText: /^Alpha$/ })).toHaveCSS('font-size', '24px');
   await expect(input.locator('p')).toHaveCount(1);
   await page.keyboard.press('Escape');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
 });
 
 test('local bold plus typing preserves the unregistered source font outside the changed range', async ({ page }) => {

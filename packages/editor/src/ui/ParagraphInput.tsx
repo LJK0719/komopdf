@@ -10,12 +10,13 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import { $patchStyleText } from '@lexical/selection';
 import { $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isElementNode, $isLineBreakNode,
   $isRangeSelection, $isTextNode, $createRangeSelection, $setSelection, KEY_ENTER_COMMAND, KEY_ESCAPE_COMMAND,
-  COMMAND_PRIORITY_HIGH, FORMAT_TEXT_COMMAND, SKIP_SCROLL_INTO_VIEW_TAG, type LexicalNode, type TextNode } from 'lexical';
+  COMMAND_PRIORITY_HIGH, FORMAT_TEXT_COMMAND, SKIP_SCROLL_INTO_VIEW_TAG, HISTORY_PUSH_TAG, UNDO_COMMAND, REDO_COMMAND, type LexicalNode, type TextNode } from 'lexical';
 import type { StyledTextRun, TextRange, TextStyle } from '@pdf-editor/contracts';
 import { type EditorFont, loadFontPreview } from './font-resources.js';
 import { getFontItalic, getFontWeight, resolveSourceFont, sourceFontFamily, sourceFontTraits } from './font-face-matcher.js';
 
-export type ParagraphInputHandle = { format(style: TextStyle, range?: TextRange): void; focus(range?: TextRange): void; isComposing(): boolean };
+export type ParagraphInputHandle = { format(style: TextStyle, range?: TextRange): void; focus(range?: TextRange): void; isComposing(): boolean;
+  replace(range: TextRange, text: string): void; undo(): void; redo(): void };
 type Props = {
   runs: StyledTextRun[]; fonts: EditorFont[]; zoom: number; disabled: boolean; initialRange?: TextRange | null | undefined;
   handle: RefObject<ParagraphInputHandle | null>; label: string; style: TextStyle;
@@ -148,7 +149,7 @@ function Controls(props: Props) {
         node.setStyle(declaration.cssText); updated.set(previous, declaration.cssText);
       }
       const selection = $getSelection();
-      if ($isRangeSelection(selection) && selection.isCollapsed()) {
+      if ($isRangeSelection(selection)) {
         const style = updated.get(selection.style);
         if (style !== undefined) selection.setStyle(style);
       }
@@ -160,7 +161,15 @@ function Controls(props: Props) {
         const current = selectionOffsets();
         if (range && (!current || current.anchor !== range[0] || current.focus !== range[1])) selectRange(range, draft.current!.positions);
         const selection = $getSelection();
-        if ($isRangeSelection(selection)) $patchStyleText(selection, css(style, latest.current.fonts));
+        if ($isRangeSelection(selection)) {
+          const patch = css(style, latest.current.fonts);
+          $patchStyleText(selection, patch);
+          // A range format also sets the style used when typing after collapsing it.
+          const insertion = document.createElement('span').style;
+          insertion.cssText = selection.style;
+          for (const [name, value] of Object.entries(patch)) insertion.setProperty(name, value);
+          selection.setStyle(insertion.cssText);
+        }
       });
       const font = style.fontId && latest.current.fonts.find(face => face.id === style.fontId);
       if (font) void loadFontPreview(font).then(family => {
@@ -170,6 +179,17 @@ function Controls(props: Props) {
       editor.focus();
     },
     focus(range) { editor.update(() => { if (range) selectRange(range, draft.current!.positions); else $getRoot().selectEnd(); }); editor.focus(); },
+    replace(range, text) {
+      if (editor.isComposing()) return;
+      editor.update(() => {
+        selectRange(range, readDraft(latest.current.style, latest.current.zoom).positions);
+        const selection = $getSelection();
+        if ($isRangeSelection(selection)) selection.insertText(text);
+      }, { tag: HISTORY_PUSH_TAG, discrete: true });
+      editor.focus();
+    },
+    undo: () => { editor.dispatchCommand(UNDO_COMMAND, undefined); },
+    redo: () => { editor.dispatchCommand(REDO_COMMAND, undefined); },
     isComposing: () => editor.isComposing(),
   }), [editor]);
   useEffect(() => {
@@ -273,7 +293,7 @@ export function ParagraphInput(props: Props) {
         textAlign: props.style.alignment ?? 'left', textIndent: props.style.firstLineIndent ?? 0,
         ['--paragraph-space-before' as string]: `${props.style.spaceBefore ?? 0}px`,
         ['--paragraph-space-after' as string]: `${props.style.spaceAfter ?? 0}px` }}
-      onBlur={event => { if (!(event.relatedTarget instanceof Element && event.relatedTarget.closest('.text-properties, .direct-text-editor, .paragraph-settings'))) props.onFinish(); }} />}
+      onBlur={event => { if (!(event.relatedTarget instanceof Element && event.relatedTarget.closest('.text-properties, .direct-text-editor, .paragraph-settings, .ai-owned-focus'))) props.onFinish(); }} />}
       placeholder={null} />
     <HistoryPlugin /><Controls {...props} />
   </LexicalComposer>;

@@ -1,6 +1,9 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Popover } from '@base-ui/react/popover';
+import { ContextMenu } from '@base-ui/react/context-menu';
+import { TextActionMenuItems } from './TextActionMenu.js';
+import { textActionSelection, textActionTarget, type TextActionSelection } from './text-actions.js';
 import { Bold, Italic, Underline } from 'lucide-react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import type { CommitResult, DocumentInfo, EngineAdapter, PageModel, RenderResult, StyledTextRun, TextBlock, TextRange, TextStyle } from '@pdf-editor/contracts';
@@ -19,9 +22,11 @@ import { changedBlock, textChange, textStyleChanges } from './text-change.js';
 import type { ParagraphInputHandle } from './ParagraphInput.js';
 const ParagraphInput = lazy(() => import('./ParagraphInput.js').then(module => ({ default: module.ParagraphInput })));
 
-export type TextEditorHandle = { finish(): Promise<boolean>; cancel(): void };
+export type TextEditorHandle = { finish(): Promise<boolean>; cancel(): void; captureSelection?(): TextActionSelection | null };
 type Props = {
   document: DocumentInfo; page: PageModel; selectedIds: string[]; inlineId: string | null;
+  name?: string;
+  onTextAction?: ((selection: TextActionSelection, action: import('@pdf-editor/contracts').TextAction | 'ask') => void) | undefined;
   host: HTMLElement | null; render: RenderResult; engine: EngineAdapter; disabled: boolean;
   handle: RefObject<TextEditorHandle | null>; initialRange?: TextRange | null; initialRangeIsLogical?: boolean; initialHit?: TextHit | null; onClose(): void; onEdit(): void; onManageFonts(): void;
   onParagraph(id: string): void;
@@ -81,6 +86,13 @@ export function DirectTextEditor(props: Props) {
   const range = useRef<TextRange>([0, original.length]);
   const composing = useRef(false);
   const pending = useRef<Promise<boolean> | null>(null);
+  const menuSelection = useRef<TextActionSelection | null>(null);
+  const menuRange = useRef<TextRange>([0, 0]);
+  const [hasMenuSelection, setHasMenuSelection] = useState(false);
+  const draftCurrent = useRef({ key, text, disabled, editing }); draftCurrent.current = { key, text, disabled, editing };
+  const alive = useRef(true);
+  const fallbackUndo = useRef<{ before: string; after: string } | null>(null);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const { fonts } = useFontResources(engine);
   const dirty = Boolean(editing && (text !== original || draftRuns || Object.keys(draftStyle).length));
   let offset = 0;
@@ -263,7 +275,51 @@ export function DirectTextEditor(props: Props) {
     } catch (caught) { setError(caught instanceof Error ? caught.message : t('Unable to edit this text.')); }
     finally { onBusyChange(false); }
   };
-  handle.current = { finish: () => save(), cancel };
+  const captureSelection = (): TextActionSelection | null => {
+    if (!editing || !block || !object || !document.permissions.copy || composing.current || richInput.current?.isComposing()) return null;
+    const selected: TextRange = [...range.current];
+    if (selected[0] === selected[1]) return null;
+    const target = textActionTarget({ ...object, textBlock: { ...block, runs: [{ text, style: base, sourceObjectIds: block.sourceObjectIds }] } },
+      document.pageOrder.indexOf(page.id) + 1, selected, text.slice(...selected));
+    if (!target) return null;
+    const valid = () => alive.current && draftCurrent.current.key === key && draftCurrent.current.text === text && draftCurrent.current.editing;
+    return { ...textActionSelection(document, props.name ?? 'PDF', [target]), draft: {
+      current: valid,
+      replace: value => {
+        if (!valid() || draftCurrent.current.disabled || !canEdit || composing.current || richInput.current?.isComposing()) return false;
+        if (block.isParagraph && richInput.current) richInput.current.replace(selected, value);
+        else if (input.current) {
+          input.current.focus(); input.current.setSelectionRange(...selected);
+          if (!window.document.execCommand('insertText', false, value)) {
+            const next = text.slice(0, selected[0]) + value + text.slice(selected[1]);
+            fallbackUndo.current = { before: text, after: next }; setText(next);
+          } else setText(input.current.value);
+        } else return false;
+        setError(''); return true;
+      },
+    } };
+  };
+  const clipboard = async (action: 'copy' | 'cut' | 'paste') => {
+    const selection = menuSelection.current;
+    if (!document.permissions.copy) return;
+    try {
+      if (action === 'paste') {
+        const value = await navigator.clipboard.readText();
+        if (selection) selection.draft?.replace(value);
+        else if (draftCurrent.current.key === key && draftCurrent.current.text === text) {
+          if (block?.isParagraph) richInput.current?.replace(menuRange.current, value);
+          else if (input.current) {
+            input.current.focus(); input.current.setSelectionRange(...menuRange.current);
+            if (!window.document.execCommand('insertText', false, value)) {
+              const [start, end] = menuRange.current, next = text.slice(0, start) + value + text.slice(end);
+              fallbackUndo.current = { before: text, after: next }; setText(next);
+            } else setText(input.current.value);
+          }
+        }
+      } else if (selection) { await navigator.clipboard.writeText(selection.targets[0]!.text); if (action === 'cut') selection.draft?.replace(''); }
+    } catch { setError(t('Clipboard access was denied. Use keyboard shortcuts to copy or paste.')); }
+  };
+  handle.current = { finish: () => save(), cancel, captureSelection };
   if (!block || !object) return <span className="ribbon-hint">{t('Click an object to select it. Double-click text to edit.')} </span>;
   const color = '#' + (base.color ?? [0, 0, 0]).map(value => Math.round(value * 255).toString(16).padStart(2, '0')).join('');
   return <>
@@ -358,7 +414,13 @@ export function DirectTextEditor(props: Props) {
       {formatting && <span className="ribbon-hint" role="status">{t('Updating text…')}</span>}
       {error && <span className="property-error" role="alert">{t(error)}</span>}
     </div>
-    {editing && host && canEdit && createPortal(<div className="direct-text-editor" data-pristine={!dirty} role="group" aria-label={t('Edit text on page')}
+    {editing && host && canEdit && createPortal(<ContextMenu.Root><ContextMenu.Trigger render={<div />} className="direct-text-editor" data-pristine={!dirty} role="group" aria-label={t('Edit text on page')}
+      onContextMenu={() => { menuRange.current = [...range.current]; menuSelection.current = captureSelection(); setHasMenuSelection(Boolean(menuSelection.current)); }}
+      onKeyDownCapture={event => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          menuRange.current = [...range.current]; menuSelection.current = captureSelection(); setHasMenuSelection(Boolean(menuSelection.current));
+        }
+      }}
       style={{ left: (frame?.transform[4] ?? block.bounds.x) * viewScale,
         top: (frame?.transform[5] ?? block.bounds.y) * viewScale,
         width: Math.max(1, (frame?.width ?? block.bounds.width) * viewScale),
@@ -389,15 +451,32 @@ export function DirectTextEditor(props: Props) {
         onCompositionStart={() => { composing.current = true; }} onCompositionEnd={event => { composing.current = false; setText(event.currentTarget.value); }}
         onBlur={event => {
           const target = event.relatedTarget;
-          if (target instanceof Element && target.closest('.text-properties, .direct-text-editor, .paragraph-settings')) return;
+          if (target instanceof Element && target.closest('.text-properties, .direct-text-editor, .paragraph-settings, .ai-owned-focus')) return;
           if (!composing.current) void save();
         }}
         onKeyDown={event => {
           if (event.nativeEvent.isComposing || composing.current) return;
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && fallbackUndo.current) {
+            const saved = fallbackUndo.current;
+            const value = event.shiftKey ? saved.after : saved.before;
+            if (text === (event.shiftKey ? saved.before : saved.after)) { event.preventDefault(); setText(value); return; }
+          }
           if (event.key === 'Escape') { event.preventDefault(); cancel(); }
           if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void save(); }
         }} />}
       {error && <span className="direct-text-error" role="alert">{t(error)}</span>}
-    </div>, host)}
+    </ContextMenu.Trigger>
+    <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu ai-owned-focus">
+      <ContextMenu.Item className="ui-menu-item" disabled={disabled} onClick={() => { if (block.isParagraph) richInput.current?.undo(); else { input.current?.focus(); window.document.execCommand('undo'); } }}>{t('Undo')}</ContextMenu.Item>
+      <ContextMenu.Item className="ui-menu-item" disabled={disabled} onClick={() => { if (block.isParagraph) richInput.current?.redo(); else { input.current?.focus(); window.document.execCommand('redo'); } }}>{t('Redo')}</ContextMenu.Item>
+      <ContextMenu.Separator className="ui-menu-separator" />
+      <ContextMenu.Item className="ui-menu-item" disabled={disabled || !document.permissions.copy || !hasMenuSelection} onClick={() => void clipboard('cut')}>{t('Cut')}<kbd>Ctrl/Cmd X</kbd></ContextMenu.Item>
+      <ContextMenu.Item className="ui-menu-item" disabled={!document.permissions.copy || !hasMenuSelection} onClick={() => void clipboard('copy')}>{t('Copy text')}<kbd>Ctrl/Cmd C</kbd></ContextMenu.Item>
+      <ContextMenu.Item className="ui-menu-item" disabled={disabled || !document.permissions.copy} onClick={() => void clipboard('paste')}>{t('Paste')}<kbd>Ctrl/Cmd V</kbd></ContextMenu.Item>
+      <ContextMenu.Item className="ui-menu-item" onClick={() => { if (block.isParagraph) richInput.current?.focus([0, text.length]); else { input.current?.focus(); input.current?.select(); } }}>{t('Select all')}<kbd>Ctrl/Cmd A</kbd></ContextMenu.Item>
+      {props.onTextAction && <TextActionMenuItems disabled={disabled || !document.permissions.copy || !hasMenuSelection} onAction={action => {
+        const selection = menuSelection.current; if (selection) props.onTextAction?.(selection, action);
+      }} />}
+    </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal></ContextMenu.Root>, host)}
   </>;
 }

@@ -26,6 +26,22 @@ export const evidenceBlockSchema = z.object({
   bounds: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
 }).strict();
 export type EvidenceBlock = z.infer<typeof evidenceBlockSchema>;
+/** Read-only sources never become transaction targets. */
+export const aiSourceDocumentSchema = z.object({
+  id: idSchema, revision: revisionSchema, name: z.string().min(1).max(1000),
+  sourceIds: z.array(idSchema).min(1), pageIds: z.array(idSchema),
+  coverage: z.object({ kind: z.enum(['full', 'excerpts', 'analysis']), pagesScanned: z.number().int().nonnegative(),
+    pageNumbers: z.array(z.number().int().positive()) }).strict().optional(),
+}).strict();
+export const referenceEvidenceSchema = z.object({
+  id: idSchema, docId: idSchema, revision: revisionSchema, sourceId: idSchema,
+  materialId: idSchema, kind: z.enum(['source', 'generated', 'analysis']), text: z.string().min(1),
+  role: z.enum(['attached', 'result']).optional(),
+  pageId: idSchema.optional(), pageNumber: z.number().int().positive().optional(), blockId: idSchema.optional(),
+  characterRange: rangeSchema.optional(),
+}).strict();
+export type AiSourceDocument = z.infer<typeof aiSourceDocumentSchema>;
+export type ReferenceEvidence = z.infer<typeof referenceEvidenceSchema>;
 export const citationRefSchema = z.object({ evidenceId: idSchema, quote: z.string().min(1).optional() }).strict();
 export type CitationRef = z.infer<typeof citationRefSchema>;
 export const textReplacementSchema = z.object({ targetEvidenceId: idSchema, text: z.string(), reason: z.string().optional() }).strict();
@@ -56,6 +72,8 @@ export const aiRequestSchema = z.object({
   context: z.object({
     scope: z.enum(['selection', 'page', 'pages', 'document']),
     evidence: z.array(evidenceBlockSchema),
+    sourceDocuments: z.array(aiSourceDocumentSchema).max(32).optional(),
+    referenceEvidence: z.array(referenceEvidenceSchema).max(256).optional(),
     // 全文内容不在页面操作请求里发送；目标只含已授权的本地元数据。
     pages: z.array(z.object({ id: idSchema, pageNumber: z.number().int().positive() }).strict()).optional(),
     objects: z.array(z.object({ id: idSchema, pageId: idSchema, type: z.enum(['text', 'image', 'path', 'form', 'group', 'shading']), blockId: idSchema.optional(), style: textStyleSchema.optional() }).strict()).optional(),
@@ -83,6 +101,36 @@ export const aiRequestSchema = z.object({
       ctx.addIssue({ code: 'custom', path: ['context', 'evidence', index, 'characterRange'], message: 'Evidence snippet does not match UTF-16 range length' });
     }
   });
+  const documents = new Map<string, AiSourceDocument>();
+  for (const [index, source] of (value.context.sourceDocuments ?? []).entries()) {
+    const key = JSON.stringify([source.id, source.revision]);
+    const oldTargetSnapshot = source.id === value.document.id && source.revision !== value.document.revision;
+    const matching = (value.context.referenceEvidence ?? []).filter(evidence => evidence.docId === source.id && evidence.revision === source.revision);
+    if (documents.has(key) || new Set(source.sourceIds).size !== source.sourceIds.length || new Set(source.pageIds).size !== source.pageIds.length
+      || (oldTargetSnapshot && (!matching.length || matching.some(evidence => evidence.kind !== 'generated')))) {
+      ctx.addIssue({ code: 'custom', path: ['context', 'sourceDocuments', index], message: 'Duplicate or mismatched source document' });
+    }
+    documents.set(key, source);
+  }
+  for (const [index, evidence] of (value.context.referenceEvidence ?? []).entries()) {
+    const source = documents.get(JSON.stringify([evidence.docId, evidence.revision]));
+    const path = ['context', 'referenceEvidence', index];
+    if (ids.has(evidence.id) || !source || source.revision !== evidence.revision || !source.sourceIds.includes(evidence.sourceId)) {
+      ctx.addIssue({ code: 'custom', path, message: 'Reference evidence must match a unique declared source and revision' });
+    }
+    ids.add(evidence.id);
+    if ((evidence.pageId === undefined) !== (evidence.pageNumber === undefined)
+      || (evidence.pageId !== undefined && source?.pageIds[evidence.pageNumber! - 1] !== evidence.pageId)
+      || (evidence.blockId !== undefined && evidence.pageId === undefined)) {
+      ctx.addIssue({ code: 'custom', path, message: 'Reference location does not match its source document' });
+    }
+    if (evidence.kind === 'source' && (!evidence.pageId || !evidence.blockId || !evidence.characterRange)) {
+      ctx.addIssue({ code: 'custom', path, message: 'PDF source references require a real block and range' });
+    }
+    if (evidence.characterRange && (evidence.kind !== 'source' || evidence.characterRange[1] - evidence.characterRange[0] !== evidence.text.length)) {
+      ctx.addIssue({ code: 'custom', path, message: 'Only original PDF text can carry a character range' });
+    }
+  }
 });
 export type AiRequest = z.infer<typeof aiRequestSchema>;
 export const aiResponseEnvelopeSchema = z.object({

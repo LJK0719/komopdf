@@ -1,6 +1,9 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
-import type { Rect, TextRange } from '@pdf-editor/contracts';
+import type { Rect, TextRange, TextAction } from '@pdf-editor/contracts';
+import { Languages, MessageSquare } from 'lucide-react';
+import { TextActionMenuItems } from './TextActionMenu.js';
+import { textActionSelection, textActionTarget, type TextActionSelection } from './text-actions.js';
 import type { LoadedDocument } from './EditorShell.js';
 import { useI18n } from './i18n.js';
 import { caretAt, domTextPoint, hitText, mergeTextRects, selectionRects, textClusters } from './text-geometry.js';
@@ -15,9 +18,29 @@ type Props = {
   onInsert(document: LoadedDocument, point: { x: number; y: number }): void;
   onAnnotate(document: LoadedDocument, targets: TextSelectionTarget[], action: ReadingAction): Promise<void>;
   onError(message: string): void;
+  onTextAction?(selection: TextActionSelection, action: TextAction | 'ask'): void;
+  aiSelection?: TextActionSelection | null;
 };
 type DomPoint = { node: Node; offset: number };
 const pageHitTests = new WeakMap<Element, (x: number, y: number) => DomPoint | null>();
+const selectionReaders = new Map<Element, () => { document: LoadedDocument; targets: TextSelectionTarget[] }>();
+
+function actionTargets(shown: LoadedDocument, targets: TextSelectionTarget[]) {
+  const objects = readingRegions(shown.page).flatMap(region => region.objects);
+  return targets.flatMap(target => {
+    const object = objects.find(item => item.id === target.objectId);
+    const value = object && textActionTarget(object, shown.info.pageOrder.indexOf(shown.page.id) + 1, target.range, target.text, target.rects);
+    return value ? [value] : [];
+  });
+}
+export function captureReadingSelection(documentId: string): TextActionSelection | null {
+  const pages = [...selectionReaders.values()].map(read => read()).filter(item => item.document.info.id === documentId && item.targets.some(target => target.text.trim()));
+  pages.sort((a, b) => a.document.info.pageOrder.indexOf(a.document.page.id) - b.document.info.pageOrder.indexOf(b.document.page.id));
+  const first = pages[0]?.document;
+  if (!first || !first.info.permissions.copy) return null;
+  const targets = pages.flatMap(item => actionTargets(item.document, item.targets));
+  return targets.length ? textActionSelection(first.info, first.name, targets) : null;
+}
 
 // Editor ranges are logical offsets relative to the seed's paragraph position.
 // Native annotation/style targets keep their separate per-object source ranges.
@@ -38,7 +61,7 @@ export function paragraphEditRange(region: ReadingRegion, targets: readonly Text
   return [start - origin, end - origin];
 }
 
-export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert, onAnnotate, onError }: Props) {
+export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert, onAnnotate, onError, onTextAction, aiSelection }: Props) {
   const { t } = useI18n();
   const layer = useRef<HTMLDivElement>(null);
   const anchor = useRef<DomPoint | null>(null);
@@ -51,6 +74,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
   const [caret, setCaret] = useState<Rect | null>(null);
   const [point, setPoint] = useState({ x: 36, y: 36 });
   const contextTargets = useRef<TextSelectionTarget[]>([]);
+  const contextAction = useRef<TextActionSelection | null>(null);
   const menuOpen = useRef(false);
   const canEdit = shown.info.permissions.modify && shown.info.capabilities.includes('text.replace');
   const { objects, prefixes, byId, sourceById } = useMemo(() => {
@@ -109,6 +133,18 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
       result.push({ objectId: object.id, blockId: block.id, range: [sourceTextOffset(source, start), sourceTextOffset(source, end)], logicalRange: [start, end], text: value.slice(start, end), rects });
     }
     return result;
+  };
+  const readCurrent = useRef(() => ({ document: shown, targets: readSelection() }));
+  readCurrent.current = () => ({ document: shown, targets: readSelection() });
+  useLayoutEffect(() => {
+    const root = layer.current;
+    if (!root) return;
+    selectionReaders.set(root, () => readCurrent.current());
+    return () => { selectionReaders.delete(root); };
+  }, []);
+  const startAction = (action: TextAction | 'ask', fromMenu = false) => {
+    const selection = fromMenu ? contextAction.current : captureReadingSelection(shown.info.id);
+    if (!disabled && shown.info.permissions.copy && selection) onTextAction?.(selection, action);
   };
   const showSelection = () => {
     const selection = window.getSelection();
@@ -243,7 +279,9 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
         let copied = range?.toString() ?? '';
         let local = Boolean(range && layer.current?.contains(range.startContainer) && layer.current.contains(range.endContainer));
+        let wholeObject = false;
         if (!next.length || (id && !next.some(target => target.objectId === id))) {
+          wholeObject = true;
           const object = byId.get(id ?? '');
           if (object?.textBlock) {
             const value = object.textBlock.runs.map(run => run.text).join('');
@@ -254,6 +292,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         }
         contextText.current = copied; setLocalSelection(local);
         contextTargets.current = next; setTargets(next);
+        contextAction.current = !wholeObject ? captureReadingSelection(shown.info.id) : null;
+        if (!contextAction.current && next.some(target => target.text.trim())) contextAction.current = textActionSelection(shown.info, shown.name, actionTargets(shown, next));
       }}
       onCopy={event => {
         event.preventDefault();
@@ -263,6 +303,12 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         }
       }}
       onKeyDown={event => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          const next = readSelection(); contextTargets.current = next; setTargets(next);
+          contextText.current = window.getSelection()?.toString() ?? '';
+          contextAction.current = captureReadingSelection(shown.info.id);
+          const first = next[0]?.rects[0]; if (first) setPoint({ x: first.x, y: first.y });
+        }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && layer.current) {
           event.preventDefault(); window.getSelection()?.selectAllChildren(layer.current); showSelection(); return;
         }
@@ -270,12 +316,21 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         if (event.key === 'Enter' && editTarget && canEdit && !disabled) { event.preventDefault(); onEdit(shown, editTarget.objectId, editTarget.range, true); }
       }}>
       {textNodes}
-      <div className="pdf-selection-paint" aria-hidden="true">{mergeTextRects(targets.flatMap(target => target.rects), shown.page.rotation % 180 !== 0).map((rect, index) =>
+      <div className="pdf-selection-paint" aria-hidden="true">{mergeTextRects((targets.length ? targets : aiSelection?.revision === shown.info.revision ? aiSelection.targets.filter(target => target.pageId === shown.page.id) : []).flatMap(target => target.rects), shown.page.rotation % 180 !== 0).map((rect, index) =>
         <i key={index} style={{ left: rect.x * zoom, top: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom }} />)}</div>
       {caret && <i className="reading-caret" aria-hidden="true" style={{ left: caret.x * zoom, top: caret.y * zoom,
         width: Math.max(1.5, caret.width * zoom), height: Math.max(1.5, caret.height * zoom) }} />}
     </ContextMenu.Trigger>
-    <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu">
+    {onTextAction && text.trim() && shown.info.permissions.copy && !disabled && !menuOpen.current && layer.current?.contains(window.getSelection()?.focusNode ?? null) && (() => {
+      const rect = targets.at(-1)?.rects.at(-1);
+      return rect && <div className="selection-ai-toolbar ai-owned-focus" role="toolbar" aria-label={t('Selected text tools')}
+        style={{ left: Math.max(4, Math.min(rect.x * zoom, shown.page.widthPt * zoom - 150)), top: Math.min((rect.y + rect.height) * zoom + 6, shown.page.heightPt * zoom - 38) }}
+        onPointerDown={event => { event.stopPropagation(); event.preventDefault(); }}>
+        <button type="button" onClick={() => startAction('translate')}><Languages size={16} />{t('AI translate')}</button>
+        <button type="button" onClick={() => startAction('ask')} aria-label={t('Ask KOMO about selection')} title={t('Ask KOMO about selection')}><MessageSquare size={16} /></button>
+      </div>;
+    })()}
+    <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu ai-owned-focus">
       {targets.length > 0 && <>
         <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !shown.info.permissions.copy} onClick={() => void copy()}>{t('Copy text')}<kbd>Ctrl/Cmd C</kbd></ContextMenu.Item>
         {editTarget && <ContextMenu.Item className="ui-menu-item" disabled={!canEdit || disabled} onClick={() => onEdit(shown, editTarget.objectId, editTarget.range, true)}>{t(text ? 'Edit selected text' : 'Insert text at cursor')}</ContextMenu.Item>}
@@ -286,6 +341,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         <ContextMenu.Separator className="ui-menu-separator" />
       </>}
       <ContextMenu.Item className="ui-menu-item" disabled={disabled || !shown.info.permissions.modify || !shown.info.capabilities.includes('text.insert')} onClick={() => onInsert(shown, point)}>{t('Add text here')}</ContextMenu.Item>
+      {onTextAction && targets.length > 0 && <TextActionMenuItems disabled={!text.trim() || disabled || !shown.info.permissions.copy} onAction={action => startAction(action, true)} />}
     </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal>
   </ContextMenu.Root>;
 }

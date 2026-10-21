@@ -1,48 +1,75 @@
-.panel-content:has(> div:not([hidden]) > .komo-chat) { overflow: hidden; }
-.panel-content > div:has(> .komo-chat) { height: 100%; }
-.komo-chat { display: flex; flex-direction: column; height: 100%; gap: 8px; padding: 10px 12px; min-width: 0; min-height: 0; color: var(--ink); font-size: 12px; line-height: 1.6; }
-.komo-chat-heading, .komo-chat-composer, .komo-chat-scan, .komo-chat-settings { flex-shrink: 0; }
-.komo-chat-heading { display: flex; gap: 8px; align-items: center; }
-.komo-chat-heading h2 { margin: 0; font-size: 18px; letter-spacing: -.5px; }
-.komo-chat-heading .icon-button { margin-left: auto; min-height: 28px; padding: 5px; }
-.komo-chat-tag { color: var(--muted); font-size: 10px; }
-.komo-chat-avatar { display: grid; place-items: center; width: 26px; height: 28px; border-radius: 7px 7px 7px 2px; background: var(--dark); color: white; font: italic 700 23px Georgia, serif; }
-.komo-chat-settings { font-size: 11px; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+.panel-content:has(> div:not([hidden]) > :is(.komo-chat, .komo-account-chat)) { overflow: hidden; min-height: 0; }
+.panel-content > div:not([hidden]):has(> :is(.komo-chat, .komo-account-chat)) { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+.panel-content > div:has(> :is(.komo-chat, .komo-account-chat)) > .komo-account-strip { flex: none; max-height: 16dvh; overflow: auto; overscroll-behavior: contain; }
+.komo-account-chat:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.komo-chat { box-sizing: border-box; display: flex; flex: 1; flex-direction: column; gap: 10px; padding: 12px; min-width: 0; min-height: 0; overflow: hidden; color: var(--ink); background: var(--paper); font: inherit; font-size: 13px; line-height: 1.6; }
+.komo-chat :is(button, select, textarea) { font: inherit; }
+.komo-chat :is(button, select, textarea, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.komo-chat-heading, .komo-chat-material, .komo-chat-composer, .komo-chat-settings, .komo-new-answer, .komo-chat-notice { flex: none; }
+.komo-chat-heading { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.komo-chat-heading h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.4px; }
+.komo-chat-heading .icon-button { margin-left: auto; min-height: 32px; padding: 7px; }
+.komo-chat-tag { color: var(--muted); font-size: 12px; }
+.komo-chat-avatar { display: grid; place-items: center; flex: none; width: 28px; height: 30px; border-radius: 8px 8px 8px 3px; background: var(--accent); color: white; font: italic 700 23px Georgia, serif; }
+.komo-chat-material { display: grid; gap: 1px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+.komo-chat-material > span { color: var(--muted); font-size: 12px; }
+.komo-chat-material strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.komo-chat-settings { font-size: 12px; border-top: 1px solid var(--line); padding-top: 7px; }
 .komo-chat-settings summary { cursor: pointer; color: var(--accent); padding: 3px 0; overflow-wrap: anywhere; }
-.komo-chat-settings > div { display: grid; gap: 8px; max-height: 26vh; overflow: auto; padding-top: 6px; }
+.komo-chat-settings > div { display: grid; gap: 10px; max-height: min(240px, 28dvh); overflow: auto; overscroll-behavior: contain; padding: 8px 2px 2px; }
 .komo-chat-settings label { display: flex; align-items: center; gap: 8px; }
-.komo-chat-settings select { flex: 1; min-width: 0; padding: 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.komo-chat-settings select { flex: 1; min-width: 0; min-height: 34px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); }
 .komo-chat-settings p { margin: 0; color: var(--muted); }
 .komo-chat-settings .komo-chat-consent { align-items: flex-start; }
-.komo-chat-consent input { flex: none; margin: 3px 0 0; }
-.komo-chat-transcript { flex: 1; min-height: 60px; overflow: auto; display: flex; flex-direction: column; gap: 16px; overscroll-behavior: contain; scrollbar-width: thin; }
-.komo-chat-transcript > * { flex-shrink: 0; }
-.komo-chat-exchange { display: grid; gap: 10px; }
-.komo-chat-empty { padding: 10px 0; }
-.komo-chat-empty h3 { margin: 0 0 8px; font: 500 22px/1.25 Georgia, 'Songti SC', serif; letter-spacing: -.4px; }
-.komo-chat-empty p { color: var(--muted); }
-.komo-chat-suggestions, .komo-chat-actions, .komo-chat-citations { display: flex; flex-wrap: wrap; gap: 6px; }
-.komo-chat :is(.komo-chat-suggestions,.komo-chat-actions,.komo-chat-citations) button { border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; background: var(--paper); text-align: left; font-size: 11px; }
-.komo-chat :is(.komo-chat-suggestions,.komo-chat-actions,.komo-chat-citations) button:hover:not(:disabled) { background: var(--acid); border-color: var(--signal); }
+.komo-chat-consent input { flex: none; margin: 4px 0 0; accent-color: var(--accent); }
+.komo-chat-transcript { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 20px; padding: 6px 2px 10px; overscroll-behavior: contain; scrollbar-width: thin; overflow-anchor: none; }
+.komo-chat-transcript > * { flex-shrink: 0; min-width: 0; }
+.komo-chat-exchange { display: grid; gap: 12px; }
+.komo-chat-empty { padding: 18px 0; }
+.komo-chat-empty h3 { margin: 0 0 8px; font-size: 18px; font-weight: 600; letter-spacing: -.3px; }
+.komo-chat-empty p { margin: 0 0 16px; color: var(--muted); }
+.komo-chat-suggestions, .komo-chat-actions, .komo-chat-citations { display: flex; flex-wrap: wrap; gap: 7px; }
+.komo-chat :is(.komo-chat-suggestions,.komo-chat-actions,.komo-chat-citations) button { min-height: 32px; border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; background: var(--paper); color: var(--ink); text-align: left; font-size: 12px; cursor: pointer; }
+.komo-chat :is(.komo-chat-suggestions,.komo-chat-actions,.komo-chat-citations) button:hover:not(:disabled) { background: var(--canvas); border-color: var(--accent); }
+.komo-chat button:disabled { cursor: default; opacity: .5; }
 .komo-chat-citations { margin-top: 10px; }
-.komo-chat-citations button { color: var(--accent); }
-.komo-chat-message { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 9px 9px 9px 2px; }
-.komo-chat-message > strong { display: block; margin-bottom: 5px; font-size: 11px; color: var(--accent); }
+.komo-chat .komo-chat-citations button { color: var(--accent); }
+.komo-chat-message { min-width: 0; }
+.komo-chat-message > strong { display: block; margin-bottom: 6px; font-size: 12px; color: var(--accent); font-weight: 600; }
 .komo-chat-user > p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.komo-chat-user { margin-left: 16px; background: var(--canvas); border-color: transparent; border-radius: 9px 9px 2px 9px; }
-.komo-chat-coverage { margin-top: 8px; color: var(--muted); font-size: 10px; }
+.komo-chat-user { margin-left: 16px; padding: 10px 12px; background: var(--canvas); border: 1px solid var(--line); border-radius: 9px 9px 3px 9px; }
+.komo-chat-assistant { padding: 0 2px; }
+.komo-chat-coverage { margin-top: 9px; color: var(--muted); font-size: 12px; }
 .komo-chat-coverage summary { cursor: pointer; }
 .komo-chat-coverage p { margin: 4px 0 0; overflow-wrap: anywhere; }
-.komo-chat-scan { border-left: 2px solid var(--signal); background: var(--acid); border-radius: 0 5px 5px 0; font-size: 10px; padding: 4px 8px; }
+.komo-chat-scan { border-left: 2px solid var(--accent); background: var(--canvas); border-radius: 0 6px 6px 0; font-size: 12px; padding: 7px 10px; }
 .komo-chat-scan summary { cursor: pointer; }
-.komo-chat-scan p { margin: 6px 0 2px; max-height: 18vh; overflow: auto; }
-.komo-chat-error { color: #a23828; margin: 6px 0; }
+.komo-chat-scan p { margin: 6px 0 2px; }
+.komo-chat-error { color: var(--komo-danger, #a23828); margin: 6px 0; }
 .komo-chat-progress { color: var(--accent); margin: 6px 0; }
-.komo-new-answer, .komo-sharing-reminder { border: 0; background: var(--acid); color: var(--accent); font-size: 11px; padding: 5px; border-radius: 5px; }
-.komo-chat-composer { padding: 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); }
-.komo-chat-composer:focus-within { border-color: var(--signal); }
-.komo-chat-composer textarea { display: block; width: 100%; min-height: 40px; max-height: 16vh; resize: vertical; border: 0; padding: 2px; background: transparent; color: var(--ink); line-height: 1.5; }
-.komo-chat-composer > div { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-top: 4px; }
-.komo-chat-composer small { color: var(--muted); font-size: 9px; }
-.komo-chat-composer .button { min-height: 28px; padding: 4px 9px; }
-@media (max-height: 650px) { .komo-chat { gap: 5px; padding: 7px 10px; } .komo-chat-composer textarea { height: 36px; min-height: 36px; } .komo-chat-settings > div { max-height: 22vh; } }
+.komo-chat-stale { margin: 6px 0; padding: 5px 8px; border-left: 2px solid var(--line); color: var(--muted); font-size: 12px; }
+.komo-new-answer { border: 1px solid var(--line); background: var(--canvas); color: var(--accent); font-size: 12px; padding: 6px; border-radius: 6px; cursor: pointer; }
+.komo-chat-notice { margin: 0; max-height: 64px; overflow: auto; color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
+.komo-chat-composer { padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+.komo-chat-composer:focus-within { border-color: var(--accent); }
+.komo-chat-composer textarea { box-sizing: border-box; display: block; width: 100%; min-height: 48px; max-height: min(120px, 16dvh); resize: none; border: 0; padding: 2px; background: transparent; color: var(--ink); line-height: 1.6; }
+.komo-chat-composer textarea:focus { outline: none; }
+.komo-chat-composer > div { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 6px; }
+.komo-chat-composer small { min-width: 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.komo-chat-composer .button { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 6px 10px; white-space: nowrap; }
+@media (max-height: 760px) {
+  .komo-chat { gap: 6px; padding: 8px 10px; }
+  .komo-chat-material { display: flex; align-items: center; gap: 8px; padding: 5px 8px; }
+  .komo-chat-material > span:first-child { display: none; }
+  .komo-chat-material strong { flex: 1; min-width: 0; }
+  .komo-chat-material > span:last-child { flex: none; font-size: 11px; }
+  .komo-chat-empty { padding: 8px 0; }
+  .komo-chat-composer textarea { min-height: 36px; height: 36px; }
+  .komo-chat-settings > div { max-height: 20dvh; }
+}
+@media (max-height: 650px) {
+  .komo-chat-heading { position: relative; height: 0; }
+  .komo-chat-heading :is(.komo-chat-avatar, h2, .komo-chat-tag) { display: none; }
+  .komo-chat-heading .icon-button { position: absolute; top: 6px; right: 0; z-index: 1; }
+  .komo-chat-material { padding-right: 36px; }
+}

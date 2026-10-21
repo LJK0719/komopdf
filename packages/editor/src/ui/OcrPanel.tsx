@@ -12,6 +12,10 @@ import {
   type Rect,
 } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
+import { parsePageIndices } from './page-import-utils.js';
+import './panel-refresh.css';
+
+type OcrStatus = { message: string; values?: Record<string, string | number> };
 
 export type OcrPanelProps = {
   document: DocumentInfo;
@@ -63,11 +67,6 @@ export function OcrPanel({
   onCommitted,
 }: OcrPanelProps) {
   useI18n();
-  // If engine has no OCR capabilities, do not display panel
-  if (!engine.recognizeOcr) {
-    return null;
-  }
-
   const [targetMode, setTargetMode] = useState<'current' | 'range'>('current');
   const [pageRangeInput, setPageRangeInput] = useState(() => {
     const idx = document.pageOrder.indexOf(page.id);
@@ -83,7 +82,7 @@ export function OcrPanel({
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [statusMessage, setStatusMessage] = useState('');
+  const [statusMessage, setStatusMessage] = useState<OcrStatus | null>(null);
 
   const { fonts, error: fontError } = useFontResources(engine);
 
@@ -144,7 +143,7 @@ export function OcrPanel({
       setCandidateLines([]);
       setCandidateBase(null);
       setError('');
-      setStatusMessage('');
+      setStatusMessage(null);
     }
   }, [document.id, document.revision, page.id, engine]);
 
@@ -168,7 +167,7 @@ export function OcrPanel({
         // Ignore cancellation cleanup error
       }
     }
-    setStatusMessage('Stopping… Already committed pages will be retained.');
+    setStatusMessage({ message: 'Stopping… Already committed pages will be retained.' });
   }
 
   async function runCurrentPageOcr(): Promise<void> {
@@ -196,7 +195,7 @@ export function OcrPanel({
     setBusy(true);
     onBusyChange(true);
     setError('');
-    setStatusMessage('Recognizing current page…');
+    setStatusMessage({ message: 'Recognizing current page…' });
 
     try {
       const clip = useImageRegion && selectedImage ? { ...selectedImage.bounds } : undefined;
@@ -244,14 +243,14 @@ export function OcrPanel({
       });
 
       if (lines.length === 0) {
-        setStatusMessage('No valid text lines detected in the specified area.');
+        setStatusMessage({ message: 'No valid text lines detected in the specified area.' });
       } else {
-        setStatusMessage(`Recognized ${lines.length} text line(s). Review or edit below, then click "Add Searchable Text".`);
+        setStatusMessage({ message: 'Recognized {count} text lines. Review them, then choose Add searchable text.', values: { count: lines.length } });
       }
     } catch (caught) {
       if (!stopRequestedRef.current) {
         setError(caught instanceof Error ? caught.message : 'OCR recognition failed');
-        setStatusMessage('');
+        setStatusMessage(null);
       }
     } finally {
       if (activeJobIdRef.current === jobId) {
@@ -292,7 +291,7 @@ export function OcrPanel({
     setBusy(true);
     onBusyChange(true);
     setError('');
-    setStatusMessage('Applying searchable text layer…');
+    setStatusMessage({ message: 'Applying searchable text layer…' });
 
     try {
       const commands: EditCommand[] = [];
@@ -359,7 +358,7 @@ export function OcrPanel({
 
       setCandidateLines([]);
       setCandidateBase(null);
-      setStatusMessage(`Added ${validLines.length} searchable text line(s) to current page.`);
+      setStatusMessage({ message: 'Added {count} searchable text lines to the current page.', values: { count: validLines.length } });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Failed to apply searchable text layer');
     } finally {
@@ -370,9 +369,12 @@ export function OcrPanel({
 
   async function runOcrRange(): Promise<void> {
     if (locked || !canWriteLayer) return;
-    const pageNumbers = parsePageRange(pageRangeInput, document.pageOrder.length);
-    if (pageNumbers.length === 0) {
-      setError('Please specify a valid page range (e.g. 1-3, 5).');
+    let pageNumbers: number[];
+    try {
+      pageNumbers = parsePageIndices(pageRangeInput, document.pageOrder.length).map(index => index + 1);
+      if (!pageNumbers.length) throw new Error('Please specify a valid page range (e.g. 1-3, 5).');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Please specify a valid page range (e.g. 1-3, 5).');
       return;
     }
     if (!chosenFontId) {
@@ -383,7 +385,7 @@ export function OcrPanel({
     setBusy(true);
     onBusyChange(true);
     setError('');
-    setStatusMessage(`Starting batch OCR for ${pageNumbers.length} page(s)…`);
+    setStatusMessage({ message: 'Starting batch OCR for {count} pages…', values: { count: pageNumbers.length } });
 
     stopRequestedRef.current = false;
     let committedPages = 0;
@@ -397,7 +399,7 @@ export function OcrPanel({
         const targetPageId = document.pageOrder[pageNum - 1];
         if (!targetPageId) continue;
 
-        setStatusMessage(`Processing page ${pageNum} (${committedPages} committed)…`);
+        setStatusMessage({ message: 'Processing page {page} · {committed} pages applied…', values: { page: pageNum, committed: committedPages } });
 
         const targetPage = await engine.describePage(document.id, targetPageId);
         // Skip pages that already contain text blocks in batch range mode
@@ -484,9 +486,9 @@ export function OcrPanel({
       }
 
       if (stopRequestedRef.current) {
-        setStatusMessage(`Stopped. ${committedPages} page(s) committed (retained). ${skippedPages} page(s) skipped.`);
+        setStatusMessage({ message: 'Stopped. {committed} pages applied and retained; {skipped} pages skipped.', values: { committed: committedPages, skipped: skippedPages } });
       } else {
-        setStatusMessage(`Completed: ${committedPages} page(s) committed, ${skippedPages} page(s) skipped.`);
+        setStatusMessage({ message: 'Completed. {committed} pages applied; {skipped} pages skipped.', values: { committed: committedPages, skipped: skippedPages } });
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Batch OCR range failed');
@@ -509,10 +511,12 @@ export function OcrPanel({
     hasExistingText &&
     (!useImageRegion || !selectedImage || selectedImageOverlapsExistingText);
 
+  if (!engine.recognizeOcr) return null;
+
   return (
-    <section className="text-edit-panel" aria-label={t("OCR and searchable text")}>
-      <details open>
-        <summary>{t("OCR & Searchable Text")}</summary>
+    <section className="text-edit-panel task-panel ocr-panel" aria-label={t('OCR and searchable text')}>
+      <header className="task-panel-header"><h2>{t('OCR & Searchable Text')}</h2></header>
+      <div className="task-panel-body">
         <p>{t("Recognize scanned documents and insert an invisible text layer for searching and selection.")}</p>
 
         <label>{t("Scope")}<select
@@ -520,7 +524,7 @@ export function OcrPanel({
             disabled={locked}
             onChange={e => setTargetMode(e.target.value as 'current' | 'range')}
           >
-            <option value="current">{t("Current page (Page")} {document.pageOrder.indexOf(page.id) + 1})</option>
+            <option value="current">{t('Current page (page {page})', { page: document.pageOrder.indexOf(page.id) + 1 })}</option>
             <option value="range">{t("Page range (batch)")}</option>
           </select>
         </label>
@@ -544,11 +548,12 @@ export function OcrPanel({
               disabled={locked || !selectedImage}
               onChange={e => setUseImageRegion(e.target.checked)}
             />
-            <span>{t("Use selected image region")}{!selectedImage ? ' (select 1 image to enable)' : ` (${Math.round(selectedImage.bounds.width)}×${Math.round(selectedImage.bounds.height)} pt)`}
+            <span>{t('Use selected image region')}{!selectedImage ? ` · ${t('Select one image to enable')}` : ` (${Math.round(selectedImage.bounds.width)}×${Math.round(selectedImage.bounds.height)} pt)`}
             </span>
           </label>
         )}
 
+        <details><summary>{t('Text layer options')}</summary>
         <label>{t("OCR Font (CJK Supported)")}<select
             value={chosenFontId}
             disabled={locked}
@@ -562,55 +567,28 @@ export function OcrPanel({
           </select>
         </label>
         {fontError && <p role="alert">{t(fontError)}</p>}
+        </details>
 
         {targetMode === 'current' && hasExistingText && (
-          <div style={{ background: '#fff3cd', padding: '8px', borderLeft: '3px solid #ffa000', fontSize: '10px' }}>
-            <p style={{ margin: 0, fontWeight: 700, color: '#856404' }}>{t("Notice: Page already contains text blocks.")}</p>
-            <p style={{ margin: '4px 0 0', color: '#856404' }}>{t("Full-page OCR is disabled to prevent duplicate text. Only selecting an image region that does not overlap existing text is allowed.")}</p>
-            {useImageRegion && selectedImage && selectedImageOverlapsExistingText && (
-              <p style={{ margin: '4px 0 0', color: 'var(--signal)', fontWeight: 700 }}>{t("Selected image overlaps existing text blocks. Deselect or choose a non-overlapping image.")}</p>
-            )}
+          <div className="panel-refresh-note" role="status">
+            <strong>{t('Notice: Page already contains text blocks.')}</strong>
+            <p>{t('Full-page OCR is disabled to prevent duplicate text. Only selecting an image region that does not overlap existing text is allowed.')}</p>
+            {useImageRegion && selectedImage && selectedImageOverlapsExistingText ? <p role="alert">{t('Selected image overlaps existing text blocks. Deselect or choose a non-overlapping image.')}</p> : null}
           </div>
         )}
 
         {targetMode === 'range' && (
-          <p style={{ fontSize: '10px', color: '#646761' }}>{t("Run OCR range processes pages sequentially and commits searchable text per page. Pages with existing text blocks are skipped to prevent duplication. Pages already committed are retained if stopped.")}</p>
+          <p className="panel-refresh-muted">{t('Batch OCR applies text one page at a time. Pages with text are skipped; stopping keeps completed pages.')}</p>
         )}
 
-        <div className="text-edit-actions">
-          {targetMode === 'current' ? (
-            <button
-              type="button"
-              disabled={locked || isCurrentPageBlocked}
-              onClick={() => void runCurrentPageOcr()}
-            >
-              {busy ? t("Recognizing…") : t("Run OCR on page")}
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={locked || !canWriteLayer}
-              onClick={() => void runOcrRange()}
-            >
-              {busy ? t("Running range…") : t("Run OCR range")}
-            </button>
-          )}
-
-          <button
-            type="button"
-            disabled={!busy}
-            onClick={() => void handleStop()}
-          >{t("Stop")}</button>
-        </div>
 
         {targetMode === 'current' && candidateLines.length > 0 && (
-          <div style={{ display: 'grid', gap: '8px', marginTop: '8px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span className="eyebrow">{t("Candidates (")}{candidateLines.length} {t("lines)")}</span>
+          <div className="ocr-candidates">
+            <div className="panel-refresh-row">
+              <h3>{t('Candidates · {count} lines', { count: candidateLines.length })}</h3>
               <button
                 type="button"
                 className="button button-quiet"
-                style={{ minHeight: 'auto', padding: '2px 6px', fontSize: '9px' }}
                 disabled={locked}
                 onClick={() => {
                   setCandidateLines([]);
@@ -618,28 +596,21 @@ export function OcrPanel({
                 }}
               >{t("Clear")}</button>
             </div>
-            <p style={{ fontSize: '10px' }}>{t("Review and edit recognized candidates below before adding to document.")}</p>
+            <p>{t('Review and edit recognized candidates below before adding to document.')}</p>
 
-            <ul className="document-tools-list" style={{ maxHeight: '200px', overflowY: 'auto' }}>
-              {candidateLines.map(line => (
-                <li key={line.id} style={{ display: 'grid', gap: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <small style={{ color: line.confidence > 0.8 ? '#4b8b3b' : '#b27300', fontWeight: 700 }}>{t("Confidence:")} {Math.round(line.confidence * 100)}%
-                      {line.transform && ' · Oriented'}
+            <ul className="document-tools-list ocr-candidate-list">
+              {candidateLines.map((line, index) => (
+                <li key={line.id}>
+                  <div className="panel-refresh-row">
+                    <small className="panel-refresh-muted">{t('Confidence:')} {Math.round(line.confidence * 100)}%
+                      {line.transform ? ` · ${t('Oriented')}` : ''}
                     </small>
                     <button
                       type="button"
-                      style={{
-                        minHeight: 'auto',
-                        padding: '2px 6px',
-                        fontSize: '9px',
-                        background: 'transparent',
-                        border: 'none',
-                        color: 'var(--signal)',
-                        cursor: 'pointer',
-                      }}
+                      className="ocr-remove-candidate"
                       disabled={locked}
-                      title={t("Remove candidate line")}
+                      aria-label={t('Remove candidate line')}
+                      title={t('Remove candidate line')}
                       onClick={() => removeCandidateLine(line.id)}
                     >
                       ✕
@@ -648,6 +619,7 @@ export function OcrPanel({
                   <input
                     type="text"
                     value={line.text}
+                    aria-label={t('Recognized text line {line}', { line: index + 1 })}
                     disabled={locked}
                     onChange={e => updateCandidateText(line.id, e.target.value)}
                   />
@@ -655,54 +627,27 @@ export function OcrPanel({
               ))}
             </ul>
 
-            <button
-              type="button"
-              disabled={locked || !canWriteLayer || candidateLines.length === 0}
-              onClick={() => void applyCandidates()}
-            >{t("Add searchable text")}</button>
           </div>
         )}
 
-        {statusMessage && (
-          <div className="layout-result" role="status">
-            <span>{statusMessage}</span>
-          </div>
-        )}
-
-        {error && (
-          <p role="alert" style={{ color: 'var(--signal)', fontWeight: 700 }}>
-            {t(error)}
-          </p>
-        )}
-
-        <div className="boundary-note" style={{ margin: '8px 0 0' }}>
-          <span>{t("Searchable Text Layer")}</span>
-          <p>{t("Adds an invisible searchable text layer over the document. The original scanned image is preserved. Injected OCR text objects can later be inspected and edited using the Text panel. Recognition results are executed locally and never uploaded.")}</p>
+        <details><summary>{t('Searchable Text Layer')}</summary>
+          <p>{t('Adds an invisible searchable text layer over the document. The original scanned image is preserved. Injected OCR text objects can later be inspected and edited using the Text panel. Recognition results are executed locally and never uploaded.')}</p>
+        </details>
+      </div>
+      <footer className="task-panel-footer">
+        {statusMessage ? <p className="layout-result" role="status">{t(statusMessage.message, statusMessage.values)}</p> : null}
+        {error ? <p role="alert">{t(error)}</p> : null}
+        <div className="text-edit-actions">
+          {targetMode === 'current' ? <>
+            <button type="button" className={candidateLines.length ? undefined : 'task-panel-primary'} disabled={locked || isCurrentPageBlocked}
+              onClick={() => void runCurrentPageOcr()}>{busy ? t('Recognizing…') : t('Run OCR on page')}</button>
+            {candidateLines.length > 0 ? <button type="button" className="task-panel-primary" disabled={locked || !canWriteLayer}
+              onClick={() => void applyCandidates()}>{t('Add searchable text')}</button> : null}
+          </> : <button type="button" className="task-panel-primary" disabled={locked || !canWriteLayer}
+            onClick={() => void runOcrRange()}>{busy ? t('Running range…') : t('Run OCR range')}</button>}
+          {busy ? <button type="button" onClick={() => void handleStop()}>{t('Stop')}</button> : null}
         </div>
-      </details>
+      </footer>
     </section>
   );
-}
-
-function parsePageRange(input: string, totalPages: number): number[] {
-  const pages = new Set<number>();
-  const parts = input.split(',').map(s => s.trim()).filter(Boolean);
-  for (const part of parts) {
-    if (part.includes('-')) {
-      const [startStr, endStr] = part.split('-').map(s => s.trim());
-      const start = parseInt(startStr ?? '', 10);
-      const end = parseInt(endStr ?? '', 10);
-      if (Number.isInteger(start) && Number.isInteger(end) && start >= 1 && end >= start) {
-        for (let i = start; i <= Math.min(end, totalPages); i++) {
-          pages.add(i);
-        }
-      }
-    } else {
-      const p = parseInt(part, 10);
-      if (Number.isInteger(p) && p >= 1 && p <= totalPages) {
-        pages.add(p);
-      }
-    }
-  }
-  return Array.from(pages).sort((a, b) => a - b);
 }

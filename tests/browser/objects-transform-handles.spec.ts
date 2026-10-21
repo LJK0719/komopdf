@@ -27,7 +27,7 @@ test('selection handles are visible and operational via keyboard and mouse drag 
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'transform.pdf', mimeType: 'application/pdf', buffer: shapesPdf() });
 
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 60_000 });
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
   const shapes = page.locator('.object-hitbox[data-object-type="path"]');
   await expect(shapes).toHaveCount(2, { timeout: 60_000 });

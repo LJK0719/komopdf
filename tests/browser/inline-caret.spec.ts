@@ -22,7 +22,7 @@ async function open(page: Page, sample = fixture()) {
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'caret.pdf', mimeType: 'application/pdf', buffer: bytes });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 60_000 });
   const zoom = page.getByLabel('Zoom', { exact: true });
   await zoom.fill('100%'); await zoom.press('Enter');
   await page.getByRole('button', { name: 'Select', exact: true }).click();

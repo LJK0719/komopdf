@@ -37,5 +37,18 @@ describe('komo copy permission UI', () => {
     expect(html).toContain('type="checkbox"');
     expect(html).toContain('id="komo-question"');
     expect(html).not.toContain('copy-enabled version');
+    expect(html).not.toContain('<details class="komo-chat-settings" open');
+    expect(html).not.toMatch(/type="checkbox"[^>]*checked=""/);
+  });
+  it('allows drafting while the account is unavailable without enabling paid sending', () => {
+    const fetch = vi.fn();
+    const input = { ...context(true), disabled: true };
+    const html = renderToStaticMarkup(createElement(KomoChatPanel, { context: input, fetch,
+      disabledReason: 'Your account is currently unavailable.' }));
+    expect(html).toContain('Your account is currently unavailable.');
+    expect(html).not.toMatch(/id="komo-question"[^>]*disabled=""/);
+    expect(html).toMatch(/type="submit"[^>]*disabled=""/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(input.engine.extract).not.toHaveBeenCalled();
   });
 });

@@ -41,7 +41,7 @@ test('fragmented drawing order becomes one editable paragraph and long text cont
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await expect.poll(() => page.locator('.page-chip').count()).toBeGreaterThan(1);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   await writeFile('tmp/browser/edited-flow.pdf', bytes);
   const chooser = page.waitForEvent('filechooser');
@@ -115,7 +115,7 @@ test('view zoom does not change saved paragraph font size or CJK content', async
   await expect(input).toHaveText('Zoomed 中文 paragraph.');
   await input.fill('Zoomed 中文 paragraph again.'); await input.press('Control+Enter');
   await expect(input).toHaveCount(0, { timeout: 60_000 });
-  const download = page.waitForEvent('download'); await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const download = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   const chooser = page.waitForEvent('filechooser'); await page.keyboard.press('Control+o');
   await (await chooser).setFiles({ name: 'zoom-kept.pdf', mimeType: 'application/pdf', buffer: bytes });
@@ -160,7 +160,7 @@ test('implicit continuation cannot commit a PDF beyond the web page limit', asyn
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   expect(bytes.equals(original)).toBe(true);
   const reopened = page.waitForEvent('filechooser'); await page.keyboard.press('Control+o');

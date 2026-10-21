@@ -2,6 +2,7 @@ import { translate as t, useI18n } from './i18n.js';
 import { useEffect, useState } from 'react';
 import type { EngineAdapter, HostAdapter } from '@pdf-editor/contracts';
 import { selectPrintPages } from './print-settings.js';
+import './panel-refresh.css';
 
 export async function printCurrentPdf(engine: EngineAdapter, docId: string, host?: HostAdapter,
   pageIds?: string[], encrypted = false, copies = 1): Promise<'preview' | 'queued'> {
@@ -96,8 +97,9 @@ export function PrintPanel({ disabled, docId, pageIds, currentPageId, encrypted,
     finally { setBusy(false); onBusyChange(false); }
   }
 
-  return <section className="text-edit-panel" aria-label={t('Print PDF')}>
-    <details open><summary>{t('Print')}</summary>
+  return <section className="text-edit-panel task-panel print-panel" aria-label={t('Print PDF')}>
+    <header className="task-panel-header"><h2>{t('Print')}</h2></header>
+    <div className="task-panel-body">
       {native ? <>
         <p><strong>{t('Printer')}: </strong>{t('System default printer')}</p>
         <p className="muted">{t('To use a different printer, change the default in system settings before printing.')}</p>
@@ -120,13 +122,15 @@ export function PrintPanel({ disabled, docId, pageIds, currentPageId, encrypted,
           disabled={disabled || busy} onChange={event => setCopies(event.target.value)} /></label>
         {!validation && <p role="status">{t('{count} pages × {copies} copies', { count: selected.length, copies })}</p>}
       </> : <p className="muted">{t('Choose the printer, pages and copies in the browser print dialog.')}</p>}
-      {validation && <p role="status">{t(validation)}</p>}
-      <button type="button" disabled={disabled || busy || !canPrint || !pageIds.length || Boolean(validation)} onClick={() => void submit()}>
+      {validation ? <p role="status">{t(validation)}</p> : null}
+      {!canPrint ? <p role="status">{t('This PDF does not permit printing or its print permission is unavailable.')}</p> : null}
+      {notice ? <p className="layout-result" role="status">{t(notice)}</p> : null}
+    </div>
+    <footer className="task-panel-footer">
+      {error ? <p role="alert">{t(error)}</p> : null}
+      <button type="button" className="task-panel-primary" disabled={disabled || busy || !canPrint || !pageIds.length || Boolean(validation)} onClick={() => void submit()}>
         {busy ? t('Preparing print…') : native ? t('Print PDF') : t('Open print dialog')}
       </button>
-      {!canPrint && <p role="status">{t('This PDF does not permit printing or its print permission is unavailable.')}</p>}
-      {notice && <p role="status">{t(notice)}</p>}
-      {error && <p role="alert">{t(error)}</p>}
-    </details>
+    </footer>
   </section>;
 }

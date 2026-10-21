@@ -161,6 +161,7 @@ export async function analyzeFullDocument(options: {
   document: DocumentInfo;
   authorization: DocumentAiAuthorization;
   endpoint: string;
+  fetch?: typeof fetch;
   feature: 'document.ask' | 'document.summarize';
   instruction: string;
   signal: AbortSignal;
@@ -209,6 +210,7 @@ export async function analyzeFullDocument(options: {
 
   const workflow = new AiWorkflow<never>({
     endpoint: options.endpoint, authorization: options.authorization, getCurrentDocument: options.currentDocument,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
     nextTransactionId: () => crypto.randomUUID(), apply: async () => { throw new Error('Document analysis cannot edit the PDF'); },
   });
   const ask = async (feature: AiFeature, items: readonly DocumentPassage[], instruction: string, runSignal: AbortSignal) => {

@@ -2,12 +2,26 @@
 import { komoMessages } from './komo-messages.js';
 import { finishingMessages } from './finishing-messages.js';
 import { accountMessages } from './account-messages.js';
+import { siteRefreshMessages } from './site-refresh-messages.js';
+import { panelRefreshMessages } from './panel-refresh-messages.js';
+import { assistantRefreshMessages } from './assistant-refresh-messages.js';
+import { workbenchMessages } from './workbench-messages.js';
+import { aiToolMessages } from './ai-tool-messages.js';
+import { AI_SERVICE_COPY_MESSAGES } from './ai-service-copy-messages.js';
+import { komoMaterialMessages } from './komo-material-messages.js';
 export const messages: Record<string, string> = {
   'Browser export would exceed its memory budget. Export fewer pages, lower DPI, or use the desktop app.': '本次导出将超过浏览器内存预算，请减少页数、降低 DPI 或使用客户端。',
   'Paragraph layout exceeds the web page limit (200 per document, 400 per session). Use the desktop app.': '段落排版将超出网页版页数限制（单文档 200 页、会话共 400 页），请使用客户端；原文档未修改。',
   ...komoMessages,
   ...finishingMessages,
   ...accountMessages,
+  ...siteRefreshMessages,
+  ...panelRefreshMessages,
+  ...assistantRefreshMessages,
+  ...workbenchMessages,
+  ...aiToolMessages,
+  ...AI_SERVICE_COPY_MESSAGES,
+  ...komoMaterialMessages,
   'Paragraph settings': '段落设置',
   'First-line indent (pt)': '首行缩进（磅）', 'Fixed line spacing (pt)': '固定行距（磅，0 为倍数）',
   'Space before (pt)': '段前距（磅）', 'Space after (pt)': '段后距（磅）',

@@ -7,7 +7,7 @@ async function open(page: Page, bytes = fixture()) {
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'source-paragraph.pdf', mimeType: 'application/pdf', buffer: bytes });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 60_000 });
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
 }
 
@@ -35,7 +35,7 @@ test('hover/click share paragraph scope; alignment preserves source fonts and al
   await expect.poll(() => input.textContent()).toBe(original);
   await input.press('Escape');
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   expect(bytes.toString('latin1')).toContain('/Helvetica');
   expect(bytes.toString('latin1')).not.toContain('/KomoParagraph');

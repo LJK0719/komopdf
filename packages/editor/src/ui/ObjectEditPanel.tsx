@@ -6,6 +6,7 @@ import { WEB_LIMITS, type CommandType, type CommitResult, type DocumentInfo, typ
 import { useFontResources } from './font-resources.js';
 import { createPageNumberCommand, pageNumberLabels, parsePageRange, type PageNumberLabel, type PageNumberTotal } from './page-number-utils.js';
 import './page-number.css';
+import './panel-refresh.css';
 
 type Props = { mode?: 'edit' | 'pages' | 'arrange'; pageSelection?: string[] | null; section?: 'number' | 'watermark' | 'header' | null; document: DocumentInfo; page: PageModel; selectedIds: string[]; engine: EngineAdapter;
   host: HostAdapter; disabled: boolean; onBusyChange(busy: boolean): void; onImportPages?(): void;
@@ -211,7 +212,10 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     <label>{t(label)}<input type="number" step="any" value={value} disabled={locked} onChange={event => setter(event.target.valueAsNumber)} /></label>;
 
   if (!supports('pages.insert') && !supports('objects.transform')) return null;
-  return <section className="text-edit-panel" aria-label="Page and object editing">
+  return <section className="text-edit-panel task-panel object-edit-panel" aria-label={t('Page and object editing')}>
+    <header className="task-panel-header"><h2>{t(mode === 'pages' ? 'Pages' : mode === 'arrange' ? 'Arrange objects' : 'Add text & images')}</h2></header>
+    <div className="task-panel-body">
+    {mode === 'arrange' ? <p className="panel-refresh-muted">{t('{count} objects selected', { count: selectedIds.length })}</p> : null}
     <details open hidden={mode !== 'pages' || Boolean(pageSelection)}><summary>{t("Pages")}</summary>
       <div className="text-edit-actions">
         {supports('pages.rotate') && <button disabled={locked} onClick={() => void run(() => execute([{ type: 'pages.rotate', pageIds: [page.id], degrees: 90 }]))}>{t("Rotate page")}</button>}
@@ -231,11 +235,13 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     </details>
     <details open={mode === 'arrange'} hidden={mode !== 'edit' && mode !== 'arrange'}><summary>{t("Arrange objects")}</summary>
       {numberField(t("Move X (pt)"), dx, setDx)}{numberField(t("Move Y (pt)"), dy, setDy)}
-      {supports('objects.transform') && <>
-        {numberField(t("Scale (%)"), scale, setScale)}{numberField(t("Rotation (degrees)"), angle, setAngle)}
-        <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('scale'))}>{t("Scale")}</button>
-        <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('rotate'))}>{t("Rotate")}</button>
-      </>}
+      {supports('objects.transform') && <details><summary>{t('Scale and rotation')}</summary>
+        {numberField(t('Scale (%)'), scale, setScale)}{numberField(t('Rotation (degrees)'), angle, setAngle)}
+        <div className="text-edit-actions">
+          <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('scale'))}>{t('Scale')}</button>
+          <button disabled={locked || !selectedIds.length} onClick={() => void run(() => transformSelection('rotate'))}>{t('Rotate')}</button>
+        </div>
+      </details>}
       {supports('objects.align') && <div className="text-edit-actions" aria-label={t("Align selected objects")}>
         {(['left', 'center', 'right', 'top', 'middle', 'bottom'] as const).map(axis =>
           <button key={axis} disabled={locked || selectedIds.length < 2}
@@ -250,9 +256,6 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
         {supports('objects.ungroup') && <button disabled={locked || !selectedGroup} onClick={() => void run(ungroupSelection)}>{t("Ungroup")}</button>}
         {selectedGroup && <button disabled={locked} onClick={selectGroupContents}>{t("Edit group contents")}</button>}
         {parentGroup && <button disabled={locked} onClick={() => onSelectionChange([parentGroup.id])}>{t("Select parent group")}</button>}
-        {supports('objects.transform') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
-          { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
-        ]))}>{t("Move")}</button>}
         {supports('objects.copy') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.copy', pageId: page.id, objectIds: selectedIds,
             newObjectIds: selectedIds.map(() => crypto.randomUUID()), offset: { x: dx, y: dy } },
@@ -318,8 +321,12 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     </details>}
     <details open hidden={mode !== 'edit'}><summary>{t("Add text & images")}</summary>
 
-      {numberField(t("X (pt)"), x, setX)}{numberField(t("Y (pt)"), y, setY)}
-      {numberField(t("Width (pt)"), width, setWidth)}{numberField(t("Height (pt)"), height, setHeight)}
+      <details><summary>{t('Placement coordinates')}</summary>
+        <div className="document-tools-grid">
+          {numberField(t('X (pt)'), x, setX)}{numberField(t('Y (pt)'), y, setY)}
+          {numberField(t('Width (pt)'), width, setWidth)}{numberField(t('Height (pt)'), height, setHeight)}
+        </div>
+      </details>
       {supports('pages.crop') && <>
         <button disabled={locked} onClick={() => {
           if (window.confirm(t("Crop this page?")))
@@ -360,7 +367,6 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
           const layout = await engine.previewTextInsert!({ docId: document.id, baseRevision: document.revision, command: textCommand() });
           setTextPreview({ key: layoutKey, layout });
         })}>{t("Preview text box")}</button>}
-        <button disabled={locked || !chosenFont || Boolean(currentTextPreview?.overflow)} onClick={() => void run(insertText)}>{t("Insert text")}</button>
         {currentTextPreview && <p role="status">{currentTextPreview.overflow ? t("Text box overflow") : t("Text fits box")} · {currentTextPreview.lines.length} {t("lines")}</p>}
       </>}
       {supports('text.style') && <button disabled={locked || !selectedIds.some(id => page.objects.find(object => object.id === id)?.textBlock)} onClick={() => void run(() => execute([
@@ -369,6 +375,17 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
           style: { fontSize, color: rgb, ...(chosenFont ? { fontId: chosenFont } : {}) } },
       ]))}>{t("Format selected text")}</button>}
     </details>
-    {error && <p role="alert">{t(error)}</p>}
+    </div>
+    <footer className="task-panel-footer">
+      {error ? <p role="alert">{t(error)}</p> : null}
+      {busy ? <p role="status">{t('Applying changes…')}</p> : <p className="panel-refresh-muted">{t('Applied changes can be undone.')}</p>}
+      {(mode === 'edit' || mode === 'arrange') && supports('objects.transform') ? <button type="button"
+        className={mode === 'arrange' ? 'task-panel-primary' : undefined} disabled={locked || !selectedIds.length}
+        onClick={() => void run(() => execute([
+          { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
+        ]))}>{t('Move')}</button> : null}
+      {mode === 'edit' && supports('text.insert') ? <button type="button" className="task-panel-primary"
+        disabled={locked || !chosenFont || Boolean(currentTextPreview?.overflow)} onClick={() => void run(insertText)}>{t('Insert text')}</button> : null}
+    </footer>
   </section>;
 }

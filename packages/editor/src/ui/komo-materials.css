@@ -1,0 +1,20 @@
+.komo-materials { display: grid; flex: 0 1 auto; gap: 8px; min-height: 0; max-height: min(190px, 30%); overflow: auto; padding: 8px 0; border-top: 1px solid var(--komo-line); font-size: 12px; overscroll-behavior: contain; }
+.komo-materials-heading, .komo-material-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.komo-materials-heading small { color: var(--komo-muted); }
+.komo-material-card { border: 1px solid var(--komo-line); border-radius: 7px; background: var(--komo-surface); }
+.komo-material-card summary { cursor: pointer; padding: 8px; overflow-wrap: anywhere; }
+.komo-material-card summary strong { margin-right: 8px; }
+.komo-material-card summary span { display: inline-block; margin: 2px 4px; font-size: 11px; color: var(--komo-muted); }
+.komo-material-card-body { padding: 0 8px 8px; }
+.komo-material-card h4 { font-size: 12px; margin: 8px 0 4px; }
+.komo-material-card pre { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; background: var(--komo-surface-subtle); color: var(--komo-ink); border-radius: 4px; padding: 8px; }
+.komo-materials label { display: grid; gap: 4px; }
+.komo-materials select { width: 100%; min-width: 0; min-height: 30px; padding: 4px 7px; border: 1px solid var(--komo-line); border-radius: 5px; color: var(--komo-ink); background: var(--komo-surface); }
+.komo-material-actions button { font: inherit; }
+.komo-material-coverage { color: var(--komo-muted); font-size: 12px; }
+.komo-material-suggestions { display: flex; flex: 0 1 auto; gap: 6px; flex-wrap: wrap; max-height: 72px; overflow: auto; padding: 4px 0; }
+.komo-material-suggestions button { font: inherit; text-align: left; }
+.agent-workspace-materials { flex: 0 1 auto; min-height: 0; max-height: 24%; overflow: auto; padding: 4px 0; }
+.agent-workspace-materials nav { display: flex; gap: 4px; flex-wrap: wrap; max-height: 160px; overflow: auto; }
+.agent-workspace-materials button { font: inherit; text-align: left; }
+@media (max-height: 650px) { .komo-materials { gap: 5px; max-height: 24%; padding-block: 5px; } .komo-materials-heading small { display: none; } }

@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./worker": "./src/worker/index.ts",
     "./i18n": "./src/ui/i18n.ts",
-    "./web": "./src/host/web-host-adapter.ts"
+    "./web": "./src/host/web-host-adapter.ts",
+    "./tokens.css": "./src/ui/tokens.css"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",

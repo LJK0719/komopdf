@@ -13,7 +13,11 @@ import {
   type PageModel,
   type RenderResult,
   type SaveConfirmation,
+  type SaveOutcome,
   type TextStyle,
+  type TextAction,
+  type KolmoDocumentInput,
+  type KolmoFile,
 } from '@pdf-editor/contracts';
 import { DirectTextEditor, type TextEditorHandle } from './DirectTextEditor.js';
 import { DocumentViewport, type PageView, type PointerTool, type ViewportSize } from './DocumentViewport.js';
@@ -28,21 +32,26 @@ import { ImportPagesDialog } from './ImportPagesDialog.js';
 import { EditorRibbon, type RibbonTab, type RibbonAction } from './EditorRibbon.js';
 import { ImageCropOverlay } from './ImageCropOverlay.js';
 import { ContextMenu } from '@base-ui/react/context-menu';
-import { Bookmark, Search, MessageSquare, PenLine, LayoutGrid, Folder } from 'lucide-react';
+import { Bookmark, Search, MessageSquare, PenLine, LayoutGrid, Folder, X, Languages } from 'lucide-react';
 import { FontPanel } from './FontPanel.js';
-import { ParagraphPanel } from './ParagraphPanel.js';
+import { ParagraphPanel, type ParagraphDraftHandle } from './ParagraphPanel.js';
 import { SaveChangesDialog, type SaveChoice, type SavePrompt } from './SaveChangesDialog.js';
 import { PasswordDialog, type PasswordPrompt } from './PasswordDialog.js';
-import { ExportPanel, type ExportSettings } from './ExportPanel.js';
+import { ExportPanel, type ExportSettings, type ExportOutcome } from './ExportPanel.js';
 import { PrintPanel } from './PrintPanel.js';
 import { ObjectEditPanel } from './ObjectEditPanel.js';
-import { DocumentToolsPanel } from './DocumentToolsPanel.js';
+import { DocumentToolsPanel, type DocumentToolsDraftHandle } from './DocumentToolsPanel.js';
 import { SignaturePanel } from './SignaturePanel.js';
 import { OcrPanel } from './OcrPanel.js';
 import { PdfSearchPanel } from './PdfSearchPanel.js';
 import { PageThumbnail } from './PageThumbnail.js';
 import { PageOrganizer, PageContextMenu, usePageTools, type PageAction } from './PageOrganizer.js';
-import type { TextSelectionTarget } from './PdfTextLayer.js';
+import { captureReadingSelection, type TextSelectionTarget } from './PdfTextLayer.js';
+import { textActionSelection, textActionTarget, selectionMaterial, type TextActionSelection, type AiMaterial, type AiHandoff } from './text-actions.js';
+import { TextActionPanel } from './TextActionPanel.js';
+import { TextActionMenuItems } from './TextActionMenu.js';
+import { KolmoTranslationPanel } from './KolmoTranslationPanel.js';
+import './ai-tools.css';
 import { mergeTextRects, type TextHit } from './text-geometry.js';
 import { adjacentPageId } from './page-navigation.js';
 import { readingRegions } from './reading-order.js';
@@ -62,6 +71,10 @@ import {
 } from '../recovery/index.js';
 import { EditorTopbar, ViewControls, IconButton, Tooltip, PanelRightClose, FilePlus2, toolNames, type EditorTool } from './EditorChrome.js';
 import { useI18n, translate as t } from './i18n.js';
+import { AppDialog } from './AppDialog.js';
+import { StartPage, readWebRecent, writeWebRecent, type RecentFileEntry } from './StartPage.js';
+import { DocumentTabs } from './DocumentTabs.js';
+import { useDocumentSessions } from './use-document-sessions.js';
 import './editor.css';
 
 const RENDER_SCALE = 1.25;
@@ -73,9 +86,19 @@ type EditorShellProps = {
   aiPanel?: ReactNode;
   renderAiPanel?: (context: EditorAiContext) => ReactNode;
   source?: DocumentSource | null;
+  sources?: DocumentSource[] | null;
+  onSourcesConsumed?: () => void;
+  onOpenFolder?: () => void;
+  recentFiles?: RecentFileEntry[];
+  onOpenRecent?: (entry: RecentFileEntry) => void;
+  onForgetRecent?: (id: string) => void;
+  onRequestRecent?: () => void;
+  onActivateDocument?: (id: string) => void;
+  onClosePreview?: () => void;
   onSourceConsumed?: (opened: boolean) => void;
-  onSaved?: (docId: string) => void;
-  onDocumentChange?: (state: { document: DocumentInfo | null; busy: boolean; draftDirty: boolean }) => void;
+  onSaved?: (docId: string, outcome?: SaveOutcome) => void;
+  onResultsReady?: () => void;
+  onDocumentChange?: (state: { document: DocumentInfo | null; busy: boolean; draftDirty: boolean; name?: string; identity?: string; location?: string }) => void;
   closeDocumentRef?: { current: (() => Promise<boolean>) | null };
   externalBusy?: boolean;
   allowReadOnlyNavigation?: boolean;
@@ -87,6 +110,13 @@ type EditorShellProps = {
 };
 
 export type EditorAiContext = {
+  documents?: { id: string; name: string; info?: DocumentInfo; identity?: string }[];
+  handoff?: AiHandoff | null;
+  onHandoffConsumed?(id: string): void;
+  getDocumentInfo?(id: string): DocumentInfo | null;
+  locateMaterial?(material: AiMaterial): Promise<void>;
+  draftDirty?: boolean;
+  finishDrafts?(): Promise<boolean>;
   document: DocumentInfo | null;
   page: PageModel | null;
   name: string | null;
@@ -115,13 +145,29 @@ export function mergeSavedRevision(current: LoadedDocument, savedRevision: numbe
 }
 
 type Activity = 'idle' | 'opening' | 'rendering' | 'saving' | 'editing';
-type WebDocumentSession = { loaded: LoadedDocument; history: { canUndo: boolean; canRedo: boolean }; zoom: number; selectedIds: string[] };
 
 export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, renderAiPanel,
-  source: externalSource, onSourceConsumed, onSaved, onDocumentChange, closeDocumentRef, externalBusy = false, allowReadOnlyNavigation = false, onActivityChange, headerActions,
+  source: externalSource, sources: externalSources, onSourcesConsumed, onSourceConsumed, onSaved, onResultsReady, onDocumentChange, closeDocumentRef, externalBusy = false, allowReadOnlyNavigation = false, onActivityChange, headerActions,
+  onOpenFolder, recentFiles, onOpenRecent, onForgetRecent, onRequestRecent, onActivateDocument, onClosePreview,
   workspacePanel, workspaceId, workspacePreview }: EditorShellProps) {
   useI18n();
+  const sessions = useDocumentSessions();
+  const { document, documentRef, setDocument, history, setHistory, zoom, setZoom, selectedIds, setSelectedIds,
+    view, setView, continuous, setContinuous, pointer, setPointer, tab, setTab } = sessions;
+  const [startOpen, setStartOpen] = useState(false);
+  const [webRecent, setWebRecent] = useState<RecentFileEntry[]>(readWebRecent);
+  const batchOpening = useRef(false);
+  const openFailure = useRef<string | null>(null);
   const [activeTool, setActiveTool] = useState<EditorTool | null>(null);
+  const [textSelections, setTextSelections] = useState<Record<string, TextActionSelection>>({});
+  const [aiHandoff, setAiHandoff] = useState<AiHandoff | null>(null);
+  const [aiContextDocumentId, setAiContextDocumentId] = useState<string | null>(null);
+  const capturedTextSelection = useRef<TextActionSelection | null>(null);
+  const activeTextSelection = document ? textSelections[document.info.id] ?? null : null;
+  useEffect(() => {
+    setTextSelections(previous => Object.keys(previous).some(id => !sessions.state.documents.has(id))
+      ? Object.fromEntries(Object.entries(previous).filter(([id]) => sessions.state.documents.has(id))) : previous);
+  }, [sessions.state.documents]);
   const [railOpen, setRailOpen] = useState(true);
   const [railTab, setRailTab] = useState<'pages' | 'bookmarks' | 'files'>('pages');
   const hasWorkspace = workspacePanel != null;
@@ -129,10 +175,6 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   useEffect(() => {
     if (hasWorkspace && workspaceId) { setRailTab('files'); setRailOpen(true); }
   }, [hasWorkspace, workspaceId]);
-  const [tab, setTab] = useState<RibbonTab>('home');
-  const [pointer, setPointer] = useState<PointerTool>('select');
-  const [view, setView] = useState<PageView>('single');
-  const [continuous, setContinuous] = useState(true);
   const [overviewWidth, setOverviewWidth] = useState(230);
   const [overviewColumns, setOverviewColumns] = useState(3);
   const [inlineRange, setInlineRange] = useState<[number, number] | null>(null);
@@ -159,28 +201,22 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const aiPanelActive = hasAi && activeTool === 'ai';
   const [dragOver, setDragOver] = useState(false);
   const stageRef = useRef<HTMLElement>(null);
-  const documentRef = useRef<LoadedDocument | null>(null);
-  const inactiveWebDocuments = useRef(new Map<string, WebDocumentSession>());
-  const [webTabs, setWebTabs] = useState<{ id: string; name: string }[]>([]);
-  const [document, setDocument] = useState<LoadedDocument | null>(null);
   useEffect(() => {
     const faces = new Map((document?.page.objects ?? []).flatMap(object => object.textBlock?.runs ?? [])
       .map(run => resolveSourceFont(fonts, run.style)).filter(font => font?.systemId && font.editableEmbedding !== false)
       .map(font => [font!.id, font!]));
     for (const face of faces.values()) void ensureEditorFont(engine, face).catch(() => undefined);
   }, [engine, document?.page, fonts]);
-  const railVisible = railOpen && (railTab === 'files' ? hasWorkspace : Boolean(document));
+  const railVisible = railOpen && (railTab === 'files' ? hasWorkspace : Boolean(document) && tab !== 'pages');
   const panelVisible = Boolean(activeTool) && (!previewActive || activeTool === 'ai');
   const { workspaceRef, separatorRef, resizing: panelResizing } = usePanelResize(aiPanelActive, railVisible);
   const [activity, setActivity] = useState<Activity>('idle');
   const [notice, setNotice] = useState('Ready');
   const [error, setError] = useState<string | null>(null);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inlineTextId, setInlineTextId] = useState<string | null>(null);
   const [copiedTextFormat, setCopiedTextFormat] = useState<TextStyle | null>(null);
   const [searchSelection, setSearchSelection] = useState<{ docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null>(null);
   const searchLocationSequence = useRef(0);
-  const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const [outline, setOutline] = useState<OutlineEntry[]>([]);
   const [outlineError, setOutlineError] = useState(false);
   const [pageAnnotations, setPageAnnotations] = useState<import('@pdf-editor/contracts').PdfAnnotationInfo[]>([]);
@@ -189,27 +225,35 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const [paragraphDraftDirty, setParagraphDraftDirty] = useState(false);
   const [noteDraftPage, setNoteDraftPage] = useState<string | null>(null);
   const noteDraft = useRef<{ pageId: string; handle: AnnotationDraftHandle } | null>(null);
+  const [formDraftDirty, setFormDraftDirty] = useState(false);
+  const formDraft = useRef<DocumentToolsDraftHandle | null>(null);
+  const paragraphDraft = useRef<ParagraphDraftHandle | null>(null);
   const isTextDraftDirty = textDraftDirty || paragraphDraftDirty;
-  const isDraftDirty = isTextDraftDirty || noteDraftPage !== null;
+  const isDraftDirty = isTextDraftDirty || formDraftDirty || noteDraftPage !== null;
   const registerNoteDraft = useCallback((pageId: string, handle: AnnotationDraftHandle | null) => {
     if (handle) { noteDraft.current = { pageId, handle }; setNoteDraftPage(pageId); }
     else if (noteDraft.current?.pageId === pageId) { noteDraft.current = null; setNoteDraftPage(null); }
   }, []);
   const finishDrafts = async (): Promise<boolean> => {
-    if (isTextDraftDirty && !await textEditor.current?.finish()) return false;
-    if (noteDraft.current && !await noteDraft.current.handle.finish()) return false;
+    if (textDraftDirty && !await textEditor.current?.finish()) { setTab('edit'); return false; }
+    if (paragraphDraftDirty && !await paragraphDraft.current?.finish()) {
+      setActiveTool('arrange'); setError(t('Apply or discard the paragraph draft to continue.')); return false;
+    }
+    if (formDraftDirty && !await formDraft.current?.finish()) {
+      setActiveTool('forms'); setError(t('Check the form fields before continuing.')); return false;
+    }
+    if (noteDraft.current && !await noteDraft.current.handle.finish()) { setActiveTool('comment'); return false; }
     return true;
   };
-  const [zoom, setZoom] = useState(RENDER_SCALE);
   const [savePrompt, setSavePrompt] = useState<SavePrompt | null>(null);
   const saveResolver = useRef<((choice: SaveChoice) => void) | null>(null);
-  const askSaveChanges = (name: string) => new Promise<SaveChoice>(resolve => {
+  const askSaveChanges = (name: string, downloaded = false) => new Promise<SaveChoice>(resolve => {
     saveResolver.current?.('cancel');
     const answer = (choice: SaveChoice) => { saveResolver.current = null; setSavePrompt(null); resolve(choice); };
-    saveResolver.current = answer; setSavePrompt({ name, resolve: answer });
+    saveResolver.current = answer; setSavePrompt({ name, resolve: answer, web: host.capabilities.platform === 'web', downloaded });
   });
   const [passwordPrompt, setPasswordPrompt] = useState<PasswordPrompt | null>(null);
-  const [pendingRecovery, setPendingRecovery] = useState<RecoverySessionMeta | null>(null);
+  const [pendingRecovery, setPendingRecovery] = useState<RecoverySessionMeta[]>([]);
   const passwordResolver = useRef<((value: string | null) => void) | null>(null);
   const openSequence = useRef(0);
   useEffect(() => () => { openSequence.current++; passwordResolver.current?.(null); saveResolver.current?.('cancel'); }, []);
@@ -218,10 +262,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     if (typeof window === 'undefined') return;
     let cancelled = false;
     void checkRecoverableSessions(host).then((sessions) => {
-      if (cancelled || documentRef.current) return;
-      if (sessions.length > 0) {
-        setPendingRecovery(sessions[sessions.length - 1]!);
-      }
+      if (!cancelled) setPendingRecovery(sessions.filter(session => session.revision !== session.savedRevision).reverse());
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [host]);
@@ -236,9 +277,6 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     setPasswordPrompt({ name, incorrect, resolve: answer });
   });
 
-  useEffect(() => {
-    documentRef.current = document;
-  }, [document]);
   useEffect(() => { setInlineTextId(id => document?.page.objects.some(object => object.id === id) ? id : null); }, [document?.info.id, document?.page.id]);
   useEffect(() => { setAnnotationDrawing(null); setPendingSignature(null); setSelectedAnnotation(null); }, [document?.info.id]);
   useEffect(() => { setPendingSignature(null); }, [document?.page.id, document?.info.revision]);
@@ -289,13 +327,25 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   }, [engine, document?.info.id, document?.page.id, document?.info.revision]);
 
   useEffect(() => () => {
-    const current = documentRef.current;
-    if (current) void engine.close(current.info.id).catch(() => undefined);
-    for (const session of inactiveWebDocuments.current.values()) {
-      void engine.close(session.loaded.info.id).catch(() => undefined);
-    }
-    inactiveWebDocuments.current.clear();
+    for (const session of sessions.current.current.documents.values()) void engine.close(session.loaded.info.id).catch(() => undefined);
   }, [engine]);
+
+  const captureView = () => {
+    const active = documentRef.current, stage = stageRef.current;
+    if (active && stage) sessions.patch(active.info.id, { scroll: { top: stage.scrollTop, left: stage.scrollLeft } });
+  };
+  useLayoutEffect(() => {
+    const active = sessions.current.current.activeId;
+    const view = active ? sessions.current.current.documents.get(active) : undefined;
+    if (view && stageRef.current) { stageRef.current.scrollTop = view.scroll.top; stageRef.current.scrollLeft = view.scroll.left; }
+  }, [document?.info.id]);
+  const rememberOpened = (name: string) => {
+    if (host.capabilities.platform !== 'web') return;
+    setWebRecent(previous => {
+      const next = [{ id: name, name, kind: 'pdf' as const, location: '', updatedAt: Date.now() }, ...previous.filter(entry => entry.name !== name)].slice(0, 12);
+      writeWebRecent(next); return next;
+    });
+  };
 
   const triggerAutoRecovery = (docInfo: DocumentInfo, name: string): void => {
     void persistRecoverySnapshot(engine, host, { info: docInfo, name }).catch(() => {
@@ -303,23 +353,23 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     });
   };
 
-  const updateSavedRevision = (docId: string, savedRevision: number, name?: string): void => {
-    const latest = documentRef.current;
-    if (!latest || latest.info.id !== docId) return;
-    const updated = { ...mergeSavedRevision(latest, savedRevision), name: name ?? latest.name };
-    documentRef.current = updated;
-    setDocument(updated);
-    triggerAutoRecovery(updated.info, updated.name);
-    onSaved?.(docId);
+  const updateSavedRevision = (docId: string, savedRevision: number, name?: string, outcome?: SaveOutcome): void => {
+    sessions.save(docId, savedRevision, { status: 'written', ...outcome, ...(name ? { name } : {}) });
+    const updated = sessions.current.current.documents.get(docId)?.loaded;
+    if (updated) triggerAutoRecovery(updated.info, updated.name);
+    onSaved?.(docId, outcome);
   };
+  const recordDownload = (docId: string, revision: number) => sessions.patch(docId, { downloadedRevision: revision });
 
-  const restorePendingRecovery = async (): Promise<void> => {
-    if (!pendingRecovery) return;
+  const restorePendingRecovery = async (targetSession: RecoverySessionMeta): Promise<void> => {
     if (isDraftDirty) {
       setError('Apply or discard the current text draft before restoring');
       return;
     }
-    const targetSession = pendingRecovery;
+    if (host.capabilities.platform === 'web' && sessions.current.current.documents.size >= WEB_LIMITS.openDocuments) {
+      setError(t('Close a PDF before restoring another document.')); return;
+    }
+    captureView(); setStartOpen(false);
     setError(null);
     setActivity('opening');
     setNotice(`Restoring ${targetSession.name}…`);
@@ -341,9 +391,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
             setError(`Restored document, but custom fonts could not be listed: ${formatError(caught)}`);
           }
         }
-        documentRef.current = loaded;
-        setDocument(loaded);
-        if (host.capabilities.platform === 'web') setWebTabs([{ id: loaded.info.id, name: loaded.name }]);
+        sessions.add(loaded);
         setSelectedIds([]);
         setSearchSelection(null);
         setTextDraftDirty(false);
@@ -351,7 +399,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         setHistory({ canUndo: info.revision > 0, canRedo: false });
         setZoom(RENDER_SCALE);
         setNotice('Ready');
-        setPendingRecovery(null);
+        setPendingRecovery(items => items.filter(item => item.docId !== targetSession.docId));
         triggerAutoRecovery(loaded.info, loaded.name);
         break;
       } catch (caught) {
@@ -372,108 +420,94 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     setActivity('idle');
   };
 
-  const discardPendingRecovery = async (): Promise<void> => {
-    if (!pendingRecovery) return;
-    const docId = pendingRecovery.docId;
-    setPendingRecovery(null);
+  const discardPendingRecovery = async (docId: string): Promise<void> => {
     try {
       await discardRecoveryRecord(host, docId);
+      setPendingRecovery(items => items.filter(item => item.docId !== docId));
       setNotice('Discarded uncommitted session');
-    } catch {
-      setError('Unable to clean up discarded recovery session');
-    }
+    } catch { setError('Unable to clean up discarded recovery session'); }
   };
 
   const openDocument = async (suppliedSource?: DocumentSource): Promise<DocumentInfo | null> => {
-    if (isDraftDirty) {
-      setError('Apply or discard the current text draft before opening another PDF');
-      return null;
+    if (!suppliedSource) return openDocuments();
+    openFailure.current = null;
+    if (isDraftDirty && !await finishDrafts()) return null;
+    const existing = suppliedSource.identity && [...sessions.current.current.documents.values()].find(session =>
+      (session.saveIdentity ?? session.identity) === suppliedSource.identity);
+    if (existing) {
+      captureView(); sessions.activate(existing.loaded.info.id); onActivateDocument?.(existing.loaded.info.id);
+      setStartOpen(false); return existing.loaded.info;
     }
-    setError(null);
-    const previous = documentRef.current;
     const web = host.capabilities.platform === 'web';
-    if (web && previous && inactiveWebDocuments.current.size >= WEB_LIMITS.openDocuments - 1) {
-      setError(`The web editor can keep only ${WEB_LIMITS.openDocuments} PDFs open. Close one before opening another.`);
-      return null;
+    if (web && sessions.current.current.documents.size >= WEB_LIMITS.openDocuments) {
+      const message = t('The web editor can keep only {count} PDFs open. Close one before opening another.', { count: WEB_LIMITS.openDocuments });
+      openFailure.current = message; setError(message); return null;
     }
-    if (!web && previous && previous.info.revision !== previous.info.savedRevision) {
-      const choice = await askSaveChanges(previous.name);
-      if (choice === 'cancel') return null;
-      if (choice === 'save') {
-        const saved = await saveCurrentDocument(previous, engine, host, updateSavedRevision, setError, setNotice, setActivity);
-        if (!saved) return null;
-      }
-    }
-
+    const previous = documentRef.current;
+    captureView(); setError(null);
     const sequence = ++openSequence.current;
     passwordResolver.current?.(null);
-    setActivity('opening');
-    setNotice('Selecting local PDF…');
-
+    setActivity('opening'); setNotice('Opening…');
     try {
-      const source = suppliedSource ?? await host.pickDocument();
-      if (!source) {
-        if (sequence === openSequence.current) setNotice('No file selected');
-        return null;
-      }
-
-      if (sequence !== openSequence.current) return null;
+      const source = suppliedSource;
       let password: string | undefined;
       let loaded: LoadedDocument;
       for (;;) {
         try {
-          // Retain the selected source while the worker consumes each attempt,
-          // so a wrong password does not detach the bytes needed to try again.
           const attempt = source.kind === 'bytes' ? { ...source, bytes: source.bytes.slice(0) } : source;
-          loaded = await openLoadedDocument(engine, attempt, password);
-          break;
+          loaded = await openLoadedDocument(engine, attempt, password); break;
         } catch (caught) {
           if (sequence !== openSequence.current) return null;
           if (!(caught instanceof EngineError) || caught.code !== 'PASSWORD_REQUIRED') throw caught;
           const answer = await askPassword(source.name, password !== undefined);
-          if (answer === null || sequence !== openSequence.current) { if (sequence === openSequence.current) setNotice('Open cancelled'); return null; }
+          if (answer === null || sequence !== openSequence.current) { setNotice('Open cancelled'); return null; }
           password = answer;
         }
       }
       if (sequence !== openSequence.current) { await engine.close(loaded.info.id); return null; }
       if (web && loaded.info.pageOrder.length > WEB_LIMITS.pagesPerDocument) {
         await engine.close(loaded.info.id);
-        throw new EngineError('RESOURCE_LIMIT', `The web editor supports at most ${WEB_LIMITS.pagesPerDocument} pages per PDF`);
+        throw new EngineError('RESOURCE_LIMIT', 'The web editor supports at most 200 pages per PDF');
       }
-      if (web) {
-        if (previous) inactiveWebDocuments.current.set(previous.info.id, { loaded: previous, history, zoom, selectedIds });
-        setWebTabs(current => [...current, { id: loaded.info.id, name: loaded.name }]);
-      }
-      documentRef.current = loaded;
-      setDocument(loaded);
-      setActiveTool(null); setTab('home'); setPointer('select'); setPlacement(null);
-      setSelectedIds([]);
-      setSearchSelection(null);
-      setTextDraftDirty(false);
-      setParagraphDraftDirty(false);
-      setHistory({ canUndo: false, canRedo: false });
-      setZoom(RENDER_SCALE);
-      setNotice('Ready');
-      setPendingRecovery(null);
-      if (previous && !web) {
-        try {
-          await discardRecoveryRecord(host, previous.info.id);
-        } catch {
-          // Non-fatal cleanup
-        }
-        await engine.close(previous.info.id).catch(() => undefined);
-      }
+      sessions.add(loaded, source);
+      setStartOpen(false); setActiveTool(null); setPlacement(null); setInlineTextId(null);
+      setSearchSelection(null); setTextDraftDirty(false); setParagraphDraftDirty(false); setFormDraftDirty(false);
+      setNotice('Ready'); rememberOpened(source.name);
       triggerAutoRecovery(loaded.info, loaded.name);
-      return sequence === openSequence.current ? loaded.info : null;
+      return loaded.info;
     } catch (caught) {
       if (sequence === openSequence.current) {
-        setError(formatError(caught));
+        openFailure.current = formatError(caught); setError(openFailure.current);
         setNotice(previous ? 'New document not opened; current document retained' : 'Document not opened');
       }
       return null;
-    } finally {
-      if (sequence === openSequence.current) setActivity('idle');
+    } finally { if (sequence === openSequence.current) setActivity('idle'); }
+  };
+
+  const openDocuments = async (suppliedSources?: DocumentSource[]): Promise<DocumentInfo | null> => {
+    if (batchOpening.current || (isDraftDirty && !await finishDrafts())) return null;
+    if (host.capabilities.platform === 'web' && !suppliedSources && sessions.current.current.documents.size >= WEB_LIMITS.openDocuments) {
+      setError(t('The web editor can keep only {count} PDFs open. Close one before opening another.', { count: WEB_LIMITS.openDocuments })); return null;
     }
+    batchOpening.current = true;
+    try {
+      const selected = suppliedSources ?? (host.pickDocuments ? await host.pickDocuments() : [await host.pickDocument()].filter((source): source is DocumentSource => source !== null));
+      if (!selected.length) { setNotice('No file selected'); return null; }
+      const newCount = selected.filter(source => !source.identity || ![...sessions.current.current.documents.values()].some(session => (session.saveIdentity ?? session.identity) === source.identity)).length;
+      if (host.capabilities.platform === 'web' && sessions.current.current.documents.size + newCount > WEB_LIMITS.openDocuments) {
+        setError(t('The web editor can keep only {count} PDFs open. Close one before opening another.', { count: WEB_LIMITS.openDocuments })); return null;
+      }
+      const failures: string[] = [];
+      let last: DocumentInfo | null = null;
+      for (const source of selected) {
+        const opened = await openDocument(source);
+        if (opened) last = opened;
+        else failures.push(source.name + ': ' + (openFailure.current ?? t('Open cancelled')));
+      }
+      if (failures.length) setError(failures.join('\n'));
+      return last;
+    } catch (caught) { setError(formatError(caught)); return null; }
+    finally { batchOpening.current = false; }
   };
 
   const switchPage = async (pageId: string, targetTopPt?: number): Promise<void> => {
@@ -501,15 +535,15 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     }
   };
 
-  const saveDocument = async (saveAs = false): Promise<SaveConfirmation | null> => {
+  const saveDocument = async (saveAs = false, targetId?: string): Promise<SaveConfirmation | null> => {
     if (isDraftDirty && !await finishDrafts()) return null;
-    const current = documentRef.current;
+    const current = targetId ? sessions.current.current.documents.get(targetId)?.loaded : documentRef.current;
     if (!current) return null;
-    return saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, saveAs);
+    return saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, saveAs, recordDownload);
   };
 
   const exportDocument = async (options: ExportSettings, signal: AbortSignal,
-    progress: (value: import('@pdf-editor/contracts').ConversionProgress) => void): Promise<string[]> => {
+    progress: (value: import('@pdf-editor/contracts').ConversionProgress) => void): Promise<ExportOutcome> => {
     if (isDraftDirty && !await finishDrafts()) throw new Error('Apply or discard the text draft before exporting');
     const current = documentRef.current;
     if (!current) throw new Error('Open a PDF first');
@@ -525,9 +559,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         const outcome = host.saveExport ? await host.saveExport({ ...result, jobId: crypto.randomUUID(),
           extension: 'pdf', mimeType: 'application/pdf', warnings: [], pageIndices: current.info.pageOrder.map((_, index) => index) }, name)
           : await host.saveDocument(result, name);
-        if (outcome?.status === 'cancelled') { setNotice('Export cancelled'); return []; }
+        if (outcome?.status === 'cancelled') { setNotice('Export cancelled'); return { status: 'cancelled', warnings: [], format: 'PDF', pageCount: 0 }; }
         setNotice(outcome?.status === 'download-started' ? 'Export download started; active document unchanged' : 'Exported PDF copy; active document unchanged');
-        return [];
+        return { ...outcome, status: outcome?.status ?? 'written', name: outcome?.name ?? name, warnings: [], format: 'PDF', pageCount: current.info.pageOrder.length };
       }
       if (!current.info.permissions.copy) throw new EngineError('UNSUPPORTED_CAPABILITY', 'This PDF does not allow copying its content');
       if (!host.saveExport) throw new EngineError('UNSUPPORTED_CAPABILITY', 'This host does not support format conversion');
@@ -542,9 +576,11 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       try {
         signal.throwIfAborted();
         const outcome = await host.saveExport(result, `${current.name.replace(/\.pdf$/i, '')}.${result.extension}`);
-        if (outcome?.status === 'cancelled') { setNotice('Export cancelled'); return []; }
+        if (outcome?.status === 'cancelled') { setNotice('Export cancelled'); return { status: 'cancelled', warnings: [], format: request.format.toUpperCase(), pageCount: 0 }; }
         setNotice(outcome?.status === 'download-started' ? 'Export download started; active document unchanged' : 'Exported local copy; active document unchanged');
-        return result.warnings.map(warning => `${warning.message}${warning.pageIndices.length ? ` (${warning.pageIndices.map(index => index + 1).join(', ')})` : ''}`);
+        return { ...outcome, status: outcome?.status ?? 'written', name: outcome?.name ?? current.name.replace(/\.pdf$/i, '') + '.' + result.extension,
+          format: request.format.toUpperCase(), pageCount: result.pageIndices.length,
+          warnings: result.warnings.map(warning => warning.message + (warning.pageIndices.length ? ' (' + warning.pageIndices.map(index => index + 1).join(', ') + ')' : '')) };
       } finally { await host.releaseExport?.(result); }
       // Export never confirms the active document as saved.
     } catch (caught) {
@@ -554,7 +590,16 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
   const handleCommitted = async (result: CommitResult, action = 'Committed'): Promise<void> => {
     const current = documentRef.current;
-    if (!current || current.info.id !== result.docId || result.revision <= current.info.revision) return;
+    const target = sessions.current.current.documents.get(result.docId);
+    if (!target || result.revision <= target.loaded.info.revision) return;
+    if (!current || current.info.id !== result.docId) {
+      const info = { ...target.loaded.info, revision: result.revision, pageOrder: result.pageOrder };
+      const pageId = info.pageOrder.includes(target.loaded.page.id) ? target.loaded.page.id : info.pageOrder[0];
+      if (!pageId) return;
+      const loaded = await loadPage(engine, info, target.loaded.name, pageId, target.zoom);
+      sessions.patch(result.docId, { loaded, history: { canUndo: result.canUndo, canRedo: result.canRedo } });
+      triggerAutoRecovery(info, loaded.name); return;
+    }
     const info: DocumentInfo = {
       ...current.info,
       revision: result.revision,
@@ -691,49 +736,32 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     finally { setActivity('idle'); }
   };
 
-  const switchWebDocument = (docId: string): void => {
-    const current = documentRef.current;
-    const next = inactiveWebDocuments.current.get(docId);
-    if (!current || !next || isDraftDirty || activity !== 'idle' || editPending || externalBusy) return;
-    inactiveWebDocuments.current.delete(docId);
-    inactiveWebDocuments.current.set(current.info.id, { loaded: current, history, zoom, selectedIds });
-    documentRef.current = next.loaded;
-    setDocument(next.loaded);
-    setHistory(next.history);
-    setZoom(next.zoom);
-    setSelectedIds(next.selectedIds);
-    setSearchSelection(null);
-    setError(null);
-    setNotice('Ready');
+  const switchDocument = async (docId: string): Promise<void> => {
+    if (activity !== 'idle' || editPending || externalBusy || (isDraftDirty && !await finishDrafts())) return;
+    captureView(); sessions.activate(docId); onActivateDocument?.(docId);
+    setAiContextDocumentId(null); capturedTextSelection.current = null;
+    setSearchSelection(null); setInlineTextId(null); setPlacement(null); setCropImage(false); setCropPage(false);
+    setActiveTool(null); setError(null); setNotice('Ready');
   };
 
-  const closeDocument = async (): Promise<boolean> => {
-    const current = documentRef.current;
-    if (!current || !await closeHandler.current()) return false;
+  const closeDocument = async (docId = documentRef.current?.info.id): Promise<boolean> => {
+    if (!docId || !await closeHandler.current(docId)) return false;
+    const wasActive = docId === documentRef.current?.info.id;
     setActivity('opening'); setError(null);
     try {
-      await engine.close(current.info.id);
-      setSearchSelection(null);
-      if (host.capabilities.platform === 'web') {
-        setWebTabs(tabs => tabs.filter(tab => tab.id !== current.info.id));
-        const nextId = [...inactiveWebDocuments.current.keys()].at(-1);
-        if (nextId) {
-          const next = inactiveWebDocuments.current.get(nextId)!;
-          inactiveWebDocuments.current.delete(nextId);
-          documentRef.current = next.loaded; setDocument(next.loaded);
-          setHistory(next.history); setZoom(next.zoom); setSelectedIds(next.selectedIds);
-          setTextDraftDirty(false); setParagraphDraftDirty(false);
-          setNotice(`Switched to ${next.loaded.name}`);
-          return true;
-        }
+      await engine.close(docId);
+      sessions.remove(docId);
+      if (wasActive) {
+        setSearchSelection(null); setTextDraftDirty(false); setParagraphDraftDirty(false); setFormDraftDirty(false);
+        setInlineTextId(null); setPlacement(null); setCropImage(false); setCropPage(false); setActiveTool(null);
+        const next = sessions.current.current.activeId;
+        if (next) onActivateDocument?.(next);
       }
-      documentRef.current = null; setDocument(null); setSelectedIds([]); setTextDraftDirty(false); setParagraphDraftDirty(false);
-      setHistory({ canUndo: false, canRedo: false }); setNotice('Document closed');
-      return true;
-    } catch (caught) {
-      setError(formatError(caught));
-      return false;
-    } finally { setActivity('idle'); }
+      try { await discardRecoveryRecord(host, docId); } catch { setNotice('Recovery cleanup will be retried next time'); }
+      setPendingRecovery(items => items.filter(item => item.docId !== docId));
+      setNotice('Document closed'); return true;
+    } catch (caught) { setError(formatError(caught)); return false; }
+    finally { setActivity('idle'); }
   };
   const requestCloseDocument = useRef<() => Promise<boolean>>(async () => false);
   requestCloseDocument.current = closeDocument;
@@ -816,67 +844,44 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const isBusy = operationBusy || isDraftDirty;
   const navigationBusy = activity !== 'idle' || editPending || modalOpen || isDraftDirty || (externalBusy && !allowReadOnlyNavigation);
   useEffect(() => { onActivityChange?.(activity !== 'idle' || editPending || isDraftDirty); }, [activity, editPending, isDraftDirty, onActivityChange]);
-  useEffect(() => { onDocumentChange?.({ document: document?.info ?? null, busy: operationBusy, draftDirty: isDraftDirty }); },
-    [document?.info, operationBusy, isDraftDirty, onDocumentChange]);
-  const closeHandler = useRef<() => Promise<boolean>>(async () => true);
-  closeHandler.current = async () => {
-    if (isDraftDirty) { setError('Apply or discard the current text draft before closing'); return false; }
-    if (isBusy) { setError('Finish or stop the current operation before closing'); return false; }
-    const current = documentRef.current;
-    if (!current || current.info.revision === current.info.savedRevision) {
-      if (current) {
-        try {
-          await discardRecoveryRecord(host, current.info.id);
-        } catch {
-          setError('Unable to clean up recovery session before closing');
-          return false;
-        }
-      }
-      return true;
+  useEffect(() => { onDocumentChange?.({ document: document?.info ?? null, busy: operationBusy, draftDirty: isDraftDirty,
+    ...(document ? { name: document.name } : {}),
+    ...(sessions.active?.saveIdentity ?? sessions.active?.identity ? { identity: sessions.active?.saveIdentity ?? sessions.active?.identity } : {}),
+    ...(sessions.active?.saveLocation ?? sessions.active?.location ? { location: sessions.active?.saveLocation ?? sessions.active?.location } : {}) }); },
+    [document?.info, document?.name, operationBusy, isDraftDirty, sessions.active?.saveIdentity, sessions.active?.identity, sessions.active?.saveLocation, sessions.active?.location, onDocumentChange]);
+  const closeHandler = useRef<(docId?: string, continuing?: boolean) => Promise<boolean>>(async () => true);
+  closeHandler.current = async (docId = documentRef.current?.info.id, continuing = false) => {
+    if (docId === documentRef.current?.info.id && isDraftDirty && !await finishDrafts()) return false;
+    if (!continuing && operationBusy) { setError('Finish or stop the current operation before closing'); return false; }
+    const session = docId ? sessions.current.current.documents.get(docId) : undefined;
+    const current = session?.loaded;
+    if (!current || current.info.revision === current.info.savedRevision) return true;
+    let downloaded = session?.downloadedRevision === current.info.revision;
+    for (;;) {
+      const choice = await askSaveChanges(current.name, downloaded);
+      if (choice === 'cancel') return false;
+      if (choice === 'discard') return true;
+      const saved = await saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, false, recordDownload);
+      if (saved) return true;
+      downloaded = sessions.current.current.documents.get(current.info.id)?.downloadedRevision === current.info.revision;
+      if (host.capabilities.platform !== 'web' || !downloaded) return false;
     }
-    const choice = await askSaveChanges(current.name);
-    if (choice === 'cancel') return false;
-    if (choice === 'save') {
-      const saved = Boolean(await saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity));
-      if (saved) {
-        try {
-          await discardRecoveryRecord(host, current.info.id);
-          return true;
-        } catch {
-          setError('Document saved, but recovery cleanup failed');
-          return false;
-        }
-      }
-      return false;
-    }
-    if (choice === 'discard') {
-      try {
-        await discardRecoveryRecord(host, current.info.id);
-        return true;
-      } catch {
-        setError('Unable to clean up recovery session before closing');
-        return false;
-      }
-    }
-    return false;
   };
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     if (host.onCloseRequested) {
       void host.onCloseRequested(async () => {
-        if (!await closeHandler.current()) return false;
-        const active = documentRef.current;
-        if (!active) return true;
+        const ids = [...sessions.current.current.documents.keys()];
+        if (!ids.length) return closeHandler.current();
+        for (let index = 0; index < ids.length; index++) if (!await closeHandler.current(ids[index], index > 0)) return false;
         try {
-          await engine.close(active.info.id);
-          documentRef.current = null;
-          setDocument(null);
+          for (const id of ids) {
+            await engine.close(id); sessions.remove(id);
+            await discardRecoveryRecord(host, id).catch(() => undefined);
+          }
           return true;
-        } catch (caught) {
-          setError(`Could not close PDF session: ${formatError(caught)}`);
-          return false;
-        }
+        } catch (caught) { setError('Could not close PDF session: ' + formatError(caught)); return false; }
       }).then(cleanup => {
         if (disposed) cleanup(); else unlisten = cleanup;
       }).catch(() => setError('Unable to register the window close guard'));
@@ -887,8 +892,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     if (host.capabilities.platform !== 'web') return;
     const beforeUnload = (event: BeforeUnloadEvent) => {
       const current = documentRef.current;
-      if (isBusy || (current && current.info.revision !== current.info.savedRevision) ||
-        [...inactiveWebDocuments.current.values()].some(session => session.loaded.info.revision !== session.loaded.info.savedRevision)) {
+      if (isBusy || (current && current.info.revision !== current.info.savedRevision && sessions.current.current.documents.get(current.info.id)?.downloadedRevision !== current.info.revision) ||
+        [...sessions.current.current.documents.values()].some(session => session.loaded.info.revision !== session.loaded.info.savedRevision && session.downloadedRevision !== session.loaded.info.revision)) {
         event.preventDefault(); event.returnValue = '';
       }
     };
@@ -902,10 +907,92 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     void openDocument(externalSource).then(opened => onSourceConsumed?.(opened !== null), () => onSourceConsumed?.(false));
   }, [externalSource]);
 
+  const lastExternalSources = useRef<DocumentSource[] | null>(null);
+  useEffect(() => {
+    if (!externalSources || externalSources === lastExternalSources.current) return;
+    lastExternalSources.current = externalSources;
+    void openDocuments(externalSources).finally(() => onSourcesConsumed?.());
+  }, [externalSources]);
+
+  const captureTextSelection = () => {
+    const loaded = documentRef.current;
+    if (!loaded || !loaded.info.permissions.copy) { capturedTextSelection.current = null; return null; }
+    const draft = textEditor.current?.captureSelection?.();
+    if (inlineTextId && !draft) { capturedTextSelection.current = null; return null; }
+    const reading = draft ?? captureReadingSelection(loaded.info.id);
+    const targets = loaded.page.objects.filter(object => selectedIds.includes(object.id)).flatMap(object => {
+      const target = textActionTarget(object, loaded.info.pageOrder.indexOf(loaded.page.id) + 1);
+      return target ? [target] : [];
+    });
+    capturedTextSelection.current = reading ?? (targets.length ? textActionSelection(loaded.info, loaded.name, targets) : null);
+    return capturedTextSelection.current;
+  };
+  const discussMaterial = (material: AiMaterial) => {
+    if (!hasAi) return;
+    setAiContextDocumentId(sessions.current.current.documents.has(material.documentId) ? material.documentId : documentRef.current?.info.id ?? null);
+    setAiHandoff({ id: crypto.randomUUID(), materials: [material] }); setActiveTool('ai');
+  };
+  const openTextAction = (selection: TextActionSelection, action: TextAction | 'ask') => {
+    if (!host.aiServices || operationBusy) return;
+    if (action === 'ask') { discussMaterial(selectionMaterial(selection)); return; }
+    const next = { ...selection, action, id: crypto.randomUUID() };
+    setTextSelections(previous => ({ ...previous, [selection.documentId]: next }));
+    setActiveTool('text-ai');
+  };
+  const requestTextAction = (action: TextAction | 'ask') => {
+    const saved = capturedTextSelection.current;
+    const current = documentRef.current;
+    const selection = saved && current && saved.documentId === current.info.id && saved.revision === current.info.revision ? saved : captureTextSelection();
+    if (selection) openTextAction(selection, action);
+    else { setActiveTool('text-ai'); setNotice('Select text to use an AI tool.'); }
+  };
+  const prepareTranslation = async (): Promise<KolmoDocumentInput | null> => {
+    if (operationBusy || !await finishDrafts()) return null;
+    const loaded = documentRef.current;
+    if (!loaded || !loaded.info.permissions.copy) return null;
+    setActivity('saving');
+    try {
+      const snapshot = await engine.save({ docId: loaded.info.id, protection: 'remove' });
+      if (documentRef.current?.info.id !== loaded.info.id || documentRef.current.info.revision !== loaded.info.revision) throw new Error('The document changed. Confirm the current version before uploading.');
+      return { name: loaded.name, pageCount: loaded.info.pageOrder.length, documentId: loaded.info.id, revision: loaded.info.revision, snapshot,
+        ...(workspaceId ? { workspaceId } : {}) };
+    } finally { setActivity('idle'); }
+  };
+  const openTranslation = async (file: KolmoFile, jobId: string) => {
+    const origin = { sourceId: crypto.randomUUID(), name: file.name, identity: file.identity ?? `kolmopdf:${jobId}:${file.name}`,
+      ...(file.location ? { location: file.location } : {}) };
+    const opened = await openDocument(file.kind === 'bytes'
+      ? { ...origin, kind: 'bytes', bytes: file.bytes.slice(0) }
+      : { ...origin, kind: 'native-file', handle: file.handle });
+    if (!opened) throw new Error('Save the translated file or close a document before opening it.');
+  };
+  const locateMaterial = async (material: AiMaterial) => {
+    const source = sessions.current.current.documents.get(material.documentId);
+    if (!source) throw new Error('Open the source PDF to view this reference.');
+    if (source.loaded.info.revision !== material.revision) throw new Error('The source document changed. This reference belongs to an earlier version.');
+    if (operationBusy || !await finishDrafts()) return;
+    const owner = aiContextDocumentId ?? documentRef.current?.info.id ?? material.documentId;
+    const location = material.locations[0];
+    const pageId = location?.pageId ?? source.loaded.info.pageOrder[0];
+    if (!pageId) return;
+    setActivity('rendering');
+    try {
+      const loaded = await loadPage(engine, source.loaded.info, source.loaded.name, pageId, source.zoom);
+      captureView(); sessions.patch(material.documentId, { loaded }); sessions.activate(material.documentId); onActivateDocument?.(material.documentId);
+      setAiContextDocumentId(owner); setActiveTool('ai'); setTab('home'); setPointer('select'); setInlineTextId(null);
+      const target = loaded.page.objects.find(object => object.textBlock?.id === location?.blockId);
+      setSelectedIds([]);
+      setSearchSelection(location?.blockId && location.range ? { docId: material.documentId, revision: material.revision, pageId,
+        blockId: location.blockId, start: location.range[0], end: location.range[1], key: ++searchLocationSequence.current } : null);
+      requestAnimationFrame(() => scrollToPage(pageId, target?.bounds.y ?? 0));
+    } finally { setActivity('idle'); }
+  };
   const chooseTool = (tool: EditorTool) => {
     if (previewActive && tool !== 'ai') return;
     if (tool === 'edit') { chooseTab('edit'); return; }
-    if (tool === 'ai' && !hasAi) return;
+    if (tool === 'text-ai') { captureTextSelection(); requestTextAction('translate'); return; }
+    if (tool === 'ai') { if (hasAi) { setAiContextDocumentId(documentRef.current?.info.id ?? null); setActiveTool('ai'); } return; }
+    if (tool === 'translate-document') { setActiveTool(tool); return; }
     if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) setActiveTool(tool); }); return; }
     setActiveTool(tool);
   };
@@ -1016,7 +1103,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     if (tab === 'pages' && ['blankPage', 'importPages', 'duplicatePage', 'deletePage', 'rotatePageLeft', 'rotatePageRight', 'copyPages', 'pastePages', 'extractPages'].includes(action)) {
       await pageTools.run(action as PageAction); return;
     }
-    if (action === 'cropPage') { setCropPage(true); setCropImage(false); setPlacement(null); setSelectedIds([]); return; }
+    if (action === 'cropPage') { setTab('edit'); setCropPage(true); setCropImage(false); setPlacement(null); setSelectedIds([]); return; }
     if (action === 'pageNumbers' || action === 'watermark' || action === 'headerFooter') {
       setPagePanelSection(action === 'pageNumbers' ? 'number' : action === 'headerFooter' ? 'header' : 'watermark');
       chooseTool('pages'); return;
@@ -1178,18 +1265,35 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || modalOpen || globalThis.document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'o') {
-        event.preventDefault(); if (!isBusy) void openDocument(); return;
-      }
-      if (previewActive || (event.target instanceof Element && event.target.closest('.workspace-rail-content'))) return;
-      if (event.target instanceof Element && event.target.closest('[role="separator"]') && ['ArrowLeft', 'ArrowRight', 'Home'].includes(event.key)) return;
+      const modifier = (event.ctrlKey || event.metaKey) && !event.altKey, key = event.key.toLowerCase();
       const typing = event.target instanceof HTMLElement && (event.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName));
+      const inFiles = event.target instanceof Element && Boolean(event.target.closest('.workspace-rail-content'));
+      const inMenu = event.target instanceof Element && Boolean(event.target.closest('[role="menu"]'));
+      if (modifier && key === 'o') {
+        event.preventDefault();
+        if (!operationBusy) { if (event.shiftKey && onOpenFolder) onOpenFolder(); else void openDocuments(); }
+        return;
+      }
+      if (host.capabilities.nativeFiles && modifier && key === 'w') { event.preventDefault(); if (!operationBusy) { if (previewActive) onClosePreview?.(); else void closeDocument(); } return; }
+      if (host.capabilities.nativeFiles && event.ctrlKey && key === 'tab') {
+        event.preventDefault(); const ids = [...sessions.current.current.documents.keys()], index = ids.indexOf(documentRef.current?.info.id ?? '');
+        const next = ids[(index + (event.shiftKey ? -1 : 1) + ids.length) % ids.length]; if (next) void switchDocument(next); return;
+      }
+      if (previewActive) return;
+      if (modifier && ['s', 'f', 'p'].includes(key)) {
+        event.preventDefault();
+        if (key === 's' && !operationBusy) void saveDocument(event.shiftKey);
+        if (key === 'f' && document) chooseTool('search');
+        if (key === 'p' && document) chooseTool('print');
+        return;
+      }
+      if (modifier && ['z', 'y'].includes(key) && !typing) {
+        event.preventDefault(); if (!isBusy) void moveHistory(key === 'y' || event.shiftKey ? 'redo' : 'undo'); return;
+      }
+      if (inFiles || (event.target instanceof Element && event.target.closest('[role="separator"]'))) return;
       if (!typing && event.key === 'Escape') { setPlacement(null); setCropImage(false); setCropPage(false); setSelectedIds([]); }
       const pageScope = tab === 'pages' || (event.target instanceof Element && Boolean(event.target.closest('.page-list')));
-      const inMenu = event.target instanceof Element && Boolean(event.target.closest('[role="menu"]'));
       if (!typing && pageScope && !inMenu && !isBusy) {
-        const modifier = event.ctrlKey || event.metaKey;
-        const key = event.key.toLowerCase();
         if (modifier && key === 'a') { event.preventDefault(); pageTools.selectAll(); return; }
         if (modifier && (key === 'c' || key === 'v')) { event.preventDefault(); void pageTools.run(key === 'c' ? 'copyPages' : 'pastePages'); return; }
         if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); void pageTools.run('deletePage'); return; }
@@ -1200,52 +1304,55 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       if (!typing && !inMenu && pointer === 'edit' && (event.key === 'Delete' || event.key === 'Backspace') && selectedIds.length) { event.preventDefault(); void runRibbonAction('delete'); return; }
       if (!typing && !inMenu && tab !== 'pages' && (presenting || !continuous) && ['ArrowLeft', 'ArrowRight', 'PageDown', 'PageUp', ' '].includes(event.key)) {
         event.preventDefault(); const step = ['ArrowLeft', 'PageUp'].includes(event.key) ? -1 : 1;
-        const id = document && adjacentPageId(document.info.pageOrder, currentPageIndex, step, view); if (id) void switchPage(id); return;
+        const id = document && adjacentPageId(document.info.pageOrder, currentPageIndex, step, view); if (id) void switchPage(id);
       }
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-      const key = event.key.toLowerCase();
-      const input = event.target instanceof HTMLElement && (event.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName));
-      if (!['o', 's', 'f', 'p', 'z', 'y'].includes(key) || (input && ['z', 'y'].includes(key))) return;
-      event.preventDefault();
-      if (key === 'f' && document) { chooseTool('search'); return; }
-      if (key === 'p' && document) { chooseTool('print'); return; }
-      if (key === 's' && !operationBusy) { void saveDocument(event.shiftKey); return; }
-      if (isBusy) return;
-      if (key === 'o') void openDocument();
-      if (key === 'z' && (event.shiftKey ? history.canRedo : history.canUndo)) void moveHistory(event.shiftKey ? 'redo' : 'undo');
-      if (key === 'y' && history.canRedo) void moveHistory('redo');
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   });
+  const aiSession = (aiContextDocumentId ? sessions.state.documents.get(aiContextDocumentId) : undefined) ?? sessions.active;
+  const aiDocument = aiSession?.loaded ?? document;
+  const tabs = [...sessions.state.documents.values()].map(session => ({ id: session.loaded.info.id, name: session.loaded.name,
+    ...(session.saveLocation ?? session.location ? { location: session.saveLocation ?? session.location } : {}),
+    dirty: session.loaded.info.revision !== session.loaded.info.savedRevision || (session.loaded.info.id === document?.info.id && isDraftDirty) }));
+  const showStart = () => { if (!operationBusy) { onRequestRecent?.(); setStartOpen(true); } };
+  const startPage = <StartPage busy={operationBusy} isWeb={host.capabilities.platform === 'web'} onOpen={() => void openDocuments()}
+    {...(onOpenFolder ? { onOpenFolder: () => { setStartOpen(false); onOpenFolder(); } } : {})}
+    recent={recentFiles ?? webRecent} onOpenRecent={entry => { if (onOpenRecent) { setStartOpen(false); onOpenRecent(entry); } else void openDocuments(); }}
+    onForgetRecent={id => { if (onForgetRecent) onForgetRecent(id); else setWebRecent(previous => { const next = previous.filter(entry => entry.id !== id); writeWebRecent(next); return next; }); }}>
+    {pendingRecovery.length > 0 && <section className="recovery-list" aria-label={t('Recoverable session notice')}>
+      <h2>{t('Recover Unsaved Document')}</h2>
+      {pendingRecovery.map(item => <div className="recovery-row" key={item.docId}><span><strong>{item.name}</strong><small>{t('Unsaved changes')}</small></span>
+        <button className="button button-quiet" type="button" onClick={() => void discardPendingRecovery(item.docId)} disabled={operationBusy}>{t('Discard')}</button>
+        <button className="button button-primary" type="button" onClick={() => void restorePendingRecovery(item)} disabled={operationBusy}>{t('Restore')}</button>
+      </div>)}
+    </section>}
+  </StartPage>;
 
   return (
     <Tooltip.Provider delay={350}>
-    <main className={`editor-shell ${webTabs.length ? 'editor-shell-with-tabs' : ''} ${presenting ? 'is-presenting' : ''} ${previewActive ? 'is-workspace-preview' : ''}`}>
+    <main className={'editor-shell ' + (tabs.length || workspacePreview ? 'editor-shell-with-tabs ' : '') + (presenting ? 'is-presenting ' : '') + (previewActive ? 'is-workspace-preview ' : '') + (!document && !previewActive ? 'is-start-page' : '')}>
       {savePrompt && <SaveChangesDialog prompt={savePrompt} />}
       {passwordPrompt && <PasswordDialog prompt={passwordPrompt} />}
       <ImportPagesDialog {...pageTools.importDialogProps} />
-      <EditorTopbar productName={productName} name={workspacePreview?.name ?? document?.name} dirty={!previewActive && Boolean(document && (isDraftDirty || document.info.revision !== document.info.savedRevision))}
+      <AppDialog open={startOpen} onOpenChange={setStartOpen} title={t('Open documents')}>{startPage}</AppDialog>
+      <EditorTopbar platform={host.capabilities.platform} hasSaveTarget={sessions.active?.hasSaveTarget ?? false}
+        downloaded={sessions.active?.downloadedRevision === document?.info.revision && document !== null && !isDraftDirty}
+        onStart={showStart} {...(onOpenFolder ? { onOpenFolder } : {})} productName={productName} name={workspacePreview?.name ?? document?.name} dirty={!previewActive && Boolean(document && (isDraftDirty || document.info.revision !== document.info.savedRevision))}
         showAi={hasAi} busy={operationBusy} documentActionsDisabled={previewActive} canUndo={!previewActive && history.canUndo} canRedo={!previewActive && history.canRedo} saving={activity === 'saving'} tool={activeTool}
-        onTool={chooseTool} onOpen={() => void openDocument()} onClose={() => { if (!previewActive) void closeDocument(); }}
+        onTool={chooseTool} onOpen={() => void openDocuments()} onClose={() => { if (previewActive) onClosePreview?.(); else void closeDocument(); }}
         onSave={() => { if (!previewActive) void saveDocument(); }} {...(host.capabilities.nativeFiles && !previewActive ? { onSaveAs: () => void saveDocument(true) } : {})}
         onUndo={() => { if (!previewActive) void moveHistory('undo'); }} onRedo={() => { if (!previewActive) void moveHistory('redo'); }} extra={headerActions} />
 
-      {webTabs.length > 0 && <nav className="editor-document-tabs" hidden={previewActive} aria-label={t("Open PDFs")}>
-        {webTabs.map(tab => {
-          const active = document?.info.id === tab.id;
-          const info = active ? document.info : inactiveWebDocuments.current.get(tab.id)?.loaded.info;
-          return <button key={tab.id} type="button" aria-current={active ? 'page' : undefined}
-            disabled={active || isBusy} onClick={() => switchWebDocument(tab.id)}
-            title={tab.name}>
-            {tab.name}{info && info.revision !== info.savedRevision ? ' ●' : ''}
-          </button>;
-        })}
-      </nav>}
+      {(tabs.length > 0 || workspacePreview) && <DocumentTabs tabs={tabs} activeId={document?.info.id ?? null} disabled={operationBusy}
+        {...(workspacePreview ? { previewName: workspacePreview.name } : {})}
+        onActivate={id => void switchDocument(id)} onClose={id => void closeDocument(id)} onOpen={() => void openDocuments()} />}
 
-      <EditorRibbon tab={tab} onTab={chooseTab} pointer={pointer} onPointer={next => {
+      <EditorRibbon tab={tab} onTab={chooseTab} pointer={pointer} onCaptureSelection={() => { captureTextSelection(); }}
+        onTextAction={host.aiServices ? requestTextAction : undefined} onPointer={next => {
         if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) setPointer(next); }); return; }
-        if (tab === 'pages') chooseTabAfterSave('home');
+        if (next === 'edit') setTab('edit');
+        else if (tab === 'pages') chooseTabAfterSave('home');
         setPointer(next); setInlineTextId(null); setSelectedIds([]); setCropImage(false); setCropPage(false); setPlacement(null); setAnnotationDrawing(null); setPendingSignature(null);
       }} annotationTool={annotationDrawing?.tool ?? null} canAnnotate={Boolean(document?.info.permissions.annotate && document.info.capabilities.includes('annotation.add'))}
         zoomMode={viewZoom.mode} pageTools={pageTools} overviewColumns={overviewColumns} onOverviewColumns={setOverviewColumns} onTool={chooseTool} onAction={action => void runRibbonAction(action)} view={view} continuous={continuous}
@@ -1253,21 +1360,19 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         onContinuous={() => { if (!isBusy) { setContinuous(value => !value); requestAnimationFrame(() => scrollToPage(document?.page.id ?? '')); } }}
         hasDocument={Boolean(document)} busy={operationBusy} ocr={host.capabilities.ocr} railOpen={railOpen} onToggleRail={() => setRailOpen(value => !value)}
         selection={selectedText ? 'text' : selectedObjects.length === 1 && selectedObjects[0]?.type === 'image' ? 'image' : selectedObjects.length ? 'objects' : null}>
-        {document && <DirectTextEditor document={document.info} page={document.page} selectedIds={selectedIds} inlineId={inlineTextId}
-          host={pageHost} render={document.render} engine={engine} disabled={operationBusy} handle={textEditor} initialRange={inlineRange} initialRangeIsLogical={inlineRangeIsLogical} initialHit={inlineHit}
+        {document && <DirectTextEditor document={document.info} name={document.name} page={document.page} selectedIds={selectedIds} inlineId={inlineTextId}
+          onTextAction={host.aiServices ? openTextAction : undefined} host={pageHost} render={document.render} engine={engine} disabled={operationBusy} handle={textEditor} initialRange={inlineRange} initialRangeIsLogical={inlineRangeIsLogical} initialHit={inlineHit}
           onClose={() => { setInlineTextId(null); setInlineRange(null); setInlineHit(null); }} onEdit={() => { if (selectedIds[0]) editTextAt(document, selectedIds[0]); }} onManageFonts={() => chooseTool('fonts')}
           onParagraph={id => { setSelectedIds([id]); setInlineRange(null); setInlineHit(null); setInlineTextId(id); }}
           copiedFormat={copiedTextFormat} onCopyFormat={setCopiedTextFormat}
           onDraftChange={setTextDraftDirty} onBusyChange={setEditPending} onCommitted={handleCommitted} />}
       </EditorRibbon>
 
-      <div ref={workspaceRef} className="editor-workspace" data-rail={railVisible} data-rail-tab={railTab} data-panel={panelVisible} data-ai-panel={aiPanelActive} data-empty={!document}>
+      <div id="document-workspace" ref={workspaceRef} className="editor-workspace" data-rail={railVisible} data-rail-tab={railTab} data-panel={panelVisible} data-ai-panel={aiPanelActive} data-empty={!document}>
         <nav className="navigation-tools" aria-label={t('Document navigation')}>
           {hasWorkspace && <IconButton label="Files" aria-pressed={railOpen && railTab === 'files'} onClick={() => { setRailTab('files'); setRailOpen(!railOpen || railTab !== 'files'); }}><Folder size={18} /></IconButton>}
-          <IconButton label="Pages" aria-pressed={railOpen && railTab === 'pages'} onClick={() => { setRailTab('pages'); setRailOpen(!railOpen || railTab !== 'pages'); }}><LayoutGrid size={18} /></IconButton>
-          <IconButton label="Bookmarks" aria-pressed={railOpen && railTab === 'bookmarks'} onClick={() => { setRailTab('bookmarks'); setRailOpen(!railOpen || railTab !== 'bookmarks'); }}><Bookmark size={18} /></IconButton>
-          <IconButton label="Comment" disabled={!document || previewActive} onClick={() => chooseTool('comment')}><MessageSquare size={18} /></IconButton>
-          <IconButton label="Sign" disabled={!document || previewActive} onClick={() => chooseTool('sign')}><PenLine size={18} /></IconButton>
+          <IconButton label="Pages" disabled={!document} aria-pressed={railOpen && railTab === 'pages'} onClick={() => { setRailTab('pages'); setRailOpen(!railOpen || railTab !== 'pages'); }}><LayoutGrid size={18} /></IconButton>
+          <IconButton label="Bookmarks" disabled={!document} aria-pressed={railOpen && railTab === 'bookmarks'} onClick={() => { setRailTab('bookmarks'); setRailOpen(!railOpen || railTab !== 'bookmarks'); }}><Bookmark size={18} /></IconButton>
         </nav>
         <aside className="page-rail" aria-label={t(railTab === 'files' ? 'Files' : 'Pages')} hidden={!railVisible}>
           {hasWorkspace && <div className="workspace-rail-content" hidden={railTab !== 'files'}>{workspacePanel}</div>}
@@ -1318,38 +1423,18 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           onDrop={event => {
             event.preventDefault(); setDragOver(false);
             if (host.capabilities.platform !== 'web' || isBusy) return;
-            const file = event.dataTransfer.files[0];
-            if (!file) return;
-            if (!file.name.toLowerCase().endsWith('.pdf')) { setError(t('Choose a PDF file.')); return; }
-            if (file.size > WEB_LIMITS.inputBytes) { setError(t('This file is too large for the web editor. Use the desktop app.')); return; }
-            void file.arrayBuffer().then(bytes => openDocument({ kind: 'bytes', sourceId: crypto.randomUUID(), name: file.name, bytes })).catch(() => setError(t('Unable to open this file.')));
+            const files = Array.from(event.dataTransfer.files);
+            if (!files.length) return;
+            if (files.some(file => !file.name.toLowerCase().endsWith('.pdf'))) { setError(t('Choose PDF files only.')); return; }
+            if (files.some(file => file.size > WEB_LIMITS.inputBytes)) { setError(t('This file is too large for the web editor. Use the desktop app.')); return; }
+            if (files.length + sessions.current.current.documents.size > WEB_LIMITS.openDocuments) {
+              setError(t('The web editor can keep only {count} PDFs open. Close one before opening another.', { count: WEB_LIMITS.openDocuments })); return;
+            }
+            void Promise.all(files.map(async file => ({ kind: 'bytes' as const, sourceId: crypto.randomUUID(), name: file.name, bytes: await file.arrayBuffer() })))
+              .then(sources => openDocuments(sources)).catch(() => setError(t('Unable to open this file.')));
           }}>
-          {pendingRecovery && !document ? (
-            <aside className="recovery-banner" role="alert" aria-label={t("Recoverable session notice")}>
-              <div className="recovery-info">
-                <strong>{t("Recover Unsaved Document")}</strong>
-                <span>
-                  {pendingRecovery.name}
-                </span>
-              </div>
-              <div className="recovery-actions">
-                <button
-                  className="button button-primary"
-                  type="button"
-                  onClick={() => void restorePendingRecovery()}
-                  disabled={isBusy}
-                >{t("Restore")}</button>
-                <button
-                  className="button button-quiet"
-                  type="button"
-                  onClick={() => void discardPendingRecovery()}
-                  disabled={isBusy}
-                >{t("Discard")}</button>
-              </div>
-            </aside>
-          ) : null}
           {!document ? (
-            <EmptyCanvas busy={activity === 'opening'} isWeb={host.capabilities.platform === 'web'} onOpen={() => void openDocument()} />
+            startPage
           ) : tab === 'pages' ? (
             <PageOrganizer document={document} engine={engine} tools={pageTools} disabled={isBusy} width={overviewWidth} columns={overviewColumns} onOpen={openOverviewPage} />
           ) : (
@@ -1360,7 +1445,8 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                 options={annotationDrawing} disabled={operationBusy || isTextDraftDirty || (noteDraftPage !== null && noteDraftPage !== shown.page.id)} onBusyChange={setEditPending}
                 onDraftChange={registerNoteDraft}
                 onCommitted={handleCommitted} onCancel={() => setAnnotationDrawing(null)} />}
-              onEditText={editTextAt} onInsertText={insertTextAt} onAnnotate={annotateSelection} onError={setError}>
+              onEditText={editTextAt} onInsertText={insertTextAt} onAnnotate={annotateSelection} onError={setError}
+              onTextAction={host.aiServices ? openTextAction : undefined} aiSelection={activeTool === 'text-ai' ? activeTextSelection : null}>
               {(shown) => <>
                 {searchSelection?.pageId === shown.page.id && (() => {
                   const match = shown.page.objects.find(item => item.textBlock?.id === searchSelection.blockId);
@@ -1399,6 +1485,10 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.annotate} onClick={() => void annotateSelection(shown, selectedObjects.map(object => ({ objectId: object.id, blockId: object.textBlock!.id, range: [0, object.textBlock!.runs.reduce((length, run) => length + run.text.length, 0)], text: '', rects: [object.bounds] })), 'highlight')}>{t('Highlight text')}</ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void executeCommands([{ type: 'text.style', pageId: shown.page.id, blockIds: selectedObjects.map(object => object.textBlock!.id), style: { underline: true } }])}>{t('Underline text')}</ContextMenu.Item>
                     </>}
+                    {host.aiServices && selectedObjects.some(object => object.textBlock) && <TextActionMenuItems disabled={operationBusy || !shown.info.permissions.copy} onAction={action => {
+                      const targets = selectedObjects.flatMap(object => { const target = textActionTarget(object, shown.info.pageOrder.indexOf(shown.page.id) + 1); return target ? [target] : []; });
+                      if (targets.length) openTextAction(textActionSelection(shown.info, shown.name, targets), action);
+                    }} />}
                     {selectedObjects.length === 1 && selectedObjects[0]?.type === 'image' && <>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('replaceImage')}>{t('Replace image')}</ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('cropImage')}>{t('Crop image')}</ContextMenu.Item>
@@ -1432,35 +1522,56 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
         </section>
 
         {workspacePreview && <section className="workspace-preview" aria-label={workspacePreview.name}>
-          <header className="workspace-preview-heading"><strong>{workspacePreview.name}</strong><span>{t('Read-only preview')}</span></header>
+          <header className="workspace-preview-heading"><strong>{workspacePreview.name}</strong><span>{t('Read-only preview')}</span>{onClosePreview && <IconButton label={t('Close preview')} disabled={operationBusy} onClick={onClosePreview}><X size={17} /></IconButton>}</header>
           <div className="workspace-preview-content">{workspacePreview.content}</div>
         </section>}
 
-        <aside className="inspector-panel" hidden={!panelVisible} aria-label={t(activeTool ? toolNames[activeTool] : "Tools")}>
+        <aside className={'inspector-panel' + (activeTool === 'text-ai' || activeTool === 'ai' || activeTool === 'translate-document' ? ' ai-owned-focus' : '')} hidden={!panelVisible} aria-label={t(activeTool ? toolNames[activeTool] : "Tools")}>
           {aiPanelActive && <div ref={separatorRef} className="ai-panel-separator" role="separator" tabIndex={0}
             aria-orientation="vertical" aria-label={t('Resize AI panel')}
             aria-valuemin={AI_PANEL_MIN_WIDTH} aria-valuemax={AI_PANEL_MAX_WIDTH} aria-valuenow={AI_PANEL_DEFAULT_WIDTH}
             title={t('Drag to resize. Use Left/Right arrows; Home or double-click to reset.')} />}
-          <div className="panel-heading"><strong>{t(activeTool ? toolNames[activeTool] : "Tools")}</strong>
-            <IconButton label={t('Close panel')} disabled={isDraftDirty} onClick={() => setActiveTool(null)}><PanelRightClose size={17} /></IconButton>
+          <div className={'panel-heading' + (aiPanelActive || activeTool === 'text-ai' || activeTool === 'translate-document' ? ' panel-heading-ai' : '')}><strong>{t(activeTool ? toolNames[activeTool] : "Tools")}</strong>
+            <IconButton label={t('Close panel')} disabled={operationBusy} onClick={() => {
+              if (activeTool === 'text-ai' || activeTool === 'translate-document' || activeTool === 'ai') { setActiveTool(null); return; }
+              void finishDrafts().then(ok => { if (ok) setActiveTool(null); });
+            }}><PanelRightClose size={17} /></IconButton>
           </div>
-          <div className="panel-content">
-          {!document && activeTool !== 'ai' && <div className="panel-empty"><FilePlus2 size={28} /><p>{t('Open a PDF to get started.')}</p></div>}
+          <div className="panel-content" data-tool={activeTool}>
+          {!document && activeTool !== 'ai' && activeTool !== 'translate-document' && <div className="panel-empty"><FilePlus2 size={28} /><p>{t('Open a PDF to get started.')}</p></div>}
+          {host.aiServices && Object.values(textSelections).map(selection => {
+            const session = sessions.state.documents.get(selection.documentId);
+            return session && <div key={selection.id} hidden={activeTool !== 'text-ai' || document?.info.id !== selection.documentId} onKeyDown={event => {
+              if (event.key === 'Escape' && !event.nativeEvent.isComposing && !(event.target instanceof Element && event.target.closest('[role="dialog"]'))) { event.stopPropagation(); setActiveTool(null); }
+            }}><TextActionPanel selection={selection} document={session.loaded.info} engine={engine} services={host.aiServices!} fonts={fonts}
+              disabled={operationBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} onBeforeWrite={finishDrafts} onDiscuss={discussMaterial}
+              getDocument={() => sessions.current.current.documents.get(selection.documentId)?.loaded.info ?? session.loaded.info}
+              onAdjustSource={target => {
+                void (async () => { if (!await finishDrafts()) return; await switchPage(target.pageId); setTab('edit'); setPointer('edit'); setSelectedIds([target.objectId]); setActiveTool(null); })();
+              }} /></div>;
+          })}
+          {activeTool === 'text-ai' && !activeTextSelection && <div className="panel-empty"><Languages size={28} /><p>{t('Select text on the page, then choose an AI tool from the right-click menu or toolbar.')}</p>
+            <p>{t('For scanned pages, recognize text first or enable image translation in KOLMOPDF.')}</p>
+            {host.capabilities.ocr && <button type="button" className="button" onClick={() => chooseTool('ocr')}>{t('Recognize text')}</button>}
+            <button type="button" className="button" onClick={() => chooseTool('translate-document')}>{t('Translate entire PDF…')}</button>
+          </div>}
+          {host.aiServices && <div hidden={activeTool !== 'translate-document'}><KolmoTranslationPanel active={activeTool === 'translate-document'} document={document?.info ?? null}
+            name={document?.name ?? null} services={host.aiServices} host={host} disabled={operationBusy} prepareDocument={prepareTranslation} onOpen={openTranslation} onResultsReady={onResultsReady} /></div>}
           <div hidden={activeTool !== 'search'}>
           <PdfSearchPanel document={document?.info ?? null} engine={engine} disabled={isBusy} onLocate={locateTextBlock} onCommitted={handleCommitted} onBusyChange={setEditPending} />
           </div>
 
-          {document && <div hidden={activeTool !== 'arrange' && activeTool !== 'pages'}><ObjectEditPanel mode={activeTool === 'pages' ? 'pages' : 'arrange'} section={pagePanelSection} pageSelection={tab === 'pages' ? pageTools.ids : null} document={document.info} page={document.page} selectedIds={selectedIds}
+          {document && <div hidden={activeTool !== 'arrange' && activeTool !== 'pages'}><ObjectEditPanel mode={activeTool === 'pages' ? 'pages' : 'arrange'} section={pagePanelSection} pageSelection={pageTools.ids} document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} host={host} disabled={isBusy} onBusyChange={setEditPending}
             onImportPages={() => void pageTools.openImport(document.page.id)}
             onSelectionChange={ids => { setSelectedIds(ids); setSearchSelection(null); }} onCommitted={handleCommitted} /></div>}
 
           {document && <div hidden={activeTool !== 'arrange'}><ParagraphPanel document={document.info} page={document.page} selectedIds={selectedIds}
-            engine={engine} disabled={operationBusy || textDraftDirty} onBusyChange={setEditPending} onDraftChange={setParagraphDraftDirty} onCommitted={handleCommitted} /></div>}
+            engine={engine} draftRef={paragraphDraft} disabled={operationBusy || textDraftDirty} onBusyChange={setEditPending} onDraftChange={setParagraphDraftDirty} onCommitted={handleCommitted} /></div>}
           {document && <div hidden={activeTool !== 'comment' && activeTool !== 'forms'}><DocumentToolsPanel mode={activeTool === 'forms' ? 'forms' : 'comment'} document={document.info} page={document.page} selectedIds={selectedIds}
             active={activeTool === 'comment' || activeTool === 'forms'} drawing={annotationDrawing} onDrawingChange={startAnnotation} onNavigate={annotation => {
               setAnnotationDrawing(null); setSelectedAnnotation(annotation); void switchPage(annotation.pageId, annotation.bounds.y);
-            }} engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
+            }} engine={engine} draftRef={formDraft} onDraftDirtyChange={setFormDraftDirty} disabled={operationBusy || isTextDraftDirty || noteDraftPage !== null} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
           {document && <div hidden={activeTool !== 'sign'}><SignaturePanel document={document.info} disabled={isBusy}
             draft={reusableSignature} onDraftChange={setReusableSignature} placing={Boolean(pendingSignature)} onPlacementRequest={startSignature} /></div>}
 
@@ -1468,17 +1579,29 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
             engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
 
           <div hidden={activeTool !== 'fonts'}><FontPanel engine={engine} host={host} disabled={operationBusy} onBusyChange={setEditPending} /></div>
-          {document && <div hidden={activeTool !== 'export'}><ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} wordAvailable={Boolean(host.convertDocument)} onExport={exportDocument} /></div>}
+          {document && <div hidden={activeTool !== 'export'}><ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} wordAvailable={Boolean(host.convertDocument)} onExport={exportDocument} {...(host.openSavedFile ? { onOpenFile: (handle, reveal) => host.openSavedFile!(handle, reveal) } : {})} /></div>}
           {document && (host.capabilities.platform === 'web' || host.printDocument) &&
             <div hidden={activeTool !== 'print'}><PrintPanel disabled={isBusy} docId={document.info.id} pageIds={document.info.pageOrder} currentPageId={document.page.id}
               encrypted={document.info.permissions.encrypted} canPrint={document.info.permissions.print === true}
               engine={engine} host={host} onBusyChange={setEditPending} /></div>}
 
           {hasAi && <div hidden={activeTool !== 'ai'}>
-            {renderAiPanel ? renderAiPanel({ document: document?.info ?? null, page: document?.page ?? null,
-              name: document?.name ?? null, selectedIds, engine, disabled: isBusy, onCommitted: handleCommitted,
-              openDocument: source => openDocument(source), saveDocument, navigationDisabled: navigationBusy || previewActive,
-              navigatePage: pageId => switchPage(pageId), locateText: locateTextBlock, showAiPanel: () => setActiveTool('ai') }) : aiPanel}
+            {renderAiPanel ? renderAiPanel({ documents: [...sessions.state.documents.values()].map(session => {
+                const identity = session.saveIdentity ?? session.identity;
+                return { id: session.loaded.info.id, name: session.loaded.name, info: session.loaded.info, ...(identity ? { identity } : {}) };
+              }),
+              document: aiDocument?.info ?? null, page: aiDocument?.page ?? null, name: aiDocument?.name ?? null,
+              selectedIds: aiSession?.selectedIds ?? selectedIds, engine, disabled: operationBusy, draftDirty: isDraftDirty, finishDrafts, onCommitted: handleCommitted,
+              handoff: aiHandoff, onHandoffConsumed: id => setAiHandoff(previous => previous?.id === id ? null : previous),
+              getDocumentInfo: id => sessions.current.current.documents.get(id)?.loaded.info ?? null, locateMaterial,
+              openDocument: async source => { const info = await openDocument(source); if (info) setAiContextDocumentId(info.id); return info; }, saveDocument: () => saveDocument(false, aiDocument?.info.id),
+              navigationDisabled: navigationBusy || previewActive,
+              navigatePage: async pageId => { if (aiDocument) await locateMaterial({ id: 'navigation', kind: 'selection', documentId: aiDocument.info.id, revision: aiDocument.info.revision,
+                name: aiDocument.name, text: '', locations: [{ pageId, pageNumber: aiDocument.info.pageOrder.indexOf(pageId) + 1 }] }); },
+              locateText: (pageId, blockId, range) => { if (aiDocument) void locateMaterial({ id: 'citation', kind: 'selection', documentId: aiDocument.info.id,
+                revision: aiDocument.info.revision, name: aiDocument.name, text: '', locations: [{ pageId, pageNumber: aiDocument.info.pageOrder.indexOf(pageId) + 1,
+                  blockId, ...(range ? { range: [range.start, range.end] as [number, number] } : {}) }] }).catch(caught => setError(formatError(caught))); },
+              showAiPanel: () => setActiveTool('ai') }) : aiPanel}
           </div>}
           </div>
         </aside>
@@ -1489,7 +1612,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
 
       <footer className="editor-statusbar">
         <span className={error ? 'status-dot status-dot-error' : 'status-dot'} aria-hidden="true" />
-        <span className="status-message" role={error ? 'alert' : 'status'}>{t(error ?? notice)}</span>
+        <span className="status-message" title={t(error ?? notice)} role={error ? 'alert' : 'status'}>{t(error ?? notice)}</span>
         <span className="status-spacer" />
         {!previewActive && <ViewControls page={tab === 'pages' && document ? Math.max(0, document.info.pageOrder.indexOf(pageTools.focus)) + 1 : currentPageIndex + 1} pages={document?.info.pageOrder.length ?? 0} zoom={tab === 'pages' ? overviewWidth / 230 : zoom} busy={navigationBusy}
           onPage={page => { const id = document?.info.pageOrder[page - 1]; if (id) { if (tab === 'pages') { pageTools.select(id); stageRef.current?.querySelector<HTMLElement>(`[data-organizer-page="${id}"]`)?.scrollIntoView({ block: 'nearest' }); } else void switchPage(id); } }}
@@ -1500,19 +1623,6 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     </main>
     </Tooltip.Provider>
   );
-}
-
-function EmptyCanvas({ busy, isWeb, onOpen }: { busy: boolean; isWeb: boolean; onOpen(): void }) {
-  useI18n();
-  return <div className="empty-canvas">
-    <div className="empty-sheet" aria-hidden="true"><span>PDF</span><i /><i /><i /></div>
-    <span className="welcome-kicker">{t('A little less paperwork.')}</span>
-    <h1>{t('Make your PDF')}<br /><em>{t('work for you.')}</em></h1>
-    <p>{t('Edit, organize and bring your ideas to the page.')}<br />{t('One workspace. Everything you need.')}</p>
-    <button className="button button-primary button-large" type="button" onClick={onOpen} disabled={busy}><FilePlus2 size={19} />{t(busy ? "Opening…" : "Open PDF")}</button>
-    <span className="drop-hint">{t(isWeb ? "or drop a PDF here" : "Choose a file from your computer")}</span>
-    <div className="welcome-features"><span>{t('Edit text & images')}</span><span>{t('Organize pages')}</span><span>{t('Read continuously')}</span></div>
-  </div>;
 }
 
 export async function replaceLoadedDocument(
@@ -1561,11 +1671,12 @@ async function saveCurrentDocument(
   current: LoadedDocument,
   engine: EngineAdapter,
   host: HostAdapter,
-  updateSavedRevision: (docId: string, savedRevision: number, name?: string) => void,
+  updateSavedRevision: (docId: string, savedRevision: number, name?: string, outcome?: SaveOutcome) => void,
   setError: (message: string | null) => void,
   setNotice: (message: string) => void,
   setActivity: (activity: Activity) => void,
   saveAs = false,
+  onDownload?: (docId: string, revision: number) => void,
 ): Promise<SaveConfirmation | null> {
   setActivity('saving');
   setError(null);
@@ -1575,11 +1686,12 @@ async function saveCurrentDocument(
     const outcome = await host.saveDocument(result, current.name, { mode: saveAs ? 'save-as' : 'save' });
     if (outcome?.status === 'cancelled') { setNotice('Save cancelled'); return null; }
     if (outcome?.status === 'download-started') {
+      onDownload?.(result.docId, result.savedRevision);
       setNotice('Download started');
       return null;
     }
     const confirmed = await engine.confirmSave({ docId: result.docId, savedRevision: result.savedRevision });
-    updateSavedRevision(result.docId, confirmed.savedRevision, outcome?.name);
+    updateSavedRevision(result.docId, confirmed.savedRevision, outcome?.name, outcome || undefined);
     setNotice('Saved');
     return { docId: result.docId, savedRevision: result.savedRevision };
   } catch (caught) {

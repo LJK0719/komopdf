@@ -1,3 +1,4 @@
+import { setEditorLanguage } from './editor-ui-helpers';
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
@@ -67,7 +68,7 @@ test('tracking survives typing and bold; recognized paragraphs keep line spacing
   await input.press('Control+Enter');
   await expect(page.locator('.property-error')).toHaveCount(0);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   await page.reload();
   const chooser = page.waitForEvent('filechooser');
@@ -85,7 +86,7 @@ test('tracking survives typing and bold; recognized paragraphs keep line spacing
   await expect(page.locator('.property-error')).toHaveCount(0);
   await text.dblclick();
   await expect.poll(() => input.locator('p').allTextContents()).toEqual(['Alto text.', 'Zebra text.']);
-  await page.getByRole('combobox', { name: 'Language' }).selectOption('zh-CN');
+  await setEditorLanguage(page, 'zh-CN');
   await page.screenshot({ path: 'tmp/browser/paragraph-properties-zh.png' });
 });
 

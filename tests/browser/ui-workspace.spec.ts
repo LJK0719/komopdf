@@ -1,3 +1,4 @@
+import { setEditorLanguage } from './editor-ui-helpers';
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
@@ -7,7 +8,7 @@ test('the first homepage entry works after route prefetch without reloading', as
   page.on('pageerror', error => errors.push(error.message));
   const prefetched = page.waitForResponse(response => response.url().includes('/editor/__next.editor.__PAGE__.txt'));
   await page.goto('/');
-  const open = page.getByRole('link', { name: 'Open a PDF', exact: true });
+  const open = page.locator('.hero-actions').getByRole('link', { name: 'Open editor', exact: true });
   await open.hover();
   const response = await prefetched;
   expect(response.status()).toBe(200);
@@ -28,16 +29,18 @@ test('language preference is shared across the website and editor', async ({ pag
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/');
   await page.getByRole('combobox', { name: 'Language' }).selectOption('zh-CN');
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('少一点繁琐');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('你的文档');
   await page.screenshot({ path: 'tmp/browser/ui-home-zh.png', fullPage: true });
-  await page.getByRole('link', { name: '打开编辑器', exact: true }).click();
+  await page.locator('.hero-actions').getByRole('link', { name: '打开编辑器', exact: true }).click();
   await expect(page.getByRole('button', { name: '打开 PDF', exact: true })).toBeVisible();
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await page.screenshot({ path: 'tmp/browser/ui-editor-zh.png' });
-  await page.getByRole('combobox', { name: '语言' }).selectOption('en');
+  await setEditorLanguage(page, 'en');
   await expect(page.getByRole('button', { name: 'Open PDF', exact: true })).toBeVisible();
   await page.reload();
+  await page.getByRole('button', { name: 'File', exact: true }).click();
   await expect(page.getByRole('combobox', { name: 'Language' })).toHaveValue('en');
+  await page.keyboard.press('Escape');
   await expect(page.getByText('Execution Boundary', { exact: true })).toHaveCount(0);
 });
 
@@ -50,7 +53,9 @@ test('file menu supports keyboard navigation and the compact toolbar remains rea
   await expect(file).toBeFocused();
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole('button', { name: 'Open PDF', exact: true })).toBeVisible();
+  await file.click();
   await expect(page.getByRole('combobox', { name: 'Language' })).toBeVisible();
+  await page.keyboard.press('Escape');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: 'tmp/browser/ui-editor-mobile.png' });
 });

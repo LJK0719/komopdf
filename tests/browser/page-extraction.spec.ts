@@ -47,7 +47,7 @@ test('page extraction creates a separate PDF without changing the source session
   await expect(page.locator('.page-chip')).toHaveCount(1);
   await page.getByRole('button', { name: 'Select Text object' }).click();
   await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Second page');
-  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('button', { name: 'source-pages.pdf' }).click();
+  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('tab', { name: 'source-pages.pdf' }).click();
   await expect(page.locator('.page-chip')).toHaveCount(2);
   await page.getByRole('button', { name: 'Select Text object' }).click();
   await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('First page');

@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useI18n } from '@pdf-editor/editor/i18n';
+import { SiteNav, SiteFooter } from '../../components/navigation';
 import { desktopBilling, DESKTOP_BILLING_KEY } from '../../lib/desktop-billing';
 import '../account/account.css';
 
@@ -19,9 +20,10 @@ export default function BillingPage() {
       setLocale(data.lang); window.location.replace(data.url);
     } catch { setError(true); }
   }, [setLocale]);
-  return <main className="account-page"><nav><Link href="/" className="account-wordmark">komopdf</Link></nav>
-    <header><h1>{t(error ? 'Unable to open billing. Please try again.' : 'Opening…')}</h1></header>
-    <p role={error ? 'alert' : 'status'}>{t(error ? 'Return to the app and open billing again.' : 'Opening secure checkout…')}</p>
-    <footer><Link href="/privacy/">{t('Privacy')}</Link><Link href="/help/">{t('Help')}</Link></footer>
+  return <main className="site-shell account-page"><SiteNav />
+    <section className="billing-status"><span className="site-kicker">{t('Account & pricing')}</span><h1>{t(error ? 'Unable to open billing. Please try again.' : 'Opening…')}</h1>
+      <p role={error ? 'alert' : 'status'}>{t(error ? 'Return to the app and open billing again.' : 'Opening secure checkout…')}</p>
+      {error ? <Link className="site-button site-button-outline" href="/account/">{t('View plans')}</Link> : null}
+    </section><SiteFooter />
   </main>;
 }

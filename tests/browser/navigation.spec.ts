@@ -74,7 +74,7 @@ test('multi-page page numbers are searchable native PDF text in one undo step', 
   await page.getByRole('button', { name: 'Redo' }).click();
   await expect(text).toHaveCount(1);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   page.once('dialog', async dialog => { page.once('dialog', discard => discard.accept()); await dialog.dismiss(); });
   chooser = page.waitForEvent('filechooser');

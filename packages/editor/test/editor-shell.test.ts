@@ -96,18 +96,20 @@ describe('Resizable AI inspector integration', () => {
     expect(source).toContain('renderAiPanel ? renderAiPanel({');
   });
 
-  it('does not override the hidden column or the original non-AI inspector widths', () => {
+  it('keeps workspace columns in one stylesheet and scopes resizing to AI', () => {
     const source = readFileSync(resolve(__dirname, '../src/ui/EditorShell.tsx'), 'utf-8');
-    const css = readFileSync(resolve(__dirname, '../src/ui/ribbon.css'), 'utf-8');
+    const css = readFileSync(resolve(__dirname, '../src/ui/workspace.css'), 'utf-8');
+    const ribbon = readFileSync(resolve(__dirname, '../src/ui/ribbon.css'), 'utf-8');
     expect(source).not.toContain("'--panel-size'");
     expect(css).toContain(".editor-workspace[data-panel='false'] { --panel-size: 0px; }");
     expect(css).toContain(".editor-workspace[data-panel='true'][data-ai-panel='true'] { --panel-size: var(--ai-panel-size, 400px); }");
     expect(css).toContain("[data-ai-overlay='true'] { --panel-size: 0px; }");
     expect(css).toContain('--panel-size: 320px');
-    expect(css).toContain('--panel-size: 300px');
-    expect(css).toContain('calc(100% - var(--navigation-size) - var(--utility-size))');
-    expect(css).toContain('grid-column: 1 / -1; z-index: 11');
-    expect(css).toContain('user-select: none !important');
+    expect(css).toContain('--panel-size: 344px');
+    expect(css).toContain('calc(100% - var(--navigation-size))');
+    expect(css).toContain('grid-column: 1 / -1; inset: 0 0 0 auto; z-index: 20');
+    expect(ribbon).toContain('user-select: none !important');
+    expect(ribbon).not.toContain('--rail-size: 156px');
   });
 });
 
@@ -121,7 +123,7 @@ describe('Host workspace slots', () => {
     expect(source).toContain("{hasWorkspace && <IconButton label=\"Files\"");
     expect(source).toContain("if (hasWorkspace && workspaceId) { setRailTab('files'); setRailOpen(true); }");
     expect(source).toContain("}, [hasWorkspace, workspaceId])");
-    expect(source).toContain("const railVisible = railOpen && (railTab === 'files' ? hasWorkspace : Boolean(document))");
+    expect(source).toContain("const railVisible = railOpen && (railTab === 'files' ? hasWorkspace : Boolean(document) && tab !== 'pages')");
     expect(source).toContain('data-rail={railVisible} data-rail-tab={railTab}');
     expect(source).toContain("<div className=\"workspace-rail-content\" hidden={railTab !== 'files'}>{workspacePanel}</div>");
   });
@@ -136,26 +138,29 @@ describe('Host workspace slots', () => {
     expect(source).toContain('name={workspacePreview?.name ?? document?.name}');
     expect(source).toContain('busy={operationBusy} documentActionsDisabled={previewActive}');
     expect(source).toContain('if (!previewActive) void saveDocument()');
-    expect(source).toContain('if (previewActive || (event.target instanceof Element');
-    expect(source).toContain("event.key.toLowerCase() === 'o'");
+    expect(source).toContain('if (previewActive) return;');
+    expect(source.indexOf("if (modifier && ['s', 'f', 'p'].includes(key))")).toBeLessThan(source.indexOf('if (inFiles ||'));
+    expect(source).toContain("if (modifier && key === 'o')");
     expect(source).toContain("event.target.closest('.workspace-rail-content')");
     expect(source).toContain("if (previewActive && tool !== 'ai') return");
     expect(source).toContain('hidden={!panelVisible}');
     expect(source).toContain("enabled: tab !== 'pages' && !panelResizing && !previewActive");
     expect(source).toContain('{!previewActive && <ViewControls');
     const aiRender = source.slice(source.indexOf('{renderAiPanel ?'), source.indexOf('}) : aiPanel}'));
-    expect(aiRender).toContain('selectedIds, engine, disabled: isBusy, onCommitted: handleCommitted');
-    expect(aiRender).not.toContain('disabled: isBusy || previewActive');
+    expect(aiRender).toContain('selectedIds: aiSession?.selectedIds ?? selectedIds, engine, disabled: operationBusy');
+    expect(aiRender).toContain('draftDirty: isDraftDirty, finishDrafts');
+    expect(aiRender).toContain('saveDocument: () => saveDocument(false, aiDocument?.info.id)');
+    expect(aiRender).not.toContain('disabled: operationBusy || previewActive');
   });
 
-  it('uses a separate Files width and places previews in the canvas column without a ribbon gap', () => {
-    const css = readFileSync(resolve(__dirname, '../src/ui/ribbon.css'), 'utf-8');
-    expect(css).toContain(".editor-workspace[data-rail='true'][data-rail-tab='files'] { --rail-size: 244px; }");
-    expect(css).toContain('--rail-size: 156px');
+  it('places file navigation and previews in the shared workspace grid', () => {
+    const css = readFileSync(resolve(__dirname, '../src/ui/workspace.css'), 'utf-8');
+    expect(css).toContain(".editor-workspace[data-rail-tab='files'] { --rail-size: 244px; }");
+    expect(css).toContain('--rail-size: 180px');
     expect(css).toContain('.workspace-preview { grid-column: 3; grid-row: 1;');
-    expect(css).toContain('.editor-shell.is-workspace-preview { grid-template-rows: 52px minmax(0, 1fr) 38px; }');
-    expect(css).toContain('.is-workspace-preview > .editor-ribbon');
-    expect(css).toContain(".editor-workspace[data-rail-tab='files'] .page-rail { width: min(244px, calc(100% - 72px)); }");
+    expect(css).toContain("grid-template-areas: 'topbar' 'tabs' 'ribbon' 'workspace' 'status'");
+    expect(css).toContain('.is-workspace-preview .editor-ribbon');
+    expect(css).toContain('width: min(260px, calc(100% - 36px))');
   });
 });
 
@@ -168,9 +173,10 @@ describe('Brand entrances', () => {
     expect(chrome).toContain('<span className="brand-mark" aria-hidden="true">k</span>');
   });
 
-  it('declares recovery banner and actions in EditorShell', () => {
+  it('lists all recoverable documents with explicit actions', () => {
     const source = readFileSync(resolve(__dirname, '../src/ui/EditorShell.tsx'), 'utf-8');
-    expect(source).toContain('recovery-banner');
+    expect(source).toContain('recovery-list');
+    expect(source).toContain('pendingRecovery.map(item =>');
     expect(source).toContain('Recover Unsaved Document');
     expect(source).toContain('restorePendingRecovery');
     expect(source).toContain('discardPendingRecovery');

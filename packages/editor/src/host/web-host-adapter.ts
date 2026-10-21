@@ -8,10 +8,13 @@ import {
   type RecoverySource,
 } from '@pdf-editor/contracts';
 
+import { WebAiServices } from './web-ai-services.js';
+
 const RECOVERY_DATABASE = 'pdf-editor-recovery';
 const RECOVERY_STORE = 'sessions';
 
 export class WebHostAdapter implements HostAdapter {
+  readonly aiServices = new WebAiServices();
   readonly capabilities: HostCapabilities = {
     platform: 'web',
     nativeFiles: false,
@@ -24,20 +27,16 @@ export class WebHostAdapter implements HostAdapter {
 
   async pickDocument(): Promise<DocumentSource | null> {
     const file = await pickPdfFile();
-    if (!file) return null;
-    if (file.size > WEB_LIMITS.inputBytes) {
-      throw new EngineError(
-        'RESOURCE_LIMIT',
-        `Web version limit is 50 MiB per PDF; selected file is ${formatMiB(file.size)} MiB.`,
-      );
-    }
+    return file ? readDocument(file) : null;
+  }
 
-    return {
-      kind: 'bytes',
-      sourceId: createSourceId(),
-      name: file.name,
-      bytes: await file.arrayBuffer(),
-    };
+  async pickDocuments(): Promise<DocumentSource[]> {
+    const files = await pickFiles('application/pdf,.pdf', true);
+    if (files.length > WEB_LIMITS.openDocuments) {
+      throw new EngineError('RESOURCE_LIMIT', `The web editor can keep only ${WEB_LIMITS.openDocuments} PDFs open. Choose fewer files or use the desktop app.`);
+    }
+    for (const file of files) checkDocumentSize(file);
+    return Promise.all(files.map(readDocument));
   }
 
   async saveDocument(result: SaveResult, suggestedName: string): Promise<SaveOutcome> {
@@ -214,21 +213,29 @@ async function readFontSelection(name: string, blob: Blob): Promise<FontSelectio
   return { name, source: { kind: 'bytes', bytes: await blob.arrayBuffer() } };
 }
 
-function pickPdfFile(accept = 'application/pdf,.pdf'): Promise<File | null> {
-  return new Promise((resolve) => {
+async function pickPdfFile(accept = 'application/pdf,.pdf'): Promise<File | null> {
+  return (await pickFiles(accept, false))[0] ?? null;
+}
+
+function pickFiles(accept: string, multiple: boolean): Promise<File[]> {
+  return new Promise(resolve => {
     const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = accept;
-
-    const finish = (file: File | null): void => {
-      input.remove();
-      resolve(file);
-    };
-
-    input.addEventListener('change', () => finish(input.files?.item(0) ?? null), { once: true });
-    input.addEventListener('cancel', () => finish(null), { once: true });
+    input.type = 'file'; input.accept = accept; input.multiple = multiple;
+    const finish = (files: File[]) => { input.remove(); resolve(files); };
+    input.addEventListener('change', () => finish(Array.from(input.files ?? [])), { once: true });
+    input.addEventListener('cancel', () => finish([]), { once: true });
     input.click();
   });
+}
+
+function checkDocumentSize(file: File): void {
+  if (file.size > WEB_LIMITS.inputBytes) throw new EngineError('RESOURCE_LIMIT',
+    `Web version limit is 50 MiB per PDF; selected file is ${formatMiB(file.size)} MiB.`);
+}
+
+async function readDocument(file: File): Promise<DocumentSource> {
+  checkDocumentSize(file);
+  return { kind: 'bytes', sourceId: createSourceId(), name: file.name, bytes: await file.arrayBuffer() };
 }
 
 function createSourceId(): string {

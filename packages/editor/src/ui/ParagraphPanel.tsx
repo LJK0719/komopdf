@@ -1,5 +1,8 @@
 import { translate as t, useI18n } from './i18n.js';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, type RefObject } from 'react';
+import './panel-refresh.css';
+
+export type ParagraphDraftHandle = { finish(): Promise<boolean>; discard(): void };
 import { CommandRegistry, validateTransaction, type CommandContext } from '@pdf-editor/commands';
 import {
   EngineError,
@@ -31,6 +34,7 @@ export type ParagraphPanelProps = {
   disabled?: boolean;
   onBusyChange?(busy: boolean): void;
   onDraftChange?(dirty: boolean): void;
+  draftRef?: RefObject<ParagraphDraftHandle | null>;
   onCommitted(result: CommitResult): Promise<void>;
 };
 
@@ -42,6 +46,7 @@ export function ParagraphPanel({
   disabled = false,
   onBusyChange,
   onDraftChange,
+  draftRef,
   onCommitted,
 }: ParagraphPanelProps) {
   useI18n();
@@ -153,7 +158,7 @@ export function ParagraphPanel({
     ]);
   }, [scope, text, chosenFontId, fontSize, lineHeight, alignment, color, characterSpacing, underline, x, y, width, height, selectedTextObjects]);
 
-  const draftDirty = Boolean(text.trim() || preview !== null);
+  const draftDirty = Boolean(text.length || preview !== null);
   useEffect(() => {
     onDraftChange?.(draftDirty);
   }, [draftDirty, onDraftChange]);
@@ -362,18 +367,29 @@ export function ParagraphPanel({
     }
   };
 
-  const handleDiscard = () => {
-    setText('');
-    setPreview(null);
-    setPreviewKey('');
-    setError('');
-  };
+  function handleDiscard(): void {
+    previewSequence.current += 1;
+    setPreviewing(false);
+    setText(''); setPreview(null); setPreviewKey(''); setError('');
+    onDraftChange?.(false);
+  }
+
+  useImperativeHandle(draftRef, () => ({
+    async finish() {
+      if (!draftDirty) return true;
+      setError(isPreviewCurrent
+        ? 'Confirm Reflow selected text or Insert paragraph, or discard the draft before continuing.'
+        : 'Preview the paragraph, then confirm the operation, or discard the draft before continuing.');
+      return false;
+    },
+    discard: handleDiscard,
+  }));
 
   if (!document || !page) {
     return (
-      <section className="text-edit-panel" aria-label="Paragraph reflow and insertion">
-        <span className="eyebrow">{t("Paragraph")}</span>
-        <p>{t("Open a document to insert or reflow paragraphs.")}</p>
+      <section className="text-edit-panel task-panel paragraph-panel" aria-label={t('Paragraph reflow and insertion')}>
+        <header className="task-panel-header"><h2>{t('Paragraph')}</h2></header>
+        <div className="task-panel-body"><p>{t('Open a document to insert or reflow paragraphs.')}</p></div>
       </section>
     );
   }
@@ -381,21 +397,21 @@ export function ParagraphPanel({
   if (!supportsParagraph) return null;
 
   return (
-    <section className="text-edit-panel" aria-label={t("Paragraph")}><details><summary>{t("Paragraph")}</summary>
-      <span className="eyebrow">{t("Paragraph")}</span>
-      <p>{t("Combine selected lines or add a new paragraph.")}</p>
+    <section className="text-edit-panel task-panel paragraph-panel" aria-label={t('Paragraph')}>
+      <header className="task-panel-header"><h2>{t('Paragraph')}</h2></header>
+      <div className="task-panel-body">
+      <p>{t('Combine selected lines or add a new paragraph.')}</p>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-        <span style={{ fontSize: '11px', color: '#646761' }}>
+      <div className="panel-refresh-row">
+        <span className="panel-refresh-muted">
           {selectedTextObjects.length > 0
-            ? `${selectedTextObjects.length} text object${selectedTextObjects.length === 1 ? '' : 's'} selected`
-            : t("No text objects selected")}
+            ? t('{count} text objects selected', { count: selectedTextObjects.length })
+            : t('No text objects selected')}
         </span>
         <button
           type="button"
           disabled={locked || selectedTextObjects.length === 0}
           onClick={handleUseSelectedText}
-          style={{ minHeight: '28px', padding: '4px 8px', fontSize: '10px' }}
         >{t("Use selected text")}</button>
       </div>
 
@@ -411,6 +427,7 @@ export function ParagraphPanel({
         />
       </label>
 
+      <details><summary>{t('Paragraph box')}</summary>
       <div className="document-tools-grid">
         <label>{t("Box X (pt)")}<input
             type="number"
@@ -463,6 +480,7 @@ export function ParagraphPanel({
         </label>
       </div>
 
+      </details>
       <label>{t("Font")}<select
           value={chosenFontId}
           onChange={e => {
@@ -588,6 +606,7 @@ export function ParagraphPanel({
         </label>
       </div>
 
+      <details><summary>{t('Advanced text options')}</summary>
       <label>{t("Character spacing (pt)")}<input
           type="number"
           step="0.1"
@@ -603,20 +622,7 @@ export function ParagraphPanel({
       <label><input type="checkbox" checked={underline} disabled={locked}
         onChange={event => { setUnderline(event.target.checked); clearPreview(); }} />{t("Underline paragraph")}</label>
 
-      <div className="text-edit-actions">
-        <button
-          type="button"
-          onClick={() => void runPreview()}
-          disabled={locked || previewing || !text.trim() || !chosenFontId || !validBounds}
-        >
-          {previewing ? t("Previewing…") : t("Preview paragraph")}
-        </button>
-        <button
-          type="button"
-          disabled={locked || (!draftDirty && !preview)}
-          onClick={handleDiscard}
-        >{t("Discard draft")}</button>
-      </div>
+      </details>
 
       {preview ? (
         <div className="layout-result">
@@ -627,9 +633,21 @@ export function ParagraphPanel({
         </div>
       ) : null}
 
+      {fontError ? <p role="alert">{t(fontError)}</p> : null}
+      </div>
+      <footer className="task-panel-footer">
+      {error ? <p role="alert">{t(error)}</p> : null}
+      <div className="text-edit-actions">
+        <button type="button" className={!isPreviewCurrent ? 'task-panel-primary' : undefined}
+          onClick={() => void runPreview()} disabled={locked || !text.trim() || !chosenFontId || !validBounds}>
+          {previewing ? t('Previewing…') : t('Preview paragraph')}
+        </button>
+        <button type="button" disabled={locked || !draftDirty} onClick={handleDiscard}>{t('Discard draft')}</button>
+      </div>
       <div className="text-edit-actions">
         <button
           type="button"
+          className={selectedTextObjects.length > 0 && isPreviewCurrent ? 'task-panel-primary' : undefined}
           onClick={() => void handleReflow()}
           disabled={!canReflow}
           title={
@@ -644,6 +662,7 @@ export function ParagraphPanel({
         </button>
         <button
           type="button"
+          className={selectedTextObjects.length === 0 && isPreviewCurrent ? 'task-panel-primary' : undefined}
           onClick={() => void handleInsert()}
           disabled={!canInsert}
           title={
@@ -655,12 +674,8 @@ export function ParagraphPanel({
           {busy ? t("Inserting…") : t("Insert paragraph")}
         </button>
       </div>
-
-
-
-      {error ? <p role="alert">{t(error)}</p> : null}
-      {fontError ? <p role="alert">{t(fontError)}</p> : null}
-    </details></section>
+      </footer>
+    </section>
   );
 }
 

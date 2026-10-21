@@ -71,7 +71,7 @@ test('real WASM reflows adjacent text lines into a single paragraph, undoes, red
 
   // 9. Save and download, then reopen with dirty session confirmation handling
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.equals(original)).toBe(false);
   expect(saved.includes(Buffer.from('/Underline true'))).toBe(true);
@@ -132,7 +132,7 @@ test('real WASM formats only a logical paragraph selection and preserves it thro
   await expect(original).toHaveValue('Alpha beta\nGamma delta');
   await page.getByRole('button', { name: 'Redo', exact: true }).click();
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   const reopen = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
@@ -181,7 +181,7 @@ test('real WASM inserts text using the exact bold italic font face', async ({ pa
   await paragraph.getByRole('button', { name: 'Insert paragraph' }).click();
   await expect(page.locator('.object-hitbox[data-object-type="text"]')).toHaveCount(3);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.toString('latin1')).toContain('LiberationSans-BoldItalic');
 });
@@ -219,7 +219,7 @@ test('mixed paragraph weight preserves italic runs in one undo transaction', asy
   await expect(format.getByRole('combobox', { name: 'Selection weight' })).toHaveValue('');
   await expect(editor.locator('.error-text')).toHaveCount(0);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const saved = await readFile((await (await download).path())!);
   expect(saved.toString('latin1')).toContain('LiberationSans-BoldItalic');
   expect(saved.toString('latin1')).toContain('LiberationSans-Bold');

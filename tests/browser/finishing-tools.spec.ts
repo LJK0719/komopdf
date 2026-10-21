@@ -9,7 +9,7 @@ test.beforeEach(async ({ page }) => {
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'finishing.pdf', mimeType: 'application/pdf', buffer: samplePdf() });
   await expect(page.locator('.document-pages .page-wrap')).toHaveCount(3, { timeout: 60_000 });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
 });
 
 test('search respects case and moves forward and backward without changing the PDF', async ({ page }) => {
@@ -127,7 +127,7 @@ test('zoom preserves the reading point midway down a page as the sidebar and win
 
 test('draw a signature once, move and resize its preview, cancel safely, then reuse the confirmed template', async ({ page }) => {
   const tabs = page.getByRole('navigation', { name: 'PDF tools', exact: true });
-  await tabs.getByRole('button', { name: 'Insert', exact: true }).click();
+  await tabs.getByRole('button', { name: 'Fill & sign', exact: true }).click();
   await page.getByRole('toolbar', { name: 'Document tools', exact: true }).getByRole('button', { name: 'Sign', exact: true }).click();
   await page.locator('.view-controls').getByRole('button', { name: 'Fit page', exact: true }).click();
   const panel = page.getByRole('region', { name: 'Handwritten signature', exact: true });
@@ -164,7 +164,7 @@ test('draw a signature once, move and resize its preview, cancel safely, then re
   await expect(page.locator('.save-state')).toHaveText('Unsaved changes');
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeEnabled();
   await tabs.getByRole('button', { name: 'Home', exact: true }).click();
-  await tabs.getByRole('button', { name: 'Insert', exact: true }).click();
+  await tabs.getByRole('button', { name: 'Fill & sign', exact: true }).click();
   await page.getByRole('toolbar', { name: 'Document tools', exact: true }).getByRole('button', { name: 'Sign', exact: true }).click();
   await expect(drawing.locator('polyline')).toHaveCount(1);
   await panel.getByRole('button', { name: 'Place signature', exact: true }).click();
@@ -172,13 +172,14 @@ test('draw a signature once, move and resize its preview, cancel safely, then re
   await page.screenshot({ path: 'tmp/browser/finishing-signature.png' });
   await preview.getByRole('button', { name: 'Cancel', exact: true }).click();
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const bytes = await readFile((await (await download).path())!);
   const chooser = page.waitForEvent('filechooser');
   await page.keyboard.press('Control+o');
   await (await chooser).setFiles({ name: 'signed.pdf', mimeType: 'application/pdf', buffer: bytes });
-  await expect(page.locator('.document-title strong')).toHaveText('signed.pdf');
-  await page.getByRole('navigation', { name: 'Document navigation' }).getByRole('button', { name: 'Comment', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('tab', { name: 'signed.pdf', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await tabs.getByRole('button', { name: 'Comment', exact: true }).click();
+  await page.getByRole('toolbar', { name: 'Document tools' }).getByRole('button', { name: 'Comment', exact: true }).click();
   await expect(page.getByRole('list', { name: 'Document annotations', exact: true })
     .getByRole('button', { name: 'Go to Freehand on page 1', exact: true })).toHaveCount(1);
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
@@ -260,7 +261,7 @@ test('import a source range at the chosen position, then apply and preview a pag
     await expect(panel.locator('.page-number-preview')).toContainText('PDF page 5 · 5 / 5');
     await page.screenshot({ path: 'tmp/browser/finishing-page-number-template.png' });
     await panel.getByRole('button', { name: 'Apply to selected pages', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 30_000 });
     await expect(panel.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: 'Open page 2', exact: true }).click();
     await expect(page.locator('.page-wrap[data-page-number="2"] .pdf-text-layer')).toContainText('2 / 5');

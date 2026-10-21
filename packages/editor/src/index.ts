@@ -1,6 +1,11 @@
 export { EditorShell, type EditorAiContext } from './ui/EditorShell.js';
+export type { RecentFileEntry } from './ui/StartPage.js';
 export { AiPanel } from './ui/AiPanel.js';
 export { KomoChatPanel } from './ui/KomoChatPanel.js';
+export type { AiMaterial, AiHandoff } from './ui/text-actions.js';
+export { KomoMaterials } from './ui/KomoMaterials.js';
+export * from './ui/komo-materials.js';
+export { createKomoChatStore, type KomoChatStore } from './ui/komo-chat-state.js';
 export { AiMarkdown } from './ui/AiMarkdown.js';
 export { commandLabel } from './ui/command-labels.js';
 export { useI18n, translate, setUiLocale, type UiLocale } from './ui/i18n.js';

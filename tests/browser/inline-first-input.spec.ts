@@ -23,7 +23,7 @@ async function enter(page: Page, face = 'Helvetica-Bold', zoom = '100%', index =
   const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'first-input.pdf', mimeType: 'application/pdf', buffer: sample.bytes });
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled({ timeout: 60_000 });
   await page.getByLabel('Zoom', { exact: true }).fill(zoom);
   await page.getByLabel('Zoom', { exact: true }).press('Enter');
   await page.getByRole('button', { name: 'Select', exact: true }).click();
@@ -53,7 +53,7 @@ for (const zoom of ['100%', '150%']) {
     await page.keyboard.type('X');
     await expect(input).toHaveText(text.slice(0, 5) + 'X' + text.slice(5));
     await page.keyboard.press('Escape');
-    await expect(page.locator('.save-state')).toHaveText('Saved');
+    await expect(page.locator('.save-state')).toHaveText('No changes');
   });
 }
 
@@ -71,7 +71,7 @@ for (const [index, fraction, expected] of [[24, 0.85, 25], [29, 0.15, 30]]) {
     await expect(inserted).toHaveCSS('font-weight', expected === 25 ? '700' : '400');
     await expect(inserted).toHaveCSS('font-style', expected === 25 ? 'normal' : 'italic');
     await page.keyboard.press('Escape');
-    await expect(page.locator('.save-state')).toHaveText('Saved');
+    await expect(page.locator('.save-state')).toHaveText('No changes');
   });
 }
 
@@ -100,7 +100,7 @@ for (const releaseBeforeInput of [true, false]) {
     await page.keyboard.type('Y');
     await expect(input).toHaveText('OrigiXYnal bold italic text');
     await page.keyboard.press('Escape');
-    await expect(page.locator('.save-state')).toHaveText('Saved');
+    await expect(page.locator('.save-state')).toHaveText('No changes');
   });
 }
 
@@ -173,14 +173,14 @@ for (const [face, weight, italic] of [
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Redo (Ctrl Shift Z)', exact: true }).click();
     const download = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
     const saved = await readFile((await (await download).path())!);
     expect(saved.toString('latin1')).toContain(`/${face}`);
     await page.reload();
     const chooser = page.waitForEvent('filechooser');
     await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
     await (await chooser).setFiles({ name: 'saved-face.pdf', mimeType: 'application/pdf', buffer: saved });
-    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
     await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
     await page.locator('[data-object-type="text"]').first().dblclick();
     await expect(input).toHaveText(edited);

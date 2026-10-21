@@ -1,11 +1,13 @@
 import type { CommandType, EditCommand, EditTransaction, TextStyle } from './commands.js';
+import type { EditorAiServices } from './ai-services.js';
 
 export type Rect = { x: number; y: number; width: number; height: number };
 export type Matrix = [number, number, number, number, number, number];
 export type TextRange = [number, number];
-export type DocumentSource =
+export type DocumentSource = (
   | { kind: 'bytes'; sourceId: string; name: string; bytes: ArrayBuffer }
-  | { kind: 'native-file'; sourceId: string; name: string; handle: string };
+  | { kind: 'native-file'; sourceId: string; name: string; handle: string }
+) & { identity?: string; location?: string };
 export type DocumentPermissions = { modify: boolean; copy: boolean; annotate: boolean; fillForms: boolean;
   print?: boolean; encrypted: boolean; signed: boolean };
 export type DocumentInfo = {
@@ -79,7 +81,7 @@ export type RegisterResourceRequest = { docId: string; resourceId: string; sourc
 export type ResourceInfo = { id: string; kind: 'image' | 'pdf'; width?: number; height?: number; pageCount?: number };
 export type TransactionPreviewResult = { docId: string; baseRevision: number; pageOrder: string[]; changedPageIds: string[] };
 export type SaveConfirmation = { docId: string; savedRevision: number };
-export type SaveOutcome = { status: 'written' | 'download-started' | 'cancelled'; name?: string };
+export type SaveOutcome = { status: 'written' | 'download-started' | 'cancelled'; name?: string; identity?: string; location?: string; handle?: string };
 export type FontSource = { kind: 'bytes'; bytes: ArrayBuffer } | { kind: 'native-file'; handle: string };
 export type FontFaceInfo = { index: number; family: string; style: string; format: 'ttf' | 'otf';
   weight: number; italic: boolean; fsType: number; editableEmbedding: boolean };
@@ -143,9 +145,12 @@ export type ConvertedDocument = { jobId: string; extension: string; mimeType: st
 export type HostCapabilities = { platform: 'web' | 'windows' | 'macos'; nativeFiles: boolean; ocr: boolean; systemFonts: boolean };
 export interface HostAdapter {
   readonly capabilities: HostCapabilities;
+  readonly aiServices?: EditorAiServices;
   pickDocument(): Promise<DocumentSource | null>;
+  pickDocuments?(): Promise<DocumentSource[]>;
   saveDocument(result: SaveResult, suggestedName: string, options?: { mode: 'save' | 'save-as' }): Promise<SaveOutcome | void>;
   saveExport?(result: ConvertedDocument, suggestedName: string): Promise<SaveOutcome | void>;
+  openSavedFile?(handle: string, reveal?: boolean): Promise<void>;
   convertDocument?(snapshot: SaveResult, request: ConversionRequest, onProgress: (progress: ConversionProgress) => void, signal: AbortSignal): Promise<ConvertedDocument>;
   releaseExport?(result: ConvertedDocument): Promise<void>;
   printDocument?(result: SaveResult, pageIds: string[], options?: { copies: number }): Promise<void>;

@@ -129,8 +129,12 @@ export function parseAndValidateResult(
 
   const evidenceById = new Map(request.context.evidence.map(evidence => [evidence.id, evidence.text]));
   switch (result.kind) {
-    case 'answer':
-      for (const citation of result.citations) validateCitation(evidenceById, citation);
+    case 'answer': {
+      const readableEvidence = new Map([
+        ...evidenceById,
+        ...(request.context.referenceEvidence ?? []).map(evidence => [evidence.id, evidence.text] as const),
+      ]);
+      for (const citation of result.citations) validateCitation(readableEvidence, citation);
       if (request.feature === 'document.ask' && result.citations.length === 0) {
         if (isIdentityQuestion(request.instruction)) return identityReply(request);
         return { kind: 'clarification', question: /\p{Script=Han}/u.test(request.instruction)
@@ -138,6 +142,7 @@ export function parseAndValidateResult(
           : 'I could not verify this answer against the supplied text. Select the relevant page or passage and make the question more specific; I will not present unsupported content as a document conclusion.' };
       }
       break;
+    }
     case 'textProposal': {
       const seen = new Set<string>();
       for (const replacement of result.replacements) {

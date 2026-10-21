@@ -2,6 +2,7 @@ import { useI18n } from './i18n.js';
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { SignatureDraft, SignaturePoint as Point, SignatureStroke } from './signature-placement.js';
 import './signature-placement.css';
+import './panel-refresh.css';
 export type { SignatureDraft, SignatureStroke } from './signature-placement.js';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
@@ -103,8 +104,9 @@ export function SignaturePanel({ document, disabled, draft, placing = false, onD
     setDrawing(null);
   }
 
-  return <section className="text-edit-panel document-tools-panel signature-panel" aria-label={t('Handwritten signature')}>
-    <span className="eyebrow">{t('Handwritten signature')}</span>
+  return <section className="text-edit-panel document-tools-panel signature-panel task-panel" aria-label={t('Handwritten signature')}>
+    <header className="task-panel-header"><h2>{t('Handwritten signature')}</h2></header>
+    <div className="task-panel-body">
     <p>{t('Draw once, then place your signature as many times as you need.')}</p>
     {document.permissions.signed ? <p role="alert">{t('Changing this signed PDF may invalidate its existing digital signature.')}</p> : null}
     {!document.capabilities.includes('annotation.add') ? <p role="status">{t('Signatures are not available for this document.')}</p> : null}
@@ -154,12 +156,20 @@ export function SignaturePanel({ document, disabled, draft, placing = false, onD
         onChange={event => onDraftChange({ strokes, strokeWidth: Number(event.target.value) })} />
       <output>{strokeWidth}</output>
     </label>
-    {placing ? <>
-      <p className="signature-placement-status" role="status">{t('Signature preview active. Drag it on the page, then confirm to place.')}</p>
-      <button type="button" disabled={disabled} onClick={() => onPlacementRequest(null)}>{t('Cancel placement')}</button>
-    </> : <button type="button" className="signature-primary" disabled={locked || !strokes.length || !!drawing}
-      onClick={() => { if (draft) onPlacementRequest(draft); }}>{t('Place signature')}</button>}
     <p className="signature-session-note">{t('Kept only for this editing session. Clear it when you are done.')}</p>
-    <p className="signature-session-note">{t('Handwritten ink only, not a digital certificate signature.')}</p>
+    <details><summary>{t('About handwritten signatures')}</summary>
+      <p className="signature-session-note">{t('Handwritten ink only, not a digital certificate signature.')}</p>
+    </details>
+    </div>
+    <footer className="task-panel-footer">
+      {placing ? <>
+        <p className="signature-placement-status" role="status">{t('Signature preview active. Drag it on the page, then confirm to place.')}</p>
+        <button type="button" disabled={disabled} onClick={() => onPlacementRequest(null)}>{t('Cancel placement')}</button>
+      </> : <>
+        <p role="status">{t(strokes.length ? 'Signature ready. Place it on the page to confirm.' : 'Draw your signature in the area above.')}</p>
+        <button type="button" className="signature-primary task-panel-primary" disabled={locked || !strokes.length || !!drawing}
+          onClick={() => { if (draft) onPlacementRequest(draft); }}>{t('Place signature')}</button>
+      </>}
+    </footer>
   </section>;
 }

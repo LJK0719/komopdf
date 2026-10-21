@@ -5,10 +5,11 @@ import { ArrowDownToLine, Bookmark, ChevronDown, ChevronLeft, ChevronRight, File
 import { useI18n, translate as t, type UiLocale } from './i18n.js';
 import { MIN_VIEW_ZOOM, MAX_VIEW_ZOOM, clampViewZoom, formatZoomPercent, parseZoomPercent, type ViewZoomMode } from './view-zoom.js';
 
-export type EditorTool = 'arrange' | 'edit' | 'pages' | 'comment' | 'forms' | 'sign' | 'ocr' | 'ai' | 'search' | 'export' | 'print' | 'fonts';
+export type EditorTool = 'arrange' | 'edit' | 'pages' | 'comment' | 'forms' | 'sign' | 'ocr' | 'ai' | 'search' | 'export' | 'print' | 'fonts' | 'text-ai' | 'translate-document';
 export const toolNames: Record<EditorTool, string> = {
   arrange: 'Arrange objects', edit: 'Edit', pages: 'Organize pages', comment: 'Comment', forms: 'Fill & forms', sign: 'Sign',
   ocr: 'Recognize text', ai: 'AI assistant', search: 'Find in document', export: 'Export PDF', print: 'Print', fonts: 'Fonts',
+  'text-ai': 'AI text tools', 'translate-document': 'Translate entire PDF',
 };
 
 export function LanguageSelect() {
@@ -27,33 +28,50 @@ export function IconButton({ label, children, ...props }: React.ButtonHTMLAttrib
   </Tooltip.Root>;
 }
 
-export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUndo, canRedo, saving, tool, onTool, onOpen, onClose, onSave, onSaveAs, onUndo, onRedo, extra, showAi = false, documentActionsDisabled = false }: {
+export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUndo, canRedo, saving, tool, onTool, onOpen, onClose, onSave, onSaveAs, onUndo, onRedo, extra, showAi = false, documentActionsDisabled = false, platform = 'web', hasSaveTarget = false, downloaded = false, onOpenFolder, onStart }: {
   showAi?: boolean; documentActionsDisabled?: boolean; productName?: string; name: string | undefined; dirty: boolean; busy: boolean; canUndo: boolean; canRedo: boolean; saving: boolean;
+  platform?: 'web' | 'windows' | 'macos'; hasSaveTarget?: boolean; downloaded?: boolean; onOpenFolder?(): void; onStart?(): void;
   tool: EditorTool | null; onTool(tool: EditorTool): void; onOpen(): void; onClose(): void; onSave(): void; onSaveAs?(): void; onUndo(): void; onRedo(): void; extra?: ReactNode;
 }) {
   const { t } = useI18n();
+  const web = platform === 'web';
+  const modifier = platform === 'macos' || (web && typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)) ? '⌘' : 'Ctrl';
+  const saveLabel = web ? 'Download PDF' : hasSaveTarget ? 'Save' : 'Save a copy…';
+  const blocked = !name || busy || documentActionsDisabled;
   return <header className="editor-topbar">
-    <div className="topbar-start"><span className="brand-lockup"><span className="brand-mark" aria-hidden="true">k</span><strong>{productName}</strong></span>
+    <div className="topbar-start"><button className="brand-lockup" type="button" onClick={onStart} disabled={busy} aria-label={t('Start page')}>
+      <span className="brand-mark" aria-hidden="true">k</span><strong>{productName}</strong></button>
       <Menu.Root><Menu.Trigger className="file-menu-trigger">{t('File')}<ChevronDown size={14} /></Menu.Trigger>
         <Menu.Portal><Menu.Positioner sideOffset={8}><Menu.Popup className="ui-menu">
-          <Menu.Item className="ui-menu-item" onClick={onOpen} disabled={busy}><FolderOpen size={16} />{t('Open…')}<kbd>Ctrl O</kbd></Menu.Item>
-          <Menu.Item className="ui-menu-item" onClick={onSave} disabled={!name || busy || documentActionsDisabled}><Save size={16} />{t('Save')}<kbd>Ctrl S</kbd></Menu.Item>
-          {onSaveAs && <Menu.Item className="ui-menu-item" onClick={onSaveAs} disabled={!name || busy || documentActionsDisabled}><Save size={16} />{t('Save as…')}<kbd>Ctrl Shift S</kbd></Menu.Item>}
-          <Menu.Item className="ui-menu-item" onClick={() => onTool('export')} disabled={!name || busy || documentActionsDisabled}><ArrowDownToLine size={16} />{t('Export…')}</Menu.Item>
-          <Menu.Item className="ui-menu-item" onClick={() => onTool('print')} disabled={!name || busy || documentActionsDisabled}><Printer size={16} />{t('Print…')}<kbd>Ctrl P</kbd></Menu.Item>
+          <Menu.Item className="ui-menu-item" onClick={onOpen} disabled={busy}><FolderOpen size={16} />{t('Open PDF…')}<kbd>{modifier} O</kbd></Menu.Item>
+          {onOpenFolder && <Menu.Item className="ui-menu-item" onClick={onOpenFolder} disabled={busy}><FolderOpen size={16} />{t('Open folder…')}<kbd>{modifier} Shift O</kbd></Menu.Item>}
+          {onStart && <Menu.Item className="ui-menu-item" onClick={onStart} disabled={busy}><FilePlus2 size={16} />{t('Recent files & recovery')}</Menu.Item>}
           <Menu.Separator className="ui-separator" />
-          <Menu.Item className="ui-menu-item" onClick={onClose} disabled={!name || busy || documentActionsDisabled}><X size={16} />{t('Close document')}</Menu.Item>
+          <Menu.Item className="ui-menu-item" onClick={onSave} disabled={blocked}>{web ? <ArrowDownToLine size={16} /> : <Save size={16} />}{t(saveLabel)}<kbd>{modifier} S</kbd></Menu.Item>
+          {onSaveAs && <Menu.Item className="ui-menu-item" onClick={onSaveAs} disabled={blocked}><Save size={16} />{t('Save as…')}<kbd>{modifier} Shift S</kbd></Menu.Item>}
+          <Menu.Item className="ui-menu-item" onClick={() => onTool('export')} disabled={blocked}><ArrowDownToLine size={16} />{t('Export…')}</Menu.Item>
+          <Menu.Item className="ui-menu-item" onClick={() => onTool('translate-document')} disabled={blocked}><Languages size={16} />{t('Translate entire PDF…')}</Menu.Item>
+          <Menu.Item className="ui-menu-item" onClick={() => onTool('print')} disabled={blocked}><Printer size={16} />{t('Print…')}<kbd>{modifier} P</kbd></Menu.Item>
+          <Menu.Separator className="ui-separator" />
+          <Menu.Item className="ui-menu-item" onClick={onClose} disabled={!name || busy}><X size={16} />{t(documentActionsDisabled ? 'Close preview' : 'Close document')}{!web && <kbd>{modifier} W</kbd>}</Menu.Item>
+          <Menu.Separator className="ui-separator" /><div className="application-preferences"><LanguageSelect /></div>
         </Menu.Popup></Menu.Positioner></Menu.Portal>
       </Menu.Root>
-      <span className="toolbar-divider" />
-      <IconButton label={t('Undo (Ctrl Z)')} disabled={!canUndo || busy || documentActionsDisabled} onClick={onUndo}><Undo2 size={18} /></IconButton>
-      <IconButton label={t('Redo (Ctrl Shift Z)')} disabled={!canRedo || busy || documentActionsDisabled} onClick={onRedo}><Redo2 size={18} /></IconButton>
+      <button className="button open-document-button" type="button" aria-label={t('Open')} title={t('Open PDF…')} onClick={onOpen} disabled={busy}><FolderOpen size={17} /><span>{t('Open')}</span></button>
+      {name && <><span className="toolbar-divider" />
+        <IconButton label={t('Undo ({shortcut})', { shortcut: modifier + ' Z' })} disabled={!canUndo || busy || documentActionsDisabled} onClick={onUndo}><Undo2 size={18} /></IconButton>
+        <IconButton label={t('Redo ({shortcut})', { shortcut: modifier + ' Shift Z' })} disabled={!canRedo || busy || documentActionsDisabled} onClick={onRedo}><Redo2 size={18} /></IconButton>
+      </>}
     </div>
-    <div className="document-title" title={name}><strong>{name ?? t('Your PDF workspace')}</strong>{name && <span className={dirty ? 'save-state unsaved' : 'save-state'}>{t(dirty ? "Unsaved changes" : "Saved")}</span>}</div>
-    <div className="topbar-actions"><LanguageSelect />{extra}
-      <IconButton label={t('Find (Ctrl F)')} disabled={!name || documentActionsDisabled} onClick={() => onTool('search')}><Search size={18} /></IconButton>
-      <button className="button button-primary" type="button" onClick={onSave} disabled={!name || busy || documentActionsDisabled}><Save size={16} />{t(saving ? "Saving…" : "Save")}</button>
-      {showAi && <button className={`button assistant-button ${tool === 'ai' ? 'is-active' : ''}`} aria-label={t('Ask komo')} type="button" onClick={() => onTool('ai')}><Sparkles size={16} /><span>{t('Ask komo')}</span></button>}
+    <div className="document-status" title={name}>{name && !documentActionsDisabled && <span className={dirty && !downloaded ? 'save-state unsaved' : 'save-state'}>
+      {t(saving ? 'Saving…' : downloaded ? 'Download started' : dirty ? 'Unsaved changes' : hasSaveTarget ? 'Saved' : 'No changes')}
+    </span>}</div>
+    <div className="topbar-actions">
+      {name && <button className="button button-primary save-document-button" type="button" onClick={onSave} disabled={blocked} aria-label={t(saving ? 'Saving…' : saveLabel)} title={t(saveLabel)}>
+        {web ? <ArrowDownToLine size={16} /> : <Save size={16} />}<span>{t(saving ? 'Saving…' : saveLabel)}</span>
+      </button>}
+      {showAi && <button className={`button assistant-button ${tool === 'ai' ? 'is-active' : ''}`} aria-label={t('Ask komo')} aria-pressed={tool === 'ai'} type="button" onClick={() => onTool('ai')}><Sparkles size={16} /><span translate="no">komo</span></button>}
+      {extra}
     </div>
   </header>;
 }

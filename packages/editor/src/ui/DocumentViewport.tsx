@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
-import type { EngineAdapter, PageModel } from '@pdf-editor/contracts';
+import type { EngineAdapter, PageModel, TextAction } from '@pdf-editor/contracts';
+import type { TextActionSelection } from './text-actions.js';
 import type { LoadedDocument } from './EditorShell.js';
 import { drawRender, mountVisiblePageTiles, renderPage } from './draw-render.js';
 import { useI18n } from './i18n.js';
@@ -20,6 +21,8 @@ type Props = {
   onInsertText(document: LoadedDocument, point: { x: number; y: number }): void;
   onAnnotate(document: LoadedDocument, targets: TextSelectionTarget[], action: ReadingAction): Promise<void>;
   onError(message: string): void;
+  onTextAction?: ((selection: TextActionSelection, action: TextAction | 'ask') => void) | undefined;
+  aiSelection?: TextActionSelection | null;
   onViewSize?(size: ViewportSize): void;
   drawing?: boolean;
   renderOverlay?(page: LoadedDocument, host: HTMLDivElement | null): ReactNode;
@@ -112,7 +115,7 @@ export function DocumentViewport(props: Props) {
   </div>;
 }
 
-function PageSurface({ engine, document, zoom, root, pageId, pageNumber, children, pointer, drawing, renderOverlay, onActive, onHost, locked, onReady, onRelease, onEditText, onInsertText, onAnnotate, onError }: Props & {
+function PageSurface({ engine, document, zoom, root, pageId, pageNumber, children, pointer, drawing, renderOverlay, onActive, onHost, locked, onReady, onRelease, onEditText, onInsertText, onAnnotate, onError, onTextAction, aiSelection }: Props & {
   pageId: string; pageNumber: number; onReady(page: LoadedDocument): void; onRelease(): void;
 }) {
   const { t } = useI18n();
@@ -185,7 +188,8 @@ function PageSurface({ engine, document, zoom, root, pageId, pageNumber, childre
       {shown.render.pixels.byteLength ? <canvas ref={canvas} className="pdf-canvas" aria-label={t('Page {page}', { page: pageNumber })} />
         : <div ref={tiles} className="pdf-tile-layer" role="img" aria-label={t('Page {page}', { page: pageNumber })} />}
       {!drawing && pointer === 'select' && document.info.permissions.copy && <PdfTextLayer document={shown} zoom={zoom} disabled={locked}
-        onEdit={onEditText} onInsert={onInsertText} onAnnotate={onAnnotate} onError={onError} />}
+        onEdit={onEditText} onInsert={onInsertText} onAnnotate={onAnnotate} onError={onError}
+        {...(onTextAction ? { onTextAction } : {})} aiSelection={aiSelection ?? null} />}
       {active && <ObjectSelectionStartContext.Provider value={selectionStart}>{children(shown, host)}</ObjectSelectionStartContext.Provider>}
       {renderOverlay?.(shown, host)}
     </> : <span className="page-placeholder">{error || t('Page {page}', { page: pageNumber })}</span>}
