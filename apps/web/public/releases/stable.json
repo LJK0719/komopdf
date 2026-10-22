@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "product": "komopdf",
   "channel": "stable",
-  "version": "0.1.12",
-  "publishedAt": "2026-10-21T16:46:25Z",
-  "releaseUrl": "https://github.com/LJK0719/komopdf-releases/releases/tag/v0.1.12",
+  "version": "0.1.13",
+  "publishedAt": "2026-10-22T07:28:53Z",
+  "releaseUrl": "https://github.com/LJK0719/komopdf-releases/releases/tag/v0.1.13",
   "artifacts": [
     {
       "target": "windows-x64",
-      "name": "komopdf-0.1.12-windows-x64-setup.exe",
-      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.12/komopdf-0.1.12-windows-x64-setup.exe",
-      "sha256": "91869703201b65ae5a42774a6a6591a04c719e02f5c6c159f3205c56c4383ca4",
-      "bytes": 590445485,
+      "name": "komopdf-0.1.13-windows-x64-setup.exe",
+      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.13/komopdf-0.1.13-windows-x64-setup.exe",
+      "sha256": "ca44f5f2e56faeebfaeebdab339870ff659c426e7c74e4ccccc600b85b8c8569",
+      "bytes": 590433253,
       "minimumOs": "Windows 10 22H2 or later, 64-bit"
     }
   ]
