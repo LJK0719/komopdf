@@ -7,7 +7,7 @@ button { color: inherit; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .45; }
 [hidden] { display: none !important; }
 body:has(.editor-shell) { overflow: hidden; }
-.editor-shell, .desktop-app, .ui-menu, .ui-tooltip, .app-dialog-layer, .paragraph-settings {
+.editor-shell, .desktop-app, .ui-menu, .ui-tooltip, .app-dialog-layer, .paragraph-settings, .ai-floating-window {
   --ink: var(--komo-ink); --paper: var(--komo-surface); --panel: var(--komo-surface);
   --line: var(--komo-line); --acid: var(--komo-accent-soft); --selected: var(--komo-accent-soft);
   --signal: var(--komo-accent); --muted: var(--komo-muted); --dark: var(--komo-accent-strong);

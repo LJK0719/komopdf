@@ -49,6 +49,7 @@ import { PageOrganizer, PageContextMenu, usePageTools, type PageAction } from '.
 import { captureReadingSelection, type TextSelectionTarget } from './PdfTextLayer.js';
 import { textActionSelection, textActionTarget, selectionMaterial, type TextActionSelection, type AiMaterial, type AiHandoff } from './text-actions.js';
 import { TextActionPanel } from './TextActionPanel.js';
+import { AiFloatingWindow } from './AiFloatingWindow.js';
 import { TextActionMenuItems } from './TextActionMenu.js';
 import { KolmoTranslationPanel } from './KolmoTranslationPanel.js';
 import './ai-tools.css';
@@ -160,6 +161,9 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
   const openFailure = useRef<string | null>(null);
   const [activeTool, setActiveTool] = useState<EditorTool | null>(null);
   const [textSelections, setTextSelections] = useState<Record<string, TextActionSelection>>({});
+  const [textWindowOpen, setTextWindowOpen] = useState(false);
+  const [documentTranslationOpen, setDocumentTranslationOpen] = useState(false);
+  const [textHelp, setTextHelp] = useState<'selection' | 'scan' | null>(null);
   const [aiHandoff, setAiHandoff] = useState<AiHandoff | null>(null);
   const [aiContextDocumentId, setAiContextDocumentId] = useState<string | null>(null);
   const capturedTextSelection = useRef<TextActionSelection | null>(null);
@@ -924,27 +928,33 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       const target = textActionTarget(object, loaded.info.pageOrder.indexOf(loaded.page.id) + 1);
       return target ? [target] : [];
     });
-    capturedTextSelection.current = reading ?? (targets.length ? textActionSelection(loaded.info, loaded.name, targets) : null);
+    capturedTextSelection.current = reading ?? (targets.length ? textActionSelection(loaded.info, loaded.name, targets, 'translate', [loaded.page]) : null);
     return capturedTextSelection.current;
   };
   const discussMaterial = (material: AiMaterial) => {
     if (!hasAi) return;
+    setTextWindowOpen(false);
     setAiContextDocumentId(sessions.current.current.documents.has(material.documentId) ? material.documentId : documentRef.current?.info.id ?? null);
     setAiHandoff({ id: crypto.randomUUID(), materials: [material] }); setActiveTool('ai');
   };
   const openTextAction = (selection: TextActionSelection, action: TextAction | 'ask') => {
-    if (!host.aiServices || operationBusy) return;
+    if (!host.aiServices) return;
+    if (operationBusy) { setNotice('Finish the current editor operation before using AI tools.'); return; }
+    if (!selection.targets.length) {
+      const page = documentRef.current?.page;
+      setTextHelp(page?.objects.some(object => object.textBlock?.runs.some(run => run.text.trim())) ? 'selection' : 'scan'); return;
+    }
     if (action === 'ask') { discussMaterial(selectionMaterial(selection)); return; }
     const next = { ...selection, action, id: crypto.randomUUID() };
     setTextSelections(previous => ({ ...previous, [selection.documentId]: next }));
-    setActiveTool('text-ai');
+    setDocumentTranslationOpen(false); setTextWindowOpen(true);
   };
   const requestTextAction = (action: TextAction | 'ask') => {
     const saved = capturedTextSelection.current;
     const current = documentRef.current;
     const selection = saved && current && saved.documentId === current.info.id && saved.revision === current.info.revision ? saved : captureTextSelection();
     if (selection) openTextAction(selection, action);
-    else { setActiveTool('text-ai'); setNotice('Select text to use an AI tool.'); }
+    else if (current) setTextHelp(current.page.objects.some(object => object.textBlock?.runs.some(run => run.text.trim())) ? 'selection' : 'scan');
   };
   const prepareTranslation = async (): Promise<KolmoDocumentInput | null> => {
     if (operationBusy || !await finishDrafts()) return null;
@@ -992,7 +1002,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
     if (tool === 'edit') { chooseTab('edit'); return; }
     if (tool === 'text-ai') { captureTextSelection(); requestTextAction('translate'); return; }
     if (tool === 'ai') { if (hasAi) { setAiContextDocumentId(documentRef.current?.info.id ?? null); setActiveTool('ai'); } return; }
-    if (tool === 'translate-document') { setActiveTool(tool); return; }
+    if (tool === 'translate-document') { setTextWindowOpen(false); setDocumentTranslationOpen(true); return; }
     if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) setActiveTool(tool); }); return; }
     setActiveTool(tool);
   };
@@ -1336,6 +1346,25 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
       {passwordPrompt && <PasswordDialog prompt={passwordPrompt} />}
       <ImportPagesDialog {...pageTools.importDialogProps} />
       <AppDialog open={startOpen} onOpenChange={setStartOpen} title={t('Open documents')}>{startPage}</AppDialog>
+      <AppDialog open={textHelp !== null} onOpenChange={open => { if (!open) setTextHelp(null); }} title={t(textHelp === 'scan' ? 'Translate scanned PDF' : 'Select text')} className="ai-owned-focus">
+        <p>{t(textHelp === 'scan' ? 'This page has no selectable text. Use KOLMOPDF to translate the scanned PDF while preserving its layout.' : 'Select text on the page, then choose an AI tool from the right-click menu or toolbar.')}</p>
+        {textHelp === 'scan' && <div className="kolmo-links"><button type="button" className="button button-primary" onClick={() => { setTextHelp(null); chooseTool('translate-document'); }}>{t('Translate entire PDF…')}</button>
+          <a className="button" href="https://www.kolmopdf.com" target="_blank" rel="noopener noreferrer">{t('Use KOLMOPDF website')}</a></div>}
+      </AppDialog>
+      {host.aiServices && <AiFloatingWindow title={t('Translate entire PDF')} hidden={!documentTranslationOpen} onClose={() => setDocumentTranslationOpen(false)}>
+        <KolmoTranslationPanel active={documentTranslationOpen} document={document?.info ?? null} name={document?.name ?? null}
+          services={host.aiServices} host={host} disabled={operationBusy} prepareDocument={prepareTranslation} onOpen={openTranslation} onResultsReady={onResultsReady} />
+      </AiFloatingWindow>}
+      {host.aiServices && Object.values(textSelections).map(selection => {
+        const session = sessions.state.documents.get(selection.documentId);
+        return session && <TextActionPanel key={selection.id} selection={selection} document={session.loaded.info} engine={engine} services={host.aiServices!} fonts={fonts}
+          active={textWindowOpen && document?.info.id === selection.documentId && !previewActive} onClose={() => setTextWindowOpen(false)}
+          disabled={operationBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} onBeforeWrite={finishDrafts} onDiscuss={discussMaterial}
+          getDocument={() => sessions.current.current.documents.get(selection.documentId)?.loaded.info ?? session.loaded.info}
+          onAdjustSource={target => {
+            void (async () => { if (!await finishDrafts()) return; await switchPage(target.pageId); setTab('edit'); setPointer('edit'); setSelectedIds([target.objectId]); setTextWindowOpen(false); })();
+          }} />;
+      })}
       <EditorTopbar platform={host.capabilities.platform} hasSaveTarget={sessions.active?.hasSaveTarget ?? false}
         downloaded={sessions.active?.downloadedRevision === document?.info.revision && document !== null && !isDraftDirty}
         onStart={showStart} {...(onOpenFolder ? { onOpenFolder } : {})} productName={productName} name={workspacePreview?.name ?? document?.name} dirty={!previewActive && Boolean(document && (isDraftDirty || document.info.revision !== document.info.savedRevision))}
@@ -1446,7 +1475,7 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                 onDraftChange={registerNoteDraft}
                 onCommitted={handleCommitted} onCancel={() => setAnnotationDrawing(null)} />}
               onEditText={editTextAt} onInsertText={insertTextAt} onAnnotate={annotateSelection} onError={setError}
-              onTextAction={host.aiServices ? openTextAction : undefined} aiSelection={activeTool === 'text-ai' ? activeTextSelection : null}>
+              onTextAction={host.aiServices ? openTextAction : undefined} aiSelection={textWindowOpen ? activeTextSelection : null}>
               {(shown) => <>
                 {searchSelection?.pageId === shown.page.id && (() => {
                   const match = shown.page.objects.find(item => item.textBlock?.id === searchSelection.blockId);
@@ -1460,11 +1489,17 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                   draft={pendingSignature} engine={engine} disabled={isBusy} onBusyChange={setEditPending}
                   onCommitted={handleCommitted} onCancel={() => setPendingSignature(null)} />}
                 {pointer === 'edit' && !annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && <ContextMenu.Root>
-                  <ContextMenu.Trigger className="page-object-tools" onContextMenu={event => {
+                  <ContextMenu.Trigger className="page-object-tools" onContextMenuCapture={event => {
                     const rect = event.currentTarget.getBoundingClientRect();
                     objectContextPoint.current = { x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom };
                     const point = objectContextPoint.current;
                     const id = pickObject(selectionScope(shown.page, selectedIds), point.x, point.y, 3 / zoom)?.id;
+                    const ids = id && !selectedIds.includes(id) ? [id] : selectedIds;
+                    const targets = shown.page.objects.filter(object => ids.includes(object.id)).flatMap(object => {
+                      const target = textActionTarget(object, shown.info.pageOrder.indexOf(shown.page.id) + 1); return target ? [target] : [];
+                    });
+                    capturedTextSelection.current = targets.length ? { ...textActionSelection(shown.info, shown.name, targets, 'translate', [shown.page]),
+                      anchor: { left: event.clientX, right: event.clientX, top: event.clientY, bottom: event.clientY } } : null;
                     if (id && !selectedIds.includes(id)) selectObject(id, false);
                     if (!id && !(event.target as HTMLElement).closest('.selection-bounds')) setSelectedIds([]);
                   }}>
@@ -1478,17 +1513,15 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
                       onMove={moveObjects} onTransform={transformObjects}
                       onResizeText={shown.info.capabilities.includes('text.resize') ? resizeTextFrames : undefined} />
                   </ContextMenu.Trigger>
-                  <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu">
+                  <ContextMenu.Portal><ContextMenu.Positioner className="ui-menu-positioner"><ContextMenu.Popup className="ui-menu ai-owned-focus">
                     {selectedText && <>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => editTextAt(shown, selectedIds[0]!)}>{t('Edit text')}<kbd>Enter</kbd></ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={!shown.info.permissions.copy} onClick={() => void navigator.clipboard.writeText(detectParagraph(shown.page, selectedIds[0]!)?.text ?? selectedText.runs.map(run => run.text).join('')).catch(() => setError(t('Clipboard access was denied. Use Ctrl/Cmd+C to copy selected text.')))}>{t('Copy text')}</ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.annotate} onClick={() => void annotateSelection(shown, selectedObjects.map(object => ({ objectId: object.id, blockId: object.textBlock!.id, range: [0, object.textBlock!.runs.reduce((length, run) => length + run.text.length, 0)], text: '', rects: [object.bounds] })), 'highlight')}>{t('Highlight text')}</ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void executeCommands([{ type: 'text.style', pageId: shown.page.id, blockIds: selectedObjects.map(object => object.textBlock!.id), style: { underline: true } }])}>{t('Underline text')}</ContextMenu.Item>
                     </>}
-                    {host.aiServices && selectedObjects.some(object => object.textBlock) && <TextActionMenuItems disabled={operationBusy || !shown.info.permissions.copy} onAction={action => {
-                      const targets = selectedObjects.flatMap(object => { const target = textActionTarget(object, shown.info.pageOrder.indexOf(shown.page.id) + 1); return target ? [target] : []; });
-                      if (targets.length) openTextAction(textActionSelection(shown.info, shown.name, targets), action);
-                    }} />}
+                    {host.aiServices && selectedObjects.some(object => object.textBlock) && <TextActionMenuItems disabled={operationBusy || !shown.info.permissions.copy} onAction={requestTextAction} />}
+                    {host.aiServices && !selectedObjects.some(object => object.textBlock) && <ContextMenu.Item className="ui-menu-item" disabled={operationBusy} onClick={() => requestTextAction('translate')}>{t('AI translate')}</ContextMenu.Item>}
                     {selectedObjects.length === 1 && selectedObjects[0]?.type === 'image' && <>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('replaceImage')}>{t('Replace image')}</ContextMenu.Item>
                       <ContextMenu.Item className="ui-menu-item" disabled={isBusy || !shown.info.permissions.modify} onClick={() => void runRibbonAction('cropImage')}>{t('Crop image')}</ContextMenu.Item>
@@ -1526,37 +1559,20 @@ export function EditorShell({ engine, host, productName = 'komopdf', aiPanel, re
           <div className="workspace-preview-content">{workspacePreview.content}</div>
         </section>}
 
-        <aside className={'inspector-panel' + (activeTool === 'text-ai' || activeTool === 'ai' || activeTool === 'translate-document' ? ' ai-owned-focus' : '')} hidden={!panelVisible} aria-label={t(activeTool ? toolNames[activeTool] : "Tools")}>
+        <aside className={'inspector-panel' + (activeTool === 'ai' ? ' ai-owned-focus' : '')} hidden={!panelVisible} aria-label={t(activeTool ? toolNames[activeTool] : "Tools")}>
           {aiPanelActive && <div ref={separatorRef} className="ai-panel-separator" role="separator" tabIndex={0}
             aria-orientation="vertical" aria-label={t('Resize AI panel')}
             aria-valuemin={AI_PANEL_MIN_WIDTH} aria-valuemax={AI_PANEL_MAX_WIDTH} aria-valuenow={AI_PANEL_DEFAULT_WIDTH}
             title={t('Drag to resize. Use Left/Right arrows; Home or double-click to reset.')} />}
-          <div className={'panel-heading' + (aiPanelActive || activeTool === 'text-ai' || activeTool === 'translate-document' ? ' panel-heading-ai' : '')}><strong>{t(activeTool ? toolNames[activeTool] : "Tools")}</strong>
+          <div className={'panel-heading' + (aiPanelActive ? ' panel-heading-ai' : '')}><strong>{t(activeTool ? toolNames[activeTool] : "Tools")}</strong>
             <IconButton label={t('Close panel')} disabled={operationBusy} onClick={() => {
-              if (activeTool === 'text-ai' || activeTool === 'translate-document' || activeTool === 'ai') { setActiveTool(null); return; }
+              if (activeTool === 'ai') { setActiveTool(null); return; }
               void finishDrafts().then(ok => { if (ok) setActiveTool(null); });
             }}><PanelRightClose size={17} /></IconButton>
           </div>
           <div className="panel-content" data-tool={activeTool}>
-          {!document && activeTool !== 'ai' && activeTool !== 'translate-document' && <div className="panel-empty"><FilePlus2 size={28} /><p>{t('Open a PDF to get started.')}</p></div>}
-          {host.aiServices && Object.values(textSelections).map(selection => {
-            const session = sessions.state.documents.get(selection.documentId);
-            return session && <div key={selection.id} hidden={activeTool !== 'text-ai' || document?.info.id !== selection.documentId} onKeyDown={event => {
-              if (event.key === 'Escape' && !event.nativeEvent.isComposing && !(event.target instanceof Element && event.target.closest('[role="dialog"]'))) { event.stopPropagation(); setActiveTool(null); }
-            }}><TextActionPanel selection={selection} document={session.loaded.info} engine={engine} services={host.aiServices!} fonts={fonts}
-              disabled={operationBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} onBeforeWrite={finishDrafts} onDiscuss={discussMaterial}
-              getDocument={() => sessions.current.current.documents.get(selection.documentId)?.loaded.info ?? session.loaded.info}
-              onAdjustSource={target => {
-                void (async () => { if (!await finishDrafts()) return; await switchPage(target.pageId); setTab('edit'); setPointer('edit'); setSelectedIds([target.objectId]); setActiveTool(null); })();
-              }} /></div>;
-          })}
-          {activeTool === 'text-ai' && !activeTextSelection && <div className="panel-empty"><Languages size={28} /><p>{t('Select text on the page, then choose an AI tool from the right-click menu or toolbar.')}</p>
-            <p>{t('For scanned pages, recognize text first or enable image translation in KOLMOPDF.')}</p>
-            {host.capabilities.ocr && <button type="button" className="button" onClick={() => chooseTool('ocr')}>{t('Recognize text')}</button>}
-            <button type="button" className="button" onClick={() => chooseTool('translate-document')}>{t('Translate entire PDF…')}</button>
-          </div>}
-          {host.aiServices && <div hidden={activeTool !== 'translate-document'}><KolmoTranslationPanel active={activeTool === 'translate-document'} document={document?.info ?? null}
-            name={document?.name ?? null} services={host.aiServices} host={host} disabled={operationBusy} prepareDocument={prepareTranslation} onOpen={openTranslation} onResultsReady={onResultsReady} /></div>}
+          {!document && activeTool !== 'ai' && <div className="panel-empty"><FilePlus2 size={28} /><p>{t('Open a PDF to get started.')}</p></div>}
+
           <div hidden={activeTool !== 'search'}>
           <PdfSearchPanel document={document?.info ?? null} engine={engine} disabled={isBusy} onLocate={locateTextBlock} onCommitted={handleCommitted} onBusyChange={setEditPending} />
           </div>

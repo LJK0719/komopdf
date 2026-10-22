@@ -283,7 +283,10 @@ export function DirectTextEditor(props: Props) {
       document.pageOrder.indexOf(page.id) + 1, selected, text.slice(...selected));
     if (!target) return null;
     const valid = () => alive.current && draftCurrent.current.key === key && draftCurrent.current.text === text && draftCurrent.current.editing;
-    return { ...textActionSelection(document, props.name ?? 'PDF', [target]), draft: {
+    const snapshot = textActionSelection(document, props.name ?? 'PDF', [target]);
+    const rect = (input.current ?? host?.querySelector('.direct-text-editor'))?.getBoundingClientRect();
+    if (!snapshot.anchor && rect) snapshot.anchor = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    return { ...snapshot, draft: {
       current: valid,
       replace: value => {
         if (!valid() || draftCurrent.current.disabled || !canEdit || composing.current || richInput.current?.isComposing()) return false;
@@ -415,7 +418,7 @@ export function DirectTextEditor(props: Props) {
       {error && <span className="property-error" role="alert">{t(error)}</span>}
     </div>
     {editing && host && canEdit && createPortal(<ContextMenu.Root><ContextMenu.Trigger render={<div />} className="direct-text-editor" data-pristine={!dirty} role="group" aria-label={t('Edit text on page')}
-      onContextMenu={() => { menuRange.current = [...range.current]; menuSelection.current = captureSelection(); setHasMenuSelection(Boolean(menuSelection.current)); }}
+      onContextMenuCapture={() => { menuRange.current = [...range.current]; menuSelection.current = captureSelection(); setHasMenuSelection(Boolean(menuSelection.current)); }}
       onKeyDownCapture={event => {
         if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
           menuRange.current = [...range.current]; menuSelection.current = captureSelection(); setHasMenuSelection(Boolean(menuSelection.current));
@@ -466,7 +469,7 @@ export function DirectTextEditor(props: Props) {
         }} />}
       {error && <span className="direct-text-error" role="alert">{t(error)}</span>}
     </ContextMenu.Trigger>
-    <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu ai-owned-focus">
+    <ContextMenu.Portal><ContextMenu.Positioner className="ui-menu-positioner"><ContextMenu.Popup className="ui-menu ai-owned-focus">
       <ContextMenu.Item className="ui-menu-item" disabled={disabled} onClick={() => { if (block.isParagraph) richInput.current?.undo(); else { input.current?.focus(); window.document.execCommand('undo'); } }}>{t('Undo')}</ContextMenu.Item>
       <ContextMenu.Item className="ui-menu-item" disabled={disabled} onClick={() => { if (block.isParagraph) richInput.current?.redo(); else { input.current?.focus(); window.document.execCommand('redo'); } }}>{t('Redo')}</ContextMenu.Item>
       <ContextMenu.Separator className="ui-menu-separator" />

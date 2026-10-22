@@ -1,23 +1,45 @@
 import { expect, type Page } from '@playwright/test';
 
-export function aiPdf(lines = ['Hello from this PDF.']): Buffer {
-  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', `<< /Type /Pages /Kids [${lines.map((_, i) => `${4 + i * 2} 0 R`).join(' ')}] /Count ${lines.length} >>`,
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
-  for (const [index, text] of lines.entries()) {
-    const content = `BT /F1 16 Tf 30 160 Td (${text}) Tj ET`;
-    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 220] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + index * 2} 0 R >>`,
-      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
-  }
+function pdfObjects(objects: string[]): Buffer {
   let pdf = '%PDF-1.7\n';
   const offsets = objects.map((object, index) => { const offset = Buffer.byteLength(pdf); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; return offset; });
   const xref = Buffer.byteLength(pdf);
   return Buffer.from(pdf + `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
 }
-export async function openAiPdf(page: Page, name = 'ai-test.pdf', lines?: string[]) {
+export function aiPdf(lines = ['Hello from this PDF.'], fragmented = false): Buffer {
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', `<< /Type /Pages /Kids [${lines.map((_, i) => `${4 + i * 2} 0 R`).join(' ')}] /Count ${lines.length} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  for (const [index, text] of lines.entries()) {
+    let x = 30;
+    const widths: Record<string, number> = { H: 722, e: 556, l: 222, o: 556, ' ': 278, w: 722, r: 333, d: 556, '.': 278 };
+    const content = fragmented ? [...text].map(character => {
+      const part = `BT /F1 16 Tf ${x.toFixed(3)} 160 Td (${character}) Tj ET`;
+      x += (widths[character] ?? 556) * 16 / 1000; return part;
+    }).join('\n') : `BT /F1 16 Tf 30 160 Td (${text}) Tj ET`;
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 220] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + index * 2} 0 R >>`,
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+  }
+  return pdfObjects(objects);
+}
+export function textareaAiPdf(): Buffer {
+  const content = 'BT /F1 16 Tf 0.985 0.174 -0.174 0.985 30 100 Tm (Hello from this PDF.) Tj ET';
+  return pdfObjects(['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 220] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`]);
+}
+export function imageAiPdf(): Buffer {
+  const content = 'q 300 0 0 180 30 20 cm /Im0 Do Q';
+  return pdfObjects(['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 220] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    '<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 3 >>\nstream\nRGB\nendstream']);
+}
+export async function openAiPdf(page: Page, name = 'ai-test.pdf', lines?: string[], fragmented = false) {
   const chooser = page.waitForEvent('filechooser');
   const add = page.getByRole('button', { name: 'Open another PDF', exact: true });
   await (await add.count() ? add : page.getByRole('button', { name: 'Open PDF', exact: true })).click();
-  await (await chooser).setFiles({ name, mimeType: 'application/pdf', buffer: aiPdf(lines) });
+  await (await chooser).setFiles({ name, mimeType: 'application/pdf', buffer: aiPdf(lines, fragmented) });
   await expect(page.getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true', { timeout: 60_000 });
   await expect(page.getByRole('button', { name: 'Download PDF', exact: true })).toBeEnabled();
   await expect(page.locator('.pdf-character').first()).toBeVisible();

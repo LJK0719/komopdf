@@ -154,9 +154,9 @@ describe('anonymous, unbilled text action route', () => {
     expect(input.systemInstruction).toContain('detectedLanguage');
     expect(input.systemInstruction).toContain('Target language: zh (简体中文)');
     expect(input.maxOutputTokens).toBe(limits.maxOutputTokens);
-    expect(input.responseSchema).toMatchObject({ properties: {
-      requestId: { enum: ['text-1'] }, action: { enum: [action] },
-      segments: { minItems: 1, maxItems: 1, items: { properties: { id: { enum: ['s1'] } } } },
+    expect(input.responseSchema).toMatchObject({ type: 'OBJECT', properties: {
+      requestId: { type: 'STRING', enum: ['text-1'] }, action: { type: 'STRING', enum: [action] },
+      segments: { type: 'ARRAY', minItems: 1, maxItems: 1, items: { type: 'OBJECT', properties: { id: { type: 'STRING', enum: ['s1'] } } } },
     } });
     expect(signal).toBeInstanceOf(AbortSignal);
     expect(Object.keys(input).sort()).toEqual(['maxOutputTokens', 'parts', 'responseSchema', 'systemInstruction']);

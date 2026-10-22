@@ -33,7 +33,7 @@ describe('text action selection snapshots', () => {
     const first = textActionTarget(object(), 1)!;
     const second = { ...textActionTarget(object('Second page'), 2)!, pageId: 'p2' };
     const material = selectionMaterial(textActionSelection(document, 'paper.pdf', [first, second]), '译文', { sourceLanguage: 'en', targetLanguage: 'zh' });
-    expect(material.text).toBe('Hello world\nSecond page'); expect(material.generatedText).toBe('译文');
+    expect(material.text).toBe('Hello world\n\nSecond page'); expect(material.generatedText).toBe('译文');
     expect(material.locations.map(item => item.pageNumber)).toEqual([1, 2]);
     expect(material.kind).toBe('selection');
   });

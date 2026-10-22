@@ -105,6 +105,16 @@ describe('WebAiServices', () => {
     expect(fetcher.mock.lastCall?.[1]?.headers).toEqual({ 'content-type': 'application/json' });
     const controller = new AbortController(); controller.abort(); await expect(services.textAction(request, controller.signal)).rejects.toMatchObject({ name: 'AbortError' }); expect(fetcher).toHaveBeenCalledTimes(2);
   });
+  it('preserves text-service failures without job retry or key advice and does not automatically retry', async () => {
+    const request: TextActionRequest = { requestId: 'text-error', action: 'translate', sourceLanguage: 'auto', targetLanguage: 'zh', tone: 'neutral', segments: [{ id: 'sentence', text: 'A complete sentence.' }] };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: { code: 'REQUEST_TIMEOUT', message: 'AI request processing timed out' } }, { status: 504 }))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const services = new WebAiServices({ fetch: fetcher, storage: null });
+    await expect(services.textAction(request, signal())).rejects.toThrow('AI request processing timed out');
+    expect(fetcher).toHaveBeenCalledOnce();
+    await expect(services.textAction(request, signal())).rejects.toThrow('Unable to connect to the AI service. Check your connection and try again.');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
   it('rejects mismatched/native snapshots before any paid submission', async () => {
     const fetcher = vi.fn<typeof fetch>(); const services = new WebAiServices({ fetch: fetcher, storage: null });
     await expect(services.translateDocument({ ...input, revision: 8 }, options, 'submit', signal())).rejects.toThrow('revision');

@@ -50,9 +50,15 @@ export class WebAiServices implements EditorAiServices {
 
   async textAction(request: TextActionRequest, signal: AbortSignal): Promise<TextActionResult> {
     signal.throwIfAborted();
-    const response = await this.request('/api/v1/ai/text-actions', { method: 'POST', body: JSON.stringify(textActionRequestSchema.parse(request)),
-      headers: { 'content-type': 'application/json' }, signal });
-    return textActionResultSchema.parse(await response.json());
+    const body = JSON.stringify(textActionRequestSchema.parse(request));
+    try {
+      const response = await this.request('/api/v1/ai/text-actions', { method: 'POST', body,
+        headers: { 'content-type': 'application/json' }, signal });
+      return textActionResultSchema.parse(await response.json());
+    } catch (error) {
+      if (!signal.aborted && error instanceof TypeError) throw new Error('Unable to connect to the AI service. Check your connection and try again.');
+      throw error;
+    }
   }
 
   async kolmoConnection(signal?: AbortSignal): Promise<KolmoConnection> {

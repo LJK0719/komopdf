@@ -131,7 +131,7 @@ export function EditorRibbon({ tab, onTab, pointer, onPointer, onTool, onAction,
       {tab === 'edit' && selection === 'text' && <div className="ribbon-text-properties">{children}</div>}
       {onTextAction && <Menu.Root onOpenChange={open => { if (open) onCaptureSelection?.(); }}>
         <Menu.Trigger className="ribbon-button ai-owned-focus ribbon-ai-tools" disabled={!hasDocument || busy} onPointerDownCapture={onCaptureSelection}><Languages size={20} /><span>{t('AI tools')}</span></Menu.Trigger>
-        <Menu.Portal><Menu.Positioner sideOffset={6}><Menu.Popup className="ui-menu ai-owned-focus">
+        <Menu.Portal><Menu.Positioner className="ui-menu-positioner" sideOffset={6}><Menu.Popup className="ui-menu ai-owned-focus">
           {TEXT_ACTIONS.map(action => <Menu.Item className="ui-menu-item" key={action} onClick={() => onTextAction(action)}>{t(TEXT_ACTION_LABELS[action])}</Menu.Item>)}
           <Menu.Item className="ui-menu-item" onClick={() => onTextAction('ask')}>{t('Ask KOMO about selection')}</Menu.Item>
           <Menu.Separator className="ui-menu-separator" />
@@ -142,7 +142,7 @@ export function EditorRibbon({ tab, onTab, pointer, onPointer, onTool, onAction,
         {items.map(({ label, Icon, run, disabled, pressed }, index) => <button type="button" key={label}
           className={'ribbon-button ribbon-priority-' + priority(index)} disabled={disabled} aria-pressed={pressed} onClick={run}><Icon size={20} strokeWidth={1.7} /><span>{t(label)}</span></button>)}
         {items.length > 2 && <Menu.Root><Menu.Trigger className={'ribbon-button ribbon-more ribbon-more-' + (items.length > 6 ? 'always' : items.length > 4 ? 'medium' : 'small')} aria-label={t('More tools')}><Ellipsis size={20} /><span>{t('More')}</span></Menu.Trigger>
-          <Menu.Portal><Menu.Positioner sideOffset={6} align="end"><Menu.Popup className="ui-menu">
+          <Menu.Portal><Menu.Positioner className="ui-menu-positioner" sideOffset={6} align="end"><Menu.Popup className="ui-menu">
             {items.slice(2).map(({ label, Icon, run, disabled }, offset) => <Menu.Item key={label} className={'ui-menu-item ribbon-overflow-' + priority(offset + 2)} disabled={disabled} onClick={run}><Icon size={16} />{t(label)}</Menu.Item>)}
           </Menu.Popup></Menu.Positioner></Menu.Portal>
         </Menu.Root>}

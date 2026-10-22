@@ -11,14 +11,22 @@ async function mockTools(page: Page, result = '你好') {
   });
   return requests;
 }
+async function confirmTranslation(page: Page) {
+  const dialog = page.getByRole('dialog', { name: 'Translate selected text', exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('combobox')).toHaveCount(1);
+  await expect(dialog.getByRole('combobox', { name: 'Source language', exact: true })).toHaveCount(0);
+  await dialog.getByRole('combobox', { name: 'Target language', exact: true }).selectOption('zh');
+  await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  return page.getByRole('region', { name: 'AI text tools', exact: true });
+}
 async function runTranslation(page: Page) {
   await selectAiText(page);
   await expect(page.getByRole('menuitem', { name: /^Copy text/ })).toBeEnabled();
   await expect(page.getByRole('menuitem', { name: 'Highlight selection', exact: true })).toBeEnabled();
   await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
-  const panel = page.getByRole('region', { name: 'AI text tools', exact: true });
-  await panel.getByRole('combobox', { name: 'Target language', exact: true }).selectOption('zh');
-  await panel.getByRole('button', { name: 'Translate', exact: true }).click();
+  const panel = await confirmTranslation(page);
   await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('你好');
   await expect(panel.getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue('Hello');
   await expect(panel.getByRole('button', { name: 'Review layout', exact: true })).toHaveCount(0);
@@ -42,11 +50,11 @@ test('free translation works without sign-in; normal menu actions and PDF state 
   await expect(page.locator('.save-state')).toHaveText('No changes');
   await panel.getByRole('button', { name: 'Expand comparison', exact: true }).click();
   const comparison = page.getByRole('dialog', { name: 'Bilingual comparison', exact: true });
-  await expect(comparison.getByText('Hello', { exact: true })).toBeVisible();
-  await expect(comparison.getByText('你好', { exact: true })).toBeVisible();
+  await expect(comparison.getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue('Hello');
+  await expect(comparison.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('你好');
   await page.screenshot({ path: 'tmp/browser/ai-bilingual-expanded.png' });
-  await page.keyboard.press('Escape');
-  await expect(comparison).toHaveCount(0); await expect(panel).toBeVisible();
+  await panel.getByRole('button', { name: 'Reduce comparison', exact: true }).click();
+  await expect(comparison).toBeVisible(); await expect(panel).toBeVisible();
   await expect(page.locator('.save-state')).toHaveText('No changes');
   await panel.getByRole('button', { name: 'Run again', exact: true }).click();
   await expect.poll(() => requests.length).toBe(2);
@@ -63,8 +71,9 @@ test('zero credits do not block translation or erase an existing KOMO draft', as
   await page.goto('/editor/'); await openAiPdf(page);
   await page.getByRole('button', { name: 'Ask komo', exact: true }).click();
   await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Keep this unsent question.');
-  await page.getByRole('button', { name: 'Close panel', exact: true }).click();
   const panel = await runTranslation(page);
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue('Keep this unsent question.');
+  await expect(page.getByRole('region', { name: 'komo', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: 'Continue in KOMO', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue('Keep this unsent question.');
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
@@ -77,7 +86,6 @@ test('a reviewed replacement changes only the selected range and one undo restor
   await selectAiText(page);
   await page.getByRole('menuitem', { name: 'Rewrite selection', exact: true }).click();
   const panel = page.getByRole('region', { name: 'AI text tools', exact: true });
-  await panel.getByRole('button', { name: 'Run tool', exact: true }).click();
   await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('Hi');
   await expect(page.locator('.save-state')).toHaveText('No changes');
   await panel.getByRole('button', { name: 'Review layout', exact: true }).click();
@@ -109,15 +117,14 @@ test('editing selection keeps its draft while translating and applying remains l
   await input.fill('My unsaved draft'); await input.press('Control+A');
   await input.click({ button: 'right', position: { x: 15, y: 8 } });
   await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
-  const panel = page.getByRole('region', { name: 'AI text tools', exact: true });
-  await expect(input).toHaveText('My unsaved draft');
-  await panel.getByRole('button', { name: 'Translate', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Page text', exact: true, includeHidden: true })).toHaveText('My unsaved draft');
+  const panel = await confirmTranslation(page);
   await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('Draft result');
   await expect(input).toHaveText('My unsaved draft');
   expect(await page.locator('.pdf-canvas').evaluate(node => (node as HTMLCanvasElement).toDataURL())).toBe(before);
   await panel.getByRole('button', { name: 'Expand comparison', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Bilingual comparison' }).getByText('My unsaved draft', { exact: true })).toBeVisible();
-  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Bilingual comparison' }).getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue('My unsaved draft');
+  await panel.getByRole('button', { name: 'Reduce comparison', exact: true }).click();
   await expect(input).toHaveText('My unsaved draft');
   expect(await page.locator('.pdf-canvas').evaluate(node => (node as HTMLCanvasElement).toDataURL())).toBe(before);
   await panel.locator('.ai-replace-choice > summary').click();
@@ -134,8 +141,7 @@ test('cross-page translation binds every selected block to its actual page', asy
   await expect(page.locator('.pdf-text-layer')).toHaveCount(2);
   await selectAiText(page, 12, 1);
   await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
-  const panel = page.getByRole('region', { name: 'AI text tools', exact: true });
-  await panel.getByRole('button', { name: 'Translate', exact: true }).click();
+  const panel = await confirmTranslation(page);
   await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('Translated');
   await expect(panel.getByRole('textbox', { name: 'AI result on page 2' })).toHaveValue('Translated');
   expect(requests.flatMap(request => request.segments.map(segment => segment.text))).toEqual(['First page.', 'Second page.']);
@@ -177,8 +183,7 @@ test('all fixed text actions use the same selected passage without starting a co
     await selectAiText(page);
     await page.getByRole('menuitem', { name: label, exact: true }).click();
     const panel = page.getByRole('region', { name: 'AI text tools', exact: true });
-    await panel.getByRole('button', { name: 'Run tool', exact: true }).click();
-    await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('Tool result');
+      await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('Tool result');
     expect(requests.at(-1)?.action).toBe(action); expect(requests.at(-1)?.segments[0]?.text).toBe('Hello');
     await expect(panel.getByRole('button', { name: 'Review layout', exact: true })).toHaveCount(action === 'explain' || action === 'summarize' ? 0 : 1);
   }
@@ -192,8 +197,7 @@ test('keyboard context menu preserves the same reading selection', async ({ page
   await page.keyboard.press('Escape'); await page.locator('.pdf-text-layer').first().focus();
   await page.keyboard.press('Shift+F10');
   await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
-  const panel = page.getByRole('region', { name: 'AI text tools', exact: true });
-  await panel.getByRole('button', { name: 'Translate', exact: true }).click();
+  const panel = await confirmTranslation(page);
   await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('你好');
   expect(requests[0]?.segments[0]?.text).toBe('Hello');
 });
@@ -209,7 +213,7 @@ test('narrow-screen translation keeps its controls and result inside the viewpor
   const result = (await panel.getByRole('textbox', { name: 'AI result on page 1' }).boundingBox())!;
   const footer = (await panel.locator('.task-panel-footer').boundingBox())!;
   expect(result.y).toBeGreaterThan(bounds!.y); expect(result.y + result.height).toBeLessThanOrEqual(footer.y);
-  await expect(page.getByRole('button', { name: 'Close panel', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close AI window', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: 'tmp/browser/ai-text-tools-mobile.png' });
   await page.getByRole('button', { name: 'File', exact: true }).click();
@@ -234,6 +238,7 @@ test('a translated Chinese passage can use an explicit embedded font and remain 
   await expect(panel.getByRole('button', { name: 'Confirm and apply', exact: true })).toBeEnabled({ timeout: 20000 });
   await panel.getByRole('button', { name: 'Confirm and apply', exact: true }).click();
   await expect(page.locator('.pdf-text-layer')).toHaveText('你好 from this PDF.');
+  await page.getByRole('button', { name: 'Close AI window', exact: true }).click();
   await page.getByRole('button', { name: 'Edit content', exact: true }).click();
   await page.locator('.object-hitbox[data-object-type="text"]').first().dblclick();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });

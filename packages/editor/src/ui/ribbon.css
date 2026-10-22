@@ -1,16 +1,16 @@
 .editor-ribbon { min-width: 0; background: var(--paper); border-bottom: 1px solid var(--line); }
-.ribbon-tabs { display: flex; align-items: stretch; height: 36px; padding: 0 14px; background: var(--komo-surface-subtle); overflow-x: auto; scrollbar-width: thin; }
+.ribbon-tabs { display: flex; justify-content: safe center; align-items: stretch; height: 36px; padding: 0 14px; background: var(--komo-surface-subtle); overflow-x: auto; scrollbar-width: thin; }
 .ribbon-tabs button { flex: none; border: 0; border-bottom: 2px solid transparent; padding: 0 14px; color: var(--muted); background: transparent; font-size: 12px; }
 .ribbon-tabs button[aria-current] { color: var(--accent); border-color: var(--accent); background: var(--paper); font-weight: 650; }
 .context-tab { align-self: center; color: var(--accent); padding: 4px 14px; font-size: 12px; white-space: nowrap; border-left: 1px solid var(--line); }
-.ribbon-content { display: flex; align-items: center; flex-wrap: nowrap; height: 80px; min-height: 80px; gap: 8px; padding: 4px 14px; min-width: 0; }
+.ribbon-content { display: flex; justify-content: safe center; align-items: center; flex-wrap: nowrap; height: 80px; min-height: 80px; gap: 8px; padding: 4px 14px; min-width: 0; }
 .ribbon-button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; flex: none; min-width: 56px; min-height: 52px; padding: 6px 9px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--ink); font-size: 12px; white-space: nowrap; }
 .ribbon-button:hover:not(:disabled), .ribbon-button[aria-pressed=true] { background: var(--acid); border-color: var(--line); color: var(--accent); }
 .ribbon-pointer-tools { display: flex; flex: none; align-items: center; gap: 2px; padding-right: 10px; border-right: 1px solid var(--line); }
 .ribbon-actions { display: flex; gap: 3px; min-width: 0; }
 .ribbon-page-view { display: flex; align-items: center; gap: 4px; padding-right: 8px; border-right: 1px solid var(--line); }
 .ribbon-priority-overflow, .ribbon-overflow-medium, .ribbon-overflow-wide, .ribbon-more-medium, .ribbon-more-small { display: none; }
-.ribbon-text-properties { flex: 1; min-width: 0; max-height: 72px; overflow-y: auto; }
+.ribbon-text-properties { flex: 0 1 auto; min-width: 0; max-height: 72px; overflow-y: auto; }
 .ribbon-content:has(.ribbon-text-properties) .ribbon-pointer-tools { align-self: flex-start; }
 .text-properties { display: flex; align-items: center; gap: 4px 6px; padding: 0; flex-wrap: wrap; min-width: 0; }
 .text-properties label { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 12px; color: var(--muted); }

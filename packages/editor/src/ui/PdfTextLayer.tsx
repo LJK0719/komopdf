@@ -26,9 +26,9 @@ const pageHitTests = new WeakMap<Element, (x: number, y: number) => DomPoint | n
 const selectionReaders = new Map<Element, () => { document: LoadedDocument; targets: TextSelectionTarget[] }>();
 
 function actionTargets(shown: LoadedDocument, targets: TextSelectionTarget[]) {
-  const objects = readingRegions(shown.page).flatMap(region => region.objects);
+  const objects = new Map(readingRegions(shown.page).flatMap(region => region.objects).map(object => [object.id, object]));
   return targets.flatMap(target => {
-    const object = objects.find(item => item.id === target.objectId);
+    const object = objects.get(target.objectId);
     const value = object && textActionTarget(object, shown.info.pageOrder.indexOf(shown.page.id) + 1, target.range, target.text, target.rects);
     return value ? [value] : [];
   });
@@ -39,7 +39,7 @@ export function captureReadingSelection(documentId: string): TextActionSelection
   const first = pages[0]?.document;
   if (!first || !first.info.permissions.copy) return null;
   const targets = pages.flatMap(item => actionTargets(item.document, item.targets));
-  return targets.length ? textActionSelection(first.info, first.name, targets) : null;
+  return targets.length ? textActionSelection(first.info, first.name, targets, 'translate', pages.map(item => item.document.page)) : null;
 }
 
 // Editor ranges are logical offsets relative to the seed's paragraph position.
@@ -270,7 +270,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         }
       }}
       onBlur={event => { if (!menuOpen.current && !(event.relatedTarget instanceof Element && event.relatedTarget.closest('[role="menu"]'))) setCaret(null); }}
-      onContextMenu={event => {
+      onContextMenuCapture={event => {
         const rect = event.currentTarget.getBoundingClientRect();
         setPoint({ x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom });
         const id = (event.target as HTMLElement).closest<HTMLElement>('[data-text-object]')?.dataset.textObject;
@@ -293,7 +293,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         contextText.current = copied; setLocalSelection(local);
         contextTargets.current = next; setTargets(next);
         contextAction.current = !wholeObject ? captureReadingSelection(shown.info.id) : null;
-        if (!contextAction.current && next.some(target => target.text.trim())) contextAction.current = textActionSelection(shown.info, shown.name, actionTargets(shown, next));
+        if (!contextAction.current && next.some(target => target.text.trim())) contextAction.current = textActionSelection(shown.info, shown.name, actionTargets(shown, next), 'translate', [shown.page]);
       }}
       onCopy={event => {
         event.preventDefault();
@@ -330,7 +330,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         <button type="button" onClick={() => startAction('ask')} aria-label={t('Ask KOMO about selection')} title={t('Ask KOMO about selection')}><MessageSquare size={16} /></button>
       </div>;
     })()}
-    <ContextMenu.Portal><ContextMenu.Positioner><ContextMenu.Popup className="ui-menu ai-owned-focus">
+    <ContextMenu.Portal><ContextMenu.Positioner className="ui-menu-positioner"><ContextMenu.Popup className="ui-menu ai-owned-focus">
       {targets.length > 0 && <>
         <ContextMenu.Item className="ui-menu-item" disabled={!text || disabled || !shown.info.permissions.copy} onClick={() => void copy()}>{t('Copy text')}<kbd>Ctrl/Cmd C</kbd></ContextMenu.Item>
         {editTarget && <ContextMenu.Item className="ui-menu-item" disabled={!canEdit || disabled} onClick={() => onEdit(shown, editTarget.objectId, editTarget.range, true)}>{t(text ? 'Edit selected text' : 'Insert text at cursor')}</ContextMenu.Item>}
@@ -341,7 +341,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         <ContextMenu.Separator className="ui-menu-separator" />
       </>}
       <ContextMenu.Item className="ui-menu-item" disabled={disabled || !shown.info.permissions.modify || !shown.info.capabilities.includes('text.insert')} onClick={() => onInsert(shown, point)}>{t('Add text here')}</ContextMenu.Item>
-      {onTextAction && targets.length > 0 && <TextActionMenuItems disabled={!text.trim() || disabled || !shown.info.permissions.copy} onAction={action => startAction(action, true)} />}
+      {onTextAction && (targets.some(target => target.text.trim()) ? <TextActionMenuItems disabled={!text.trim() || disabled || !shown.info.permissions.copy} onAction={action => startAction(action, true)} />
+        : <ContextMenu.Item className="ui-menu-item" disabled={disabled} onClick={() => onTextAction(textActionSelection(shown.info, shown.name, []), 'translate')}><Languages size={16} />{t('AI translate')}</ContextMenu.Item>)}
     </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal>
   </ContextMenu.Root>;
 }

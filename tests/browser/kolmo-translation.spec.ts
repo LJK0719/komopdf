@@ -115,7 +115,7 @@ test('closing a translation panel does not cancel the task; explicit Cancel uses
   const area = await connect(page);
   await area.getByRole('button', { name: 'Upload and translate', exact: true }).click();
   await expect(area.getByRole('button', { name: 'Cancel translation', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Close panel', exact: true }).click();
+  await page.getByRole('button', { name: 'Close AI window', exact: true }).click();
   expect(api.cancelled()).toBe(0);
   await panel(page);
   await area.getByRole('button', { name: 'Cancel translation', exact: true }).click();

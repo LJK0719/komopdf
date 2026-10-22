@@ -1,3 +1,21 @@
+.ai-floating-window { position: fixed; z-index: 90; display: flex; flex-direction: column; width: min(600px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); border: 1px solid var(--komo-line); border-radius: 10px; background: var(--komo-surface); box-shadow: 0 10px 40px #173f2533; overflow: hidden; }
+.ai-floating-window[hidden] { display: none; }
+.ai-floating-window:has(.ai-text-expanded) { width: min(940px, calc(100vw - 16px)); }
+.ui-menu-positioner { z-index: 120; }
+.ai-floating-window[data-base-ui-inert] { pointer-events: none; }
+.ai-floating-title { display: flex; flex: none; align-items: center; gap: 8px; min-height: 42px; padding: 5px 10px 5px 14px; border-bottom: 1px solid var(--komo-line); cursor: move; touch-action: none; user-select: none; }
+.ai-floating-title strong { flex: 1; font-size: 14px; }
+.ai-floating-window :is(.ai-text-panel, .kolmo-translation-panel) { height: auto; max-height: min(650px, calc(100dvh - 62px)); }
+.ai-floating-window .task-panel-header { padding: 8px 14px; }
+.ai-floating-window .task-panel-header p { display: inline; margin-left: 8px; }
+.ai-floating-window .ai-text-panel .ai-bilingual textarea { min-height: 130px; }
+.ai-floating-window .ai-text-expanded .ai-bilingual textarea { min-height: 260px; }
+.ai-pending-source p { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.app-dialog.ai-language-dialog { width: min(360px, calc(100vw - 32px)); }
+.ai-language-dialog form { display: grid; gap: 22px; }
+.ai-language-dialog label { display: grid; gap: 8px; font-size: 13px; }
+.ai-language-dialog select { width: 100%; padding: 8px; border: 1px solid var(--komo-line); border-radius: 5px; background: var(--komo-surface); color: var(--komo-ink); }
+.ai-language-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }
 .selection-ai-toolbar { position: absolute; z-index: 12; display: flex; align-items: center; gap: 2px; padding: 4px; border: 1px solid var(--komo-line); border-radius: 8px; background: var(--komo-surface); box-shadow: 0 4px 16px #173f2526; user-select: none; }
 .selection-ai-toolbar button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--komo-ink); white-space: nowrap; font-size: 12px; }
 .selection-ai-toolbar button:hover { background: var(--komo-accent-soft); color: var(--komo-accent); }

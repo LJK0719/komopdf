@@ -42,7 +42,7 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
     <div className="topbar-start"><button className="brand-lockup" type="button" onClick={onStart} disabled={busy} aria-label={t('Start page')}>
       <span className="brand-mark" aria-hidden="true">k</span><strong>{productName}</strong></button>
       <Menu.Root><Menu.Trigger className="file-menu-trigger">{t('File')}<ChevronDown size={14} /></Menu.Trigger>
-        <Menu.Portal><Menu.Positioner sideOffset={8}><Menu.Popup className="ui-menu">
+        <Menu.Portal><Menu.Positioner className="ui-menu-positioner" sideOffset={8}><Menu.Popup className="ui-menu">
           <Menu.Item className="ui-menu-item" onClick={onOpen} disabled={busy}><FolderOpen size={16} />{t('Open PDF…')}<kbd>{modifier} O</kbd></Menu.Item>
           {onOpenFolder && <Menu.Item className="ui-menu-item" onClick={onOpenFolder} disabled={busy}><FolderOpen size={16} />{t('Open folder…')}<kbd>{modifier} Shift O</kbd></Menu.Item>}
           {onStart && <Menu.Item className="ui-menu-item" onClick={onStart} disabled={busy}><FilePlus2 size={16} />{t('Recent files & recovery')}</Menu.Item>}

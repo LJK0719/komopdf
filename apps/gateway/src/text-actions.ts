@@ -43,19 +43,19 @@ function prepareInput(request: TextActionRequest, maxOutputTokens: number): Prov
     ].join('\n'),
     parts: [{ text: JSON.stringify({ segments: request.segments }) }],
     responseSchema: {
-      type: 'object',
+      type: 'OBJECT',
       properties: {
-        requestId: { type: 'string', enum: [request.requestId] },
-        action: { type: 'string', enum: [request.action] },
-        detectedLanguage: { type: 'string' },
+        requestId: { type: 'STRING', enum: [request.requestId] },
+        action: { type: 'STRING', enum: [request.action] },
+        detectedLanguage: { type: 'STRING' },
         segments: {
-          type: 'array', minItems: request.segments.length, maxItems: request.segments.length,
+          type: 'ARRAY', minItems: request.segments.length, maxItems: request.segments.length,
           items: {
-            type: 'object',
+            type: 'OBJECT',
             properties: {
-              id: { type: 'string', enum: request.segments.map(segment => segment.id) },
-              text: { type: 'string' },
-              reason: { type: 'string' },
+              id: { type: 'STRING', enum: request.segments.map(segment => segment.id) },
+              text: { type: 'STRING' },
+              reason: { type: 'STRING' },
             },
             required: ['id', 'text'],
           },
