@@ -2,21 +2,20 @@ import { useI18n } from './i18n.js';
 import { useEffect, useRef, useState } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import { WEB_LIMITS, type CommandType, type CommitResult, type DocumentInfo, type EditCommand,
-  type EngineAdapter, type HostAdapter, type PageModel, type TextLayoutResult } from '@pdf-editor/contracts';
+  type EngineAdapter, type HostAdapter, type PageModel } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
+import type { PagePlacementRequest } from './PagePlacementLayer.js';
 import { createPageNumberCommand, pageNumberLabels, parsePageRange, type PageNumberLabel, type PageNumberTotal } from './page-number-utils.js';
 import './page-number.css';
 import './panel-refresh.css';
 
 type Props = { mode?: 'edit' | 'pages' | 'arrange'; pageSelection?: string[] | null; section?: 'number' | 'watermark' | 'header' | null; document: DocumentInfo; page: PageModel; selectedIds: string[]; engine: EngineAdapter;
   host: HostAdapter; disabled: boolean; onBusyChange(busy: boolean): void; onImportPages?(): void;
+  onPlacement?(request: PagePlacementRequest): void; onCrop?(kind: 'page' | 'image'): void;
   onSelectionChange(ids: string[]): void; onCommitted(result: CommitResult): Promise<void> };
 
-export function ObjectEditPanel({ mode = 'edit', section, pageSelection, document, page, selectedIds, engine, host, disabled, onBusyChange, onSelectionChange, onCommitted, onImportPages }: Props) {
+export function ObjectEditPanel({ mode = 'edit', section, pageSelection, document, page, selectedIds, engine, host, disabled, onBusyChange, onSelectionChange, onCommitted, onImportPages, onPlacement, onCrop }: Props) {
   const { t } = useI18n();
-  const [x, setX] = useState(36), [y, setY] = useState(36);
-  const [width, setWidth] = useState(240), [height, setHeight] = useState(120);
-  const [dx, setDx] = useState(10), [dy, setDy] = useState(0);
   const [scale, setScale] = useState(100), [angle, setAngle] = useState(90);
   const [text, setText] = useState('New text'), [fontId, setFontId] = useState('');
   const [fontSize, setFontSize] = useState(12), [resourcePage, setResourcePage] = useState(1);
@@ -51,29 +50,17 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     setDecoration(section); decorationSection.current.open = true;
     decorationSection.current.scrollIntoView({ block: 'nearest' });
   }, [section, mode]);
-  const [textPreview, setTextPreview] = useState<{ key: string; layout: TextLayoutResult } | null>(null);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const { fonts } = useFontResources(engine);
   const supports = (type: CommandType) => document.capabilities.includes(type);
   const locked = disabled || busy;
-  const bounds = { x, y, width, height };
   const chosenFont = fontId || fonts[0]?.id;
   const rgb = [1, 3, 5].map(offset => parseInt(color.slice(offset, offset + 2), 16) / 255) as [number, number, number];
 
-  const layoutKey = JSON.stringify([document.id, document.revision, page.id, text, chosenFont, fontSize, color, bounds, lineHeight, alignment]);
-  const currentTextPreview = textPreview?.key === layoutKey ? textPreview.layout : null;
-  function textCommand(): Extract<EditCommand, { type: 'text.insert' }> {
-    return { type: 'text.insert', pageId: page.id, objectId: crypto.randomUUID(), bounds, text,
-      style: { fontId: chosenFont!, fontSize, color: rgb, lineHeight, alignment } };
-  }
   async function insertText() {
-    const command = textCommand();
-    if (engine.previewTextInsert) {
-      const layout = await engine.previewTextInsert({ docId: document.id, baseRevision: document.revision, command });
-      setTextPreview({ key: layoutKey, layout });
-      if (layout.overflow) throw new Error('Text does not fit the box. Increase its size or reduce the font size.');
-    }
-    await execute([command]);
+    onPlacement?.({ documentId: document.id, label: 'Text', command: (pageId, bounds) => ({
+      type: 'text.insert', pageId, objectId: crypto.randomUUID(), bounds, text,
+      style: { fontId: chosenFont!, fontSize, color: rgb, lineHeight, alignment } }) });
   }
 
   async function execute(commands: EditCommand[], resourceIds = new Set<string>(),
@@ -192,21 +179,17 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
   }
 
   async function insertResource(kind: 'image' | 'pdf', mode: 'insert' | 'replace' = 'insert') {
-    if (mode === 'insert' && (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0)) throw new Error('Enter valid positive insertion dimensions');
     const source = await host.pickResource?.(kind);
     if (!source) return;
     const resource = await engine.registerResource({ docId: document.id, resourceId: crypto.randomUUID(), source });
     if (resource.kind !== (kind === 'pdf' ? 'pdf' : 'image')) throw new Error('Selected resource has a different type');
-    const target = { pageId: page.id, objectId: crypto.randomUUID(), resourceId: resource.id, bounds };
-    let command: EditCommand;
     if (mode === 'replace') {
       if (selectedIds.length !== 1 || page.objects.find(object => object.id === selectedIds[0])?.type !== 'image') throw new Error('Select one image to replace');
-      command = { type: 'image.replace', pageId: page.id, objectId: selectedIds[0]!, resourceId: resource.id };
-    } else {
-      command = kind === 'pdf' ? { type: 'content.insert', ...target, resourcePageIndex: resourcePage - 1 }
-        : { type: 'image.insert', ...target };
-    }
-    await execute([command], new Set([resource.id]));
+      await execute([{ type: 'image.replace', pageId: page.id, objectId: selectedIds[0]!, resourceId: resource.id }], new Set([resource.id]));
+    } else onPlacement?.({ documentId: document.id, label: kind === 'pdf' ? 'PDF content' : 'Image', command: (pageId, bounds) => {
+      const target = { pageId, objectId: crypto.randomUUID(), resourceId: resource.id, bounds };
+      return kind === 'pdf' ? { type: 'content.insert', ...target, resourcePageIndex: resourcePage - 1 } : { type: 'image.insert', ...target };
+    } });
   }
   const numberField = (label: string, value: number, setter: (value: number) => void) =>
     <label>{t(label)}<input type="number" step="any" value={value} disabled={locked} onChange={event => setter(event.target.valueAsNumber)} /></label>;
@@ -234,7 +217,11 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
       </div>
     </details>
     <details open={mode === 'arrange'} hidden={mode !== 'edit' && mode !== 'arrange'}><summary>{t("Arrange objects")}</summary>
-      {numberField(t("Move X (pt)"), dx, setDx)}{numberField(t("Move Y (pt)"), dy, setDy)}
+      <p className="panel-refresh-muted">{t('Drag selected objects on the page, or use the arrow keys to move them.')}</p>
+      <div className="text-edit-actions">{([['Move left', -1, 0], ['Move right', 1, 0], ['Move up', 0, -1], ['Move down', 0, 1]] as const).map(([label, dx, dy]) =>
+        <button type="button" key={label} disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
+          { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
+        ]))}>{t(label)}</button>)}</div>
       {supports('objects.transform') && <details><summary>{t('Scale and rotation')}</summary>
         {numberField(t('Scale (%)'), scale, setScale)}{numberField(t('Rotation (degrees)'), angle, setAngle)}
         <div className="text-edit-actions">
@@ -258,7 +245,7 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
         {parentGroup && <button disabled={locked} onClick={() => onSelectionChange([parentGroup.id])}>{t("Select parent group")}</button>}
         {supports('objects.copy') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.copy', pageId: page.id, objectIds: selectedIds,
-            newObjectIds: selectedIds.map(() => crypto.randomUUID()), offset: { x: dx, y: dy } },
+            newObjectIds: selectedIds.map(() => crypto.randomUUID()), offset: { x: 10, y: 10 } },
         ]))}>{t("Duplicate")}</button>}
         {supports('objects.delete') && <button disabled={locked || !selectedIds.length} onClick={() => void run(() => execute([
           { type: 'objects.delete', pageId: page.id, objectIds: selectedIds },
@@ -321,32 +308,17 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     </details>}
     <details open hidden={mode !== 'edit'}><summary>{t("Add text & images")}</summary>
 
-      <details><summary>{t('Placement coordinates')}</summary>
-        <div className="document-tools-grid">
-          {numberField(t('X (pt)'), x, setX)}{numberField(t('Y (pt)'), y, setY)}
-          {numberField(t('Width (pt)'), width, setWidth)}{numberField(t('Height (pt)'), height, setHeight)}
-        </div>
-      </details>
-      {supports('pages.crop') && <>
-        <button disabled={locked} onClick={() => {
-          if (window.confirm(t("Crop this page?")))
-            void run(() => execute([{ type: 'pages.crop', pageIds: [page.id], bounds }]));
-        }}>{t("Crop page to box")}</button>
-
-      </>}
+      <p className="panel-refresh-muted">{t('Choose an item, then drag on the page to place it.')}</p>
+      {supports('pages.crop') && onCrop && <button disabled={locked} onClick={() => onCrop('page')}>{t('Crop page')}</button>}
       {host.pickResource && <>
         {supports('image.insert') && <>
           <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>{t("Insert image")}</button>
-          <button disabled={locked} onClick={() => void run(() => insertResource('image'))}>{t("Place visual signature image")}</button>
 
         </>}
         {supports('image.replace') && <button disabled={locked || selectedIds.length !== 1 || page.objects.find(object => object.id === selectedIds[0])?.type !== 'image'}
           onClick={() => void run(() => insertResource('image', 'replace'))}>{t("Replace selected image")}</button>}
-        {supports('image.crop') && <>
-          <button disabled={locked || selectedIds.length !== 1 || page.objects.find(object => object.id === selectedIds[0])?.type !== 'image'}
-            onClick={() => void run(() => execute([{ type: 'image.crop', pageId: page.id, objectId: selectedIds[0]!, bounds }]))}>{t("Crop selected image to box")}</button>
-
-        </>}
+        {supports('image.crop') && onCrop && <button disabled={locked || selectedIds.length !== 1 || page.objects.find(object => object.id === selectedIds[0])?.type !== 'image'}
+          onClick={() => onCrop('image')}>{t('Crop image')}</button>}
         {supports('content.insert') && <>
           {numberField(t("Source PDF page"), resourcePage, setResourcePage)}
           <button disabled={locked} onClick={() => void run(() => insertResource('pdf'))}>{t("Insert PDF content")}</button>
@@ -362,13 +334,6 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
       <label>{t("Text alignment")}<select value={alignment} disabled={locked} onChange={event => setAlignment(event.target.value as typeof alignment)}>
         <option value="left">{t("Left")}</option><option value="center">{t("Center")}</option><option value="right">{t("Right")}</option>
       </select></label>
-      {supports('text.insert') && <>
-        {engine.previewTextInsert && <button disabled={locked || !chosenFont} onClick={() => void run(async () => {
-          const layout = await engine.previewTextInsert!({ docId: document.id, baseRevision: document.revision, command: textCommand() });
-          setTextPreview({ key: layoutKey, layout });
-        })}>{t("Preview text box")}</button>}
-        {currentTextPreview && <p role="status">{currentTextPreview.overflow ? t("Text box overflow") : t("Text fits box")} · {currentTextPreview.lines.length} {t("lines")}</p>}
-      </>}
       {supports('text.style') && <button disabled={locked || !selectedIds.some(id => page.objects.find(object => object.id === id)?.textBlock)} onClick={() => void run(() => execute([
         { type: 'text.style', pageId: page.id,
           blockIds: page.objects.filter(object => selectedIds.includes(object.id) && object.textBlock).map(object => object.textBlock!.id),
@@ -379,13 +344,8 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
     <footer className="task-panel-footer">
       {error ? <p role="alert">{t(error)}</p> : null}
       {busy ? <p role="status">{t('Applying changes…')}</p> : <p className="panel-refresh-muted">{t('Applied changes can be undone.')}</p>}
-      {(mode === 'edit' || mode === 'arrange') && supports('objects.transform') ? <button type="button"
-        className={mode === 'arrange' ? 'task-panel-primary' : undefined} disabled={locked || !selectedIds.length}
-        onClick={() => void run(() => execute([
-          { type: 'objects.transform', pageId: page.id, objectIds: selectedIds, matrix: [1, 0, 0, 1, dx, dy] },
-        ]))}>{t('Move')}</button> : null}
-      {mode === 'edit' && supports('text.insert') ? <button type="button" className="task-panel-primary"
-        disabled={locked || !chosenFont || Boolean(currentTextPreview?.overflow)} onClick={() => void run(insertText)}>{t('Insert text')}</button> : null}
+      {mode === 'edit' && supports('text.insert') && onPlacement ? <button type="button" className="task-panel-primary"
+        disabled={locked || !chosenFont} onClick={() => void run(insertText)}>{t('Place text on page')}</button> : null}
     </footer>
   </section>;
 }

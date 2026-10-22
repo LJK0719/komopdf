@@ -115,12 +115,13 @@ describe('document annotation list', () => {
     expect(filterAnnotations(annotations, { pageId: 'page-1', subtype: 'ink', text: '' })).toEqual([]);
   });
 
-  it('offers accessible tool activation and all-document filtering without removing legacy tools', () => {
+  it('offers canvas drawing and all-document filtering without coordinate-based legacy tools', () => {
     const html = renderToStaticMarkup(createElement(DocumentToolsPanel, { document, page, engine: mockEngine(), selectedIds: [],
       disabled: false, drawing: options, onDrawingChange: vi.fn(), onNavigate: vi.fn(), onBusyChange: vi.fn(), onCommitted: vi.fn(async () => {}) }));
     expect(html).toContain('aria-label="Draw annotations"'); expect(html).toContain('aria-pressed="true"');
     expect(html).toContain('Document annotations'); expect(html).toContain('All pages'); expect(html).toContain('All types');
-    expect(html).toContain('Find annotation text'); expect(html).toContain('Add highlight'); expect(html).toContain('Add ink');
-    expect(html).toContain('Forms on this page'); expect(html).toContain('Use selection bounds');
+    expect(html).toContain('Find annotation text'); expect(html).toContain('Freehand');
+    expect(html).not.toContain('Placement coordinates'); expect(html).not.toContain('Ink points');
+    expect(html).not.toContain('Advanced annotation controls'); expect(html).not.toContain('Use selection bounds');
   });
 });

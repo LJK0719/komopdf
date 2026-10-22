@@ -36,14 +36,11 @@ const toneSchema = z.enum(['neutral', 'formal', 'concise', 'friendly', 'professi
 export const textActionRequestSchema = z.object({
   requestId: idSchema,
   action: z.enum(TEXT_ACTIONS),
-  segments: z.array(z.object({ id: idSchema, text: z.string().min(1).max(8000) }).strict()).min(1).max(12),
+  segments: z.array(z.object({ id: idSchema, text: z.string().min(1) }).strict()).min(1).max(12),
   sourceLanguage: z.string().refine(code => code === 'auto' || supportedLanguages.has(code), 'Unsupported source language'),
   targetLanguage: languageSchema,
   tone: toneSchema,
 }).strict().superRefine((request, ctx) => {
-  if (request.segments.reduce((total, segment) => total + segment.text.length, 0) > 24000) {
-    ctx.addIssue({ code: 'custom', path: ['segments'], message: 'Total text exceeds 24000 characters' });
-  }
   const ids = new Set<string>();
   request.segments.forEach((segment, index) => {
     if (ids.has(segment.id)) ctx.addIssue({ code: 'custom', path: ['segments', index, 'id'], message: 'Duplicate segment id' });

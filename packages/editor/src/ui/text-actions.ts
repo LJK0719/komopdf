@@ -17,8 +17,14 @@ export type TextActionSelection = {
   anchor?: { left: number; top: number; right: number; bottom: number };
   draft?: { current(): boolean; replace(text: string): boolean };
 };
+export function normalizeActionText(text: string): string {
+  return text.replace(/\r\n?/g, '\n').split('\n').map(line => line.trim()).filter(Boolean).join('\n');
+}
 export function selectionUnits(selection: TextActionSelection): TextActionUnit[] {
-  return selection.units ?? selection.targets.map(target => ({ id: target.id, text: target.text, targetIds: [target.id] }));
+  const parts = selection.units ?? selection.targets.map(target => ({ id: target.id, text: target.text, targetIds: [target.id] }));
+  if (!parts.length) return [];
+  return [{ id: parts[0]!.id, text: normalizeActionText(parts.map(part => part.text).join('\n')),
+    targetIds: parts.flatMap(part => part.targetIds) }];
 }
 
 /** Model input follows readable paragraphs, not the PDF's glyph/object boundaries. */
@@ -80,22 +86,4 @@ export function selectionMaterial(selection: TextActionSelection, generatedText?
     ...(generatedText ? { generatedText } : {}), ...(languages ?? {}),
     locations: selection.targets.map(target => ({ pageId: target.pageId, pageNumber: target.pageNumber,
       ...(selection.draft ? {} : { blockId: target.blockId, range: target.range }), text: target.text })) };
-}
-
-export function splitTextActionTargets(targets: readonly Pick<TextActionTarget, 'id' | 'text'>[], limit = 2000): { id: string; targetId: string; text: string }[] {
-  return targets.flatMap(target => {
-    const chunks: { id: string; targetId: string; text: string }[] = [];
-    let part = '';
-    const push = () => { if (part) chunks.push({ id: `${target.id}:${chunks.length}`, targetId: target.id, text: part }); part = ''; };
-    const append = (text: string) => { if (part.length + text.length > limit) push(); part += text; };
-    for (const item of new Intl.Segmenter(undefined, { granularity: 'sentence' }).segment(target.text)) {
-      if (item.segment.length <= limit) append(item.segment);
-      else for (const word of new Intl.Segmenter(undefined, { granularity: 'word' }).segment(item.segment)) {
-        if (word.segment.length <= limit) append(word.segment);
-        else for (const character of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(word.segment)) append(character.segment);
-      }
-    }
-    push();
-    return chunks;
-  });
 }

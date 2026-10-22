@@ -1,5 +1,5 @@
 import { translate as t, useI18n } from './i18n.js';
-import { useEffect, useImperativeHandle, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState, type RefObject } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import {
   type CommitResult,
@@ -10,9 +10,9 @@ import {
   type FormFieldInfo,
   type PageModel,
   type PdfAnnotationInfo,
-  type Rect,
 } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
+import type { PagePlacementRequest } from './PagePlacementLayer.js';
 import { annotationTypeLabels, filterAnnotations, type AnnotationDrawingOptions } from './annotation-drawing.js';
 import './annotations.css';
 import './panel-refresh.css';
@@ -31,6 +31,7 @@ type Props = {
   disabled: boolean;
   drawing?: AnnotationDrawingOptions | null;
   onDrawingChange?(next: AnnotationDrawingOptions | null): void;
+  onPlacement?(request: PagePlacementRequest): void;
   onNavigate?(annotation: PdfAnnotationInfo): void;
   selectedCommentId?: string | null;
   onCommentCreated?(pageId: string, annotationId: string): void;
@@ -38,7 +39,6 @@ type Props = {
   onCommitted(result: CommitResult): Promise<void>;
 };
 
-type BoundsDraft = { x: string; y: string; width: string; height: string };
 type FormValue = FormFieldInfo['value'];
 type FieldPropertiesDraft = {
   readOnly: boolean;
@@ -50,14 +50,11 @@ type FieldPropertiesDraft = {
 
 const DEFAULT_FORM_FONT_ID = 'noto-sans-cjk-sc-regular';
 
-export function DocumentToolsPanel({ mode = 'comment', active = true, document, page, selectedIds, engine, disabled, drawing = null, draftRef, onDraftDirtyChange, onDrawingChange, onNavigate, selectedCommentId, onCommentCreated, onBusyChange, onCommitted }: Props) {
+export function DocumentToolsPanel({ mode = 'comment', active = true, document, page, selectedIds, engine, disabled, drawing = null, draftRef, onDraftDirtyChange, onDrawingChange, onPlacement, onNavigate, selectedCommentId, onCommentCreated, onBusyChange, onCommitted }: Props) {
   useI18n();
-  const [boundsDraft, setBoundsDraft] = useState<BoundsDraft>({ x: '36', y: '36', width: '180', height: '48' });
-  const [annotationText, setAnnotationText] = useState('');
   const [annotationColor, setAnnotationColor] = useState('#fff176');
   const [opacity, setOpacity] = useState('0.7');
   const [strokeWidth, setStrokeWidth] = useState('2');
-  const [inkPoints, setInkPoints] = useState('36,36; 96,64');
   const [fieldName, setFieldName] = useState('New field');
   const [fieldType, setFieldType] = useState<'text' | 'checkbox' | 'combo' | 'list' | 'radio'>('text');
   const [fieldOptions, setFieldOptions] = useState('Option A\nOption B');
@@ -80,6 +77,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [reload, setReload] = useState(0);
   const loadSequence = useRef(0);
   const fieldBaseline = useRef<{ documentId: string; fields: FormFieldInfo[] } | null>(null);
   const documentScope = `${document.id}\0${document.revision}`;
@@ -103,23 +101,12 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   const locked = disabled || busy;
   const supportsAnnotations = document.capabilities.some(capability => capability.startsWith('annotation.'));
   const canAddAnnotation = document.capabilities.includes('annotation.add');
-  const canUpdateAnnotation = document.capabilities.includes('annotation.update');
   const canDeleteAnnotation = document.capabilities.includes('annotation.delete');
   const supportsFormCreate = document.capabilities.includes('form.create');
   const supportsFormUpdate = document.capabilities.includes('form.update');
   const supportsFormFill = document.capabilities.includes('form.fill');
   const canReadAnnotations = active && mode === 'comment' && Boolean(engine.describeAnnotations);
   const canReadForms = active && mode === 'forms' && (supportsFormCreate || supportsFormUpdate || supportsFormFill) && Boolean(engine.describeForms);
-
-  const selectedBounds = useMemo(() => {
-    const objects = page.objects.filter(object => selectedIds.includes(object.id));
-    if (objects.length === 0) return null;
-    const left = Math.min(...objects.map(object => object.bounds.x));
-    const top = Math.min(...objects.map(object => object.bounds.y));
-    const right = Math.max(...objects.map(object => object.bounds.x + object.bounds.width));
-    const bottom = Math.max(...objects.map(object => object.bounds.y + object.bounds.height));
-    return { x: left, y: top, width: right - left, height: bottom - top };
-  }, [page, selectedIds]);
 
   useEffect(() => {
     const sequence = ++loadSequence.current;
@@ -129,15 +116,21 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     setDataScope('');
 
     const annotationRequest = canReadAnnotations
-      ? Promise.all(document.pageOrder.map(pageId => engine.describeAnnotations!(document.id, pageId))).then(pages => pages.flat())
-      : Promise.resolve<PdfAnnotationInfo[]>([]);
+      ? Promise.allSettled(document.pageOrder.map(pageId => engine.describeAnnotations!(document.id, pageId))).then(pages => {
+        const failed = pages.filter(result => result.status === 'rejected');
+        if (failed.length && loadSequence.current === sequence) {
+          console.warn('Unable to read some page comments', failed);
+          setLoadError(t('Comments on {count} pages could not be loaded.', { count: failed.length }));
+        }
+        return pages.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+      }) : Promise.resolve<PdfAnnotationInfo[]>([]);
     const formRequest = canReadForms
       ? engine.describeForms!(document.id)
       : Promise.resolve<FormFieldInfo[]>([]);
 
     void Promise.all([annotationRequest, formRequest]).then(([nextAnnotations, nextFields]) => {
       if (loadSequence.current !== sequence || documentScopeRef.current !== expectedScope) return;
-      setAnnotations(nextAnnotations);
+      setAnnotations(nextAnnotations.filter(annotation => annotation.subtype !== 'link'));
       setFields(nextFields);
       if (canReadForms) {
         const previousFields = fieldBaseline.current?.documentId === document.id ? fieldBaseline.current.fields : [];
@@ -154,14 +147,15 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
       if (loadSequence.current === sequence && documentScopeRef.current === expectedScope) {
         setAnnotations([]);
         setFields([]);
-        setLoadError(formatError(caught));
+        console.warn('Unable to read document tools', caught);
+        setLoadError(t(mode === 'forms' ? 'Form fields could not be loaded. Please try again.' : 'Comments could not be loaded. Please try again.'));
       }
     }).finally(() => {
       if (loadSequence.current === sequence && documentScopeRef.current === expectedScope) setLoading(false);
     });
 
     return () => { loadSequence.current += 1; };
-  }, [canReadAnnotations, canReadForms, document.id, documentScope, engine]);
+  }, [canReadAnnotations, canReadForms, document.id, documentScope, engine, reload]);
 
   const currentFields = dataScope === documentScope
     ? fields.filter(field => field.widgets.some(widget => widget.pageId === page.id))
@@ -169,8 +163,6 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   const currentAnnotations = dataScope === documentScope ? annotations : [];
   const filteredAnnotations = filterAnnotations(currentAnnotations, { pageId: annotationPage === 'current' ? page.id : annotationPage,
     subtype: annotationType, text: annotationSearch });
-  const selectedAnnotation = currentAnnotations.find(annotation => annotation.id === selectedAnnotationId && annotation.pageId === page.id);
-  useEffect(() => { if (selectedAnnotation) loadAnnotationFields(selectedAnnotation); }, [selectedAnnotation]);
 
   const draftFields = fieldBaseline.current?.documentId === document.id ? fieldBaseline.current.fields : [];
   const dirty = draftFields.some(field => isFormValueDirty(field, fieldDrafts[field.id])
@@ -256,64 +248,10 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     }
   }
 
-  async function addAnnotation(subtype: 'highlight' | 'text' | 'rectangle'): Promise<void> {
-    const bounds = readBounds(boundsDraft);
-    const command: EditCommand = {
-      type: 'annotation.add',
-      pageId: page.id,
-      annotationId: crypto.randomUUID(),
-      subtype,
-      bounds,
-      color: hexToRgb(annotationColor),
-      opacity: readOpacity(opacity),
-      ...(annotationText ? { text: annotationText } : {}),
-      ...(subtype === 'rectangle' ? { strokeWidth: readPositive(strokeWidth, 'Stroke width') } : {}),
-    };
-    await execute(command);
-  }
-
-  async function addInk(): Promise<void> {
-    await execute({
-      type: 'annotation.add',
-      pageId: page.id,
-      annotationId: crypto.randomUUID(),
-      subtype: 'ink',
-      bounds: readBounds(boundsDraft),
-      color: hexToRgb(annotationColor),
-      opacity: readOpacity(opacity),
-      strokeWidth: readPositive(strokeWidth, 'Stroke width'),
-      points: parseInkPoints(inkPoints),
-      ...(annotationText ? { text: annotationText } : {}),
-    });
-  }
-
   function selectAnnotation(annotation: PdfAnnotationInfo): void {
     onDrawingChange?.(null);
     setSelectedAnnotationId(annotation.id);
     onNavigate?.(annotation);
-    loadAnnotationFields(annotation);
-  }
-
-  function loadAnnotationFields(annotation: PdfAnnotationInfo): void {
-    setBoundsDraft({
-      x: formatNumber(annotation.bounds.x), y: formatNumber(annotation.bounds.y),
-      width: formatNumber(annotation.bounds.width), height: formatNumber(annotation.bounds.height),
-    });
-    setAnnotationText(annotation.text);
-    setAnnotationColor(rgbToHex(annotation.color));
-    setOpacity(formatNumber(annotation.opacity));
-  }
-
-  async function updateAnnotation(annotation: PdfAnnotationInfo): Promise<void> {
-    if (annotation.subtype === 'other' || annotation.subtype === 'link' || annotation.subtype === 'ink') {
-      throw new Error('This annotation cannot be edited without replacing its original geometry.');
-    }
-    await execute({
-      type: 'annotation.update', pageId: page.id, annotationId: annotation.id,
-      subtype: annotation.subtype, bounds: readBounds(boundsDraft), text: annotationText,
-      color: hexToRgb(annotationColor), opacity: readOpacity(opacity),
-      ...(annotation.subtype === 'rectangle' ? { strokeWidth: readPositive(strokeWidth, 'Stroke width') } : {}),
-    });
   }
 
   async function deleteAnnotation(annotation: PdfAnnotationInfo): Promise<void> {
@@ -329,13 +267,13 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     if (needsFont && !chosenFont) throw new Error('Choose an available embedded font for the field');
     const options = fieldOptions.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
     if ((choice || fieldType === 'radio') && !options.length) throw new Error('Enter one option per line');
-    await execute({
+    onPlacement?.({ documentId: document.id, label: 'Form field', command: (pageId, bounds) => ({
       type: 'form.create',
-      pageId: page.id,
+      pageId,
       fieldId: crypto.randomUUID(),
       name,
       fieldType,
-      bounds: readBounds(boundsDraft),
+      bounds,
       readOnly: fieldReadOnly,
       required: fieldRequired,
       ...(fieldType === 'list' ? { multiple: fieldMultiple } : {}),
@@ -344,7 +282,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
         fontSize: readPositive(fieldFontSize, 'Font size'),
       } : {}),
       ...(choice || fieldType === 'radio' ? { options } : {}),
-    });
+    }) });
   }
 
   async function fillField(field: FormFieldInfo): Promise<void> {
@@ -357,21 +295,11 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     if (draft) await execute(buildFormPropertyCommand(field, draft));
   }
 
-  function useSelectionBounds(): void {
-    if (!selectedBounds) return;
-    setBoundsDraft({
-      x: formatNumber(selectedBounds.x),
-      y: formatNumber(selectedBounds.y),
-      width: formatNumber(selectedBounds.width),
-      height: formatNumber(selectedBounds.height),
-    });
-  }
-
   function startDrawing(tool: AnnotationDrawingOptions['tool']): void {
     if (drawing?.tool === tool) { onDrawingChange?.(null); return; }
     try {
       onDrawingChange?.({ tool, color: annotationColor, opacity: readOpacity(opacity),
-        strokeWidth: readPositive(strokeWidth, 'Stroke width'), text: annotationText });
+        strokeWidth: readPositive(strokeWidth, 'Stroke width'), text: '' });
       setError('');
     } catch (caught) { setError(formatError(caught)); }
   }
@@ -414,17 +342,6 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
         }} /></label>
     </div></details> : null}
 
-    <details className="annotation-properties">
-      <summary>{t('Placement coordinates')}</summary>
-      <div className="document-tools-grid">
-        {boundsInput('X', 'x', boundsDraft, setBoundsDraft, locked)}
-        {boundsInput('Y', 'y', boundsDraft, setBoundsDraft, locked)}
-        {boundsInput(t("Width"), 'width', boundsDraft, setBoundsDraft, locked)}
-        {boundsInput(t("Height"), 'height', boundsDraft, setBoundsDraft, locked)}
-      </div>
-      <button type="button" disabled={locked || !selectedBounds} onClick={useSelectionBounds}>{t("Use selection bounds")}</button>
-    </details>
-
     <details className="annotation-reading-list" open hidden={mode !== 'comment'}>
       <summary>{t("Document annotations")}</summary>
       {!supportsAnnotations ? <p role="status">{t("The current PDF core does not advertise annotation editing.")}</p> : null}
@@ -437,7 +354,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
           </select></label>
           <label>{t('Annotation type')}<select value={annotationType} onChange={event => setAnnotationType(event.target.value)}>
             <option value="">{t('All types')}</option>
-            {Object.entries(annotationTypeLabels).map(([type, label]) => <option key={type} value={type}>{t(label)}</option>)}
+            {Object.entries(annotationTypeLabels).filter(([type]) => type !== 'link').map(([type, label]) => <option key={type} value={type}>{t(label)}</option>)}
           </select></label>
           <label>{t('Find annotation text')}<input type="search" value={annotationSearch} placeholder={t('Search notes…')}
             onChange={event => setAnnotationSearch(event.target.value)} /></label>
@@ -456,7 +373,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
               <span className="annotation-list-item-heading"><strong><i className="annotation-list-swatch" aria-hidden="true" style={{ background: rgbToHex(annotation.color) }} />{t(annotationTypeLabels[annotation.subtype])}</strong>
                 <span>{t('Page {page}', { page: document.pageOrder.indexOf(annotation.pageId) + 1 })}</span></span>
               <span className="annotation-list-item-text">{annotation.text || t('No comment text')}</span>
-              <span className="annotation-list-item-meta" title={formatRect(annotation.bounds)}>{Math.round(annotation.opacity * 100)}%</span>
+              <span className="annotation-list-item-meta">{Math.round(annotation.opacity * 100)}%</span>
             </button>
             {annotation.subtype === 'link' || annotation.subtype === 'other' ? (
               <span className="document-tools-readonly">{t(annotation.subtype === 'link' ? 'Link (read-only)' : 'Unsupported (read-only)')}</span>
@@ -468,22 +385,6 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
               }}>{t("Delete")}</button></div>}
           </li>)}
         </ul> : null}
-        <details className="annotation-properties"><summary>{t('Advanced annotation controls')}</summary>
-        <label>{t("Annotation text")}<textarea rows={2} value={annotationText} disabled={locked || !supportsAnnotations}
-          onChange={event => { setAnnotationText(event.target.value); if (drawing) onDrawingChange?.({ ...drawing, text: event.target.value }); }} /></label>
-        {canUpdateAnnotation && selectedAnnotation && selectedAnnotation.subtype !== 'other' && selectedAnnotation.subtype !== 'link' && selectedAnnotation.subtype !== 'ink' && <button type="button"
-          disabled={locked || !document.permissions.annotate} onClick={() => void run(() => updateAnnotation(selectedAnnotation))}>{t("Update selected annotation")}</button>}
-        <div className="text-edit-actions">
-          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('text'))}>{t("Add note")}</button>
-          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('highlight'))}>{t("Add highlight")}</button>
-          <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(() => addAnnotation('rectangle'))}>{t("Add rectangle")}</button>
-        </div>
-        <label>{t("Ink points (x,y; x,y; …)")}<textarea rows={2} value={inkPoints}
-          disabled={locked || !canAddAnnotation}
-          onChange={event => setInkPoints(event.target.value)} /></label>
-        {selectedAnnotation?.subtype === 'ink' ? <p role="status">{t('Existing ink is read-only here to keep its original strokes. Draw a new stroke to add ink.')}</p> : null}
-        <button type="button" disabled={locked || !canAddAnnotation || !document.permissions.annotate} onClick={() => void run(addInk)}>{t("Add ink")}</button>
-        </details>
         {!document.permissions.annotate ? <p role="alert">{t("This document does not permit annotations.")}</p> : null}
       </>
     </details>
@@ -543,7 +444,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
         </div> : null}
         {supportsFormFill && !document.permissions.fillForms ? <p role="alert">{t("This document does not permit form filling.")}</p> : null}
 
-        {supportsFormCreate ? <details><summary>{t('Create a field')}</summary><fieldset disabled={locked || !document.permissions.modify}>
+        {supportsFormCreate && onPlacement ? <details><summary>{t('Create a field')}</summary><fieldset disabled={locked || !document.permissions.modify}>
           <legend>{t("Create a field")}</legend>
           <label>{t("Field name")}<input value={fieldName} onChange={event => setFieldName(event.target.value)} /></label>
           <label>{t("Field type")}<select value={fieldType} onChange={event => setFieldType(event.target.value as typeof fieldType)}>
@@ -565,13 +466,13 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
           <label><input type="checkbox" checked={fieldRequired} onChange={event => setFieldRequired(event.target.checked)} />{t("Required field")}</label>
           {fieldType === 'list' && <label><input type="checkbox" checked={fieldMultiple}
             onChange={event => setFieldMultiple(event.target.checked)} />{t("Allow multiple selections")}</label>}
-          <button type="button" disabled={fieldType !== 'checkbox' && fieldType !== 'radio' && !chosenFont} onClick={() => void run(createField)}>{t("Create field")}</button>
+          <button type="button" disabled={dirty || (fieldType !== 'checkbox' && fieldType !== 'radio' && !chosenFont)} onClick={() => void run(createField)}>{t('Draw field on page')}</button>
         </fieldset></details> : null}
         {supportsFormCreate && !document.permissions.modify ? <p role="alert">{t("This document does not permit creating fields.")}</p> : null}
       </>}
     </details>
 
-    {loadError ? <p role="alert">{t("Unable to read document tools:")} {loadError}</p> : null}
+    {loadError ? <div className="task-error" role="alert"><p>{loadError}</p><button type="button" disabled={loading} onClick={() => setReload(value => value + 1)}>{t('Try again')}</button></div> : null}
     </div>
     <footer className="task-panel-footer">
       {error ? <p role="alert">{t(error)}</p> : null}
@@ -585,17 +486,6 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
       </> : <p role="status">{t(drawing ? 'Drawing tool active. Esc cancels.' : 'Select an annotation or choose a drawing tool.')}</p>}
     </footer>
   </section>;
-}
-
-function boundsInput(
-  label: string,
-  key: keyof BoundsDraft,
-  draft: BoundsDraft,
-  setDraft: (value: BoundsDraft) => void,
-  disabled: boolean,
-) {
-  return <label>{t(label)}<input type="number" step="any" value={draft[key]} disabled={disabled}
-    onChange={event => setDraft({ ...draft, [key]: event.target.value })} /></label>;
 }
 
 function fieldEditor(field: FormFieldInfo, value: FormValue, disabled: boolean, onChange: (value: FormValue) => void) {
@@ -640,19 +530,6 @@ function buildFieldContext(fields: FormFieldInfo[]) {
     : []));
 }
 
-function readBounds(draft: BoundsDraft): Rect {
-  const bounds = {
-    x: Number(draft.x),
-    y: Number(draft.y),
-    width: Number(draft.width),
-    height: Number(draft.height),
-  };
-  if (!Object.values(bounds).every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) {
-    throw new Error('Enter finite coordinates and positive width and height');
-  }
-  return bounds;
-}
-
 function readOpacity(value: string): number {
   const result = Number(value);
   if (!Number.isFinite(result) || result < 0 || result > 1) throw new Error('Opacity must be between 0 and 1');
@@ -665,23 +542,8 @@ function readPositive(value: string, label: string): number {
   return result;
 }
 
-function parseInkPoints(value: string): [number, number][] {
-  const points = value.split(/[;\n]+/).map(item => item.trim()).filter(Boolean).map(item => {
-    const coordinates = item.split(/[,\s]+/).map(Number);
-    if (coordinates.length !== 2 || !coordinates.every(Number.isFinite)) throw new Error('Ink points must use x,y pairs separated by semicolons');
-    return [coordinates[0]!, coordinates[1]!] as [number, number];
-  });
-  if (points.length < 2) throw new Error('Ink requires at least two coordinate points');
-  return points;
-}
-
 function rgbToHex(color: [number, number, number]): string {
   return `#${color.map(component => Math.round(component * 255).toString(16).padStart(2, '0')).join('')}`;
-}
-
-function hexToRgb(value: string): [number, number, number] {
-  if (!/^#[0-9a-f]{6}$/i.test(value)) throw new Error('Color must use #RRGGBB');
-  return [1, 3, 5].map(offset => parseInt(value.slice(offset, offset + 2), 16) / 255) as [number, number, number];
 }
 
 function fieldProperties(field: FormFieldInfo): FieldPropertiesDraft {
@@ -763,14 +625,6 @@ export function mergeFormPropertyDrafts(previous: FormFieldInfo[], next: FormFie
 
 function copyFormValue(value: FormValue): FormValue {
   return Array.isArray(value) ? [...value] : value;
-}
-
-function formatRect(bounds: Rect): string {
-  return `${formatNumber(bounds.x)}, ${formatNumber(bounds.y)} · ${formatNumber(bounds.width)} × ${formatNumber(bounds.height)}`;
-}
-
-function formatNumber(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 function formatError(error: unknown): string {

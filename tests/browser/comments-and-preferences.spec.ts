@@ -137,7 +137,7 @@ test('a manual note is immediately readable, list navigation opens its card, and
   await page.screenshot({ path: 'tmp/browser/comment-mobile.png' });
 });
 
-test('advanced controls follow marker selection instead of overwriting a different comment', async ({ page }) => {
+test('marker selection opens the correct editor without coordinate or duplicate advanced controls', async ({ page }) => {
   await page.goto('/editor/'); await openAiPdf(page);
   const card = await note(page, 'First comment');
   await card.getByRole('button', { name: 'Close comment', exact: true }).click();
@@ -148,10 +148,13 @@ test('advanced controls follow marker selection instead of overwriting a differe
   await card.getByRole('button', { name: 'Close comment', exact: true }).click();
   await page.getByRole('button', { name: 'Open comment 2 on page 1', exact: true }).click();
   await expect(card.locator('.comment-body')).toHaveText('Second comment');
-  await page.locator('summary').filter({ hasText: 'Advanced annotation controls' }).click();
-  await expect(page.getByRole('textbox', { name: 'Annotation text', exact: true })).toHaveValue('Second comment');
-  await page.getByRole('button', { name: 'Update selected annotation', exact: true }).click();
-  await expect(card.locator('.comment-body')).toHaveText('Second comment');
+  await expect(page.getByText('Advanced annotation controls', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Placement coordinates', { exact: true })).toHaveCount(0);
+  await card.getByRole('button', { name: 'Edit comment', exact: true }).click();
+  await expect(card.getByRole('textbox', { name: 'Comment text', exact: true })).toHaveValue('Second comment');
+  await card.getByRole('textbox').fill('Updated second comment');
+  await card.getByRole('button', { name: 'Save comment', exact: true }).click();
+  await expect(card.locator('.comment-body')).toHaveText('Updated second comment');
 });
 
 test('comments on different visible pages keep distinct page identities', async ({ page }) => {

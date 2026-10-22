@@ -12,17 +12,15 @@ export function AnnotationLayer({ document, page, render, engine, disabled, sele
 }) {
   const { t } = useI18n();
   const [annotations, setAnnotations] = useState<PdfAnnotationInfo[]>([]);
-  const [error, setError] = useState(false);
   const version = engine.getPageVersion?.(document.id, page.id) ?? document.revision;
   useEffect(() => {
-    let active = true; setError(false);
+    let active = true;
     void engine.describeAnnotations?.(document.id, page.id).then(items => { if (active) setAnnotations(items); })
-      .catch(() => { if (active) { setAnnotations([]); setError(true); } });
+      .catch(caught => { if (active) { setAnnotations([]); console.warn('Unable to load page comments', caught); } });
     return () => { active = false; };
   }, [engine, document.id, page.id, version]);
   const x = render.width / page.widthPt, y = render.height / page.heightPt;
   return <div className="annotation-interaction-layer" aria-label={t('Page comments')}>
-    {error && <span className="annotation-load-error" role="status">{t('Unable to load comments.')}</span>}
     {annotations.filter(item => item.subtype !== 'link').map((item, index) => {
       const active = selected?.documentId === document.id && selected.pageId === page.id && selected.id === item.id;
       return <button key={item.id} type="button" className="annotation-marker" data-annotation-id={item.id} aria-pressed={active}

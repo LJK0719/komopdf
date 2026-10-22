@@ -8,7 +8,7 @@ import { ProviderError } from './gemini.js';
 import type { ProviderAdapter, ProviderInput } from './provider-types.js';
 
 const ACTION_INSTRUCTIONS: Record<TextAction, string> = {
-  translate: 'Translate every segment faithfully into the target language. Preserve meaning, names, numbers, formatting, and paragraph breaks. Do not explain or summarize.',
+  translate: 'Translate the complete selected text faithfully into the target language as one coherent passage. Preserve meaning, names and numbers. Line breaks in PDF text are layout artifacts, not separate translation tasks. Do not reproduce empty lines or split the result into separate translations. Do not explain or summarize.',
   explain: 'Explain the meaning and relevant terminology of every segment clearly in the target language. Stay grounded in the supplied text; do not invent facts.',
   summarize: 'Summarize every segment in the target language, retaining its key points and important qualifications. Do not add facts.',
   proofread: 'Proofread every segment for spelling, grammar, and punctuation, preserving its meaning, language, and formatting. If no correction is needed, return the original text exactly. Do not translate or rewrite unnecessarily.',
@@ -126,7 +126,7 @@ export function registerTextActionRoute(app: FastifyInstance, options: {
       await reply.code(400).send(errorBody('INVALID_REQUEST', 'Request body does not conform to the text action protocol'));
       return;
     }
-    const remainingMs = options.limits.requestTimeoutMs - (Date.now() - (startedAt.get(fastifyRequest) ?? Date.now()));
+    const remainingMs = (options.limits.textActionTimeoutMs ?? options.limits.requestTimeoutMs) - (Date.now() - (startedAt.get(fastifyRequest) ?? Date.now()));
     if (remainingMs <= 0) {
       await reply.code(504).send(errorBody('REQUEST_TIMEOUT', 'AI request processing timed out'));
       return;
@@ -142,7 +142,7 @@ export function registerTextActionRoute(app: FastifyInstance, options: {
     try {
       if (fastifyRequest.raw.aborted || reply.raw.destroyed) cancel();
       controller.signal.throwIfAborted();
-      const generated = await options.provider.generate(prepareInput(parsed.data, options.limits.maxOutputTokens), controller.signal);
+      const generated = await options.provider.generate(prepareInput(parsed.data, options.limits.textActionOutputTokens ?? options.limits.maxOutputTokens), controller.signal);
       controller.signal.throwIfAborted();
       if (generated.finishReason !== 'STOP') throw new InvalidOutputError();
       const result = validateOutput(generated.text, parsed.data, options.limits.visibleResultBytes);

@@ -102,7 +102,8 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
       });
       return committed;
     } catch (caught) {
-      if (isCurrent()) setFeedback({ error: true, text: caught instanceof Error ? caught.message : 'Could not add the annotation.' });
+      console.warn('Unable to add annotation', caught);
+      if (isCurrent()) setFeedback({ error: true, text: 'Could not add the annotation. Please try again.' });
       return false;
     } finally {
       busyRef.current = false;
@@ -197,14 +198,17 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
       <label>{t('New note')}<textarea ref={textarea} rows={4} value={visibleNote.text} disabled={locked}
         onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
         placeholder={t('Write a note…')} onChange={event => setNote({ ...visibleNote, text: event.target.value })} /></label>
+      {feedback?.error && <p role="alert">{t(feedback.text)}</p>}
       <div className="annotation-note-actions">
         <span>{t('Ctrl/⌘ + Enter to save')}</span>
         <button type="button" disabled={busy} onClick={clearDraft}>{t('Cancel')}</button>
         <button type="submit" disabled={locked || !visibleNote.text.trim()}>{t('Add note')}</button>
       </div>
     </form> : null}
-    <div className={`annotation-drawing-hint${feedback?.error ? ' annotation-drawing-error' : ''}`} role={feedback?.error ? 'alert' : 'status'}>
-      {busy ? t('Saving annotation…') : feedback ? t(feedback.text) : t(hint)}
+    {!visibleNote && feedback?.error && <div className="annotation-note-editor" role="alert" style={{ left: 12, bottom: 12 }}>
+      <p>{t(feedback.text)}</p><button type="button" onClick={() => setFeedback(null)}>{t('Close')}</button></div>}
+    <div className="annotation-drawing-hint" role="status">
+      {busy ? t('Saving annotation…') : feedback && !feedback.error ? t(feedback.text) : t(hint)}
     </div>
   </div>;
 }

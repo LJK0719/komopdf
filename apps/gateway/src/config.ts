@@ -23,6 +23,8 @@ export type GatewayLimits = {
   upstreamStreamBytes: number;
   visibleResultBytes: number;
   maxOutputTokens: number;
+  textActionOutputTokens?: number;
+  textActionTimeoutMs?: number;
   agentMaxOutputTokens: number;
 };
 
@@ -115,6 +117,8 @@ export async function loadGatewayConfig(path = DEFAULT_CONFIG_PATH): Promise<Gat
       upstreamStreamBytes: positiveInteger(limits, 'upstreamStreamBytes', DEFAULT_LIMITS.upstreamStreamBytes),
       visibleResultBytes: positiveInteger(limits, 'visibleResultBytes', DEFAULT_LIMITS.visibleResultBytes),
       maxOutputTokens: positiveInteger(limits, 'maxOutputTokens', DEFAULT_LIMITS.maxOutputTokens),
+      textActionOutputTokens: positiveInteger(limits, 'textActionOutputTokens', 65_536),
+      textActionTimeoutMs: positiveInteger(limits, 'textActionTimeoutMs', 300_000),
       agentMaxOutputTokens: positiveInteger(limits, 'agentMaxOutputTokens', DEFAULT_LIMITS.agentMaxOutputTokens),
     },
   };

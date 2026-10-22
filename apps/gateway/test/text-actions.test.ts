@@ -84,8 +84,6 @@ const invalidRequests: Array<[string, Record<string, unknown>]> = [
   ['tools', { tools: [] }],
   ['no segments', { segments: [] }],
   ['empty segment', { segments: [{ id: 's1', text: '' }] }],
-  ['oversized segment', { segments: [{ id: 's1', text: 'a'.repeat(8001) }] }],
-  ['oversized total', { segments: [8000, 8000, 8000, 1].map((size, i) => ({ id: String(i), text: 'a'.repeat(size) })) }],
   ['too many segments', { segments: Array.from({ length: 13 }, (_, i) => ({ id: String(i), text: 'a' })) }],
   ['duplicate ids', { segments: [{ id: 's1', text: 'a' }, { id: 's1', text: 'b' }] }],
 ];
@@ -108,7 +106,7 @@ describe('text action contracts', () => {
   });
 
   it('accepts exact size limits without changing or truncating text', () => {
-    for (const sizes of [[8000, 8000, 8000], Array<number>(12).fill(2000)]) {
+    for (const sizes of [[60000], [8000, 8000, 8000], Array<number>(12).fill(2000)]) {
       const segments = sizes.map((size, i) => ({ id: String(i), text: '中'.repeat(size) }));
       expect(textActionRequestSchema.parse({ ...requestBody, segments }).segments).toEqual(segments);
     }
@@ -129,7 +127,7 @@ describe('text action contracts', () => {
 
 describe('anonymous, unbilled text action route', () => {
   const templates = [
-    ['translate', 'Translate every segment faithfully'],
+    ['translate', 'Translate the complete selected text faithfully'],
     ['explain', 'Explain the meaning and relevant terminology'],
     ['summarize', 'Summarize every segment'],
     ['proofread', 'If no correction is needed, return the original text exactly'],

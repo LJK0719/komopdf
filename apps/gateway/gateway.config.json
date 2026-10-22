@@ -22,6 +22,8 @@
     "upstreamStreamBytes": 4194304,
     "visibleResultBytes": 524288,
     "maxOutputTokens": 8192,
+    "textActionOutputTokens": 65536,
+    "textActionTimeoutMs": 300000,
     "agentMaxOutputTokens": 32768
   }
 }

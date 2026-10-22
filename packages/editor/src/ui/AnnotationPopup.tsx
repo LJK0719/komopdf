@@ -19,6 +19,8 @@ export function AnnotationPopup({ selection, document, engine, disabled, draftRe
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [reload, setReload] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [confirm, setConfirm] = useState<'close' | 'delete' | null>(null);
   const composing = useRef(false);
   const inFlight = useRef(false);
@@ -30,6 +32,7 @@ export function AnnotationPopup({ selection, document, engine, disabled, draftRe
   useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
   useEffect(() => {
     let active = true;
+    setLoading(true); setError(''); setLoadFailed(false);
     if (!engine.describeAnnotations) { setError(t('Unable to load comments.')); setLoading(false); return; }
     void Promise.all([engine.describeAnnotations(document.id, selection.pageId), engine.describePage(document.id, selection.pageId)]).then(([items, page]) => {
       if (!active) return;
@@ -45,9 +48,12 @@ export function AnnotationPopup({ selection, document, engine, disabled, draftRe
       }
       if (!dirtyRef.current) { setAnnotation(item); setText(item.text); }
       setLoading(false);
-    }).catch(caught => { if (active) { setError(String(caught)); setLoading(false); } });
+    }).catch(caught => { if (active) {
+      console.warn('Unable to read comment', caught);
+      setError(t('This comment could not be loaded. Please try again.')); setLoadFailed(true); setLoading(false);
+    } });
     return () => { active = false; };
-  }, [engine, document.id, document.revision, selection.pageId, selection.id]);
+  }, [engine, document.id, document.revision, selection.pageId, selection.id, reload]);
   const editable = annotation && annotation.subtype === 'text' && document.permissions.annotate && document.capabilities.includes('annotation.update');
   const deletable = annotation && !['link', 'other'].includes(annotation.subtype) && document.permissions.annotate && document.capabilities.includes('annotation.delete');
 
@@ -66,7 +72,12 @@ export function AnnotationPopup({ selection, document, engine, disabled, draftRe
       await onCommitted(result);
       if (remove) onClose();
       return true;
-    } catch (caught) { if (mounted.current) setError(caught instanceof Error ? caught.message : String(caught)); return false; }
+    } catch (caught) {
+      console.warn('Unable to update comment', caught);
+      if (mounted.current) setError(t(caught instanceof Error && caught.message === 'The comment changed. Reopen it before editing.'
+        ? caught.message : remove ? 'This comment could not be deleted. Please try again.' : 'This comment could not be saved. Your edits are still here.'));
+      return false;
+    }
     finally { inFlight.current = false; if (mounted.current) setBusy(false); onBusyChange(false); }
   }
   const finish = async () => !dirty || await execute(false);
@@ -82,6 +93,7 @@ export function AnnotationPopup({ selection, document, engine, disabled, draftRe
             onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void execute(false); } }} />
         </label> : <div className="comment-body" tabIndex={0} dir="auto">{annotation.text || t('No comment text')}</div>)}
         {error && <p className="task-error" role="alert">{t(error)}</p>}
+        {loadFailed && <button type="button" className="button" onClick={() => setReload(value => value + 1)}>{t('Try again')}</button>}
         {annotation && annotation.subtype !== 'text' && <p className="task-help">{t('This markup is shown read-only here to preserve its original appearance.')}</p>}
         {!document.permissions.annotate && <p className="task-help">{t('This document does not permit annotations.')}</p>}
         <footer>

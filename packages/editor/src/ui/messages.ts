@@ -9,7 +9,9 @@ import { workbenchMessages } from './workbench-messages.js';
 import { aiToolMessages } from './ai-tool-messages.js';
 import { AI_SERVICE_COPY_MESSAGES } from './ai-service-copy-messages.js';
 import { komoMaterialMessages } from './komo-material-messages.js';
+import { interactionReviewMessages } from './interaction-review-messages.js';
 export const messages: Record<string, string> = {
+  ...interactionReviewMessages,
   'Page comments': '页面批注', 'Unable to load comments.': '无法读取批注。',
   'Open comment {number} on page {page}': '打开第 {page} 页的第 {number} 条批注',
   'Comment content': '批注内容', 'Comment text': '批注正文', 'Loading comment…': '正在读取批注…',

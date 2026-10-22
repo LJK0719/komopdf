@@ -1,7 +1,6 @@
 .annotation-interaction-layer { position: absolute; inset: 0; z-index: 7; pointer-events: none; }
 .annotation-marker { position: absolute; display: grid; place-items: center; width: 24px; height: 24px; padding: 2px; border: 1px solid #68592388; border-radius: 5px; color: #272b22; box-shadow: 0 1px 4px #0002; pointer-events: auto; cursor: pointer; }
 .annotation-marker:hover, .annotation-marker[aria-pressed='true'] { outline: 2px solid var(--komo-accent); outline-offset: 2px; }
-.annotation-load-error { position: absolute; top: 8px; left: 8px; background: var(--komo-surface); color: var(--komo-danger); font-size: 12px; padding: 5px 8px; }
 .ai-floating-window.comment-popup { width: min(380px, calc(100vw - 16px)); }
 .comment-popup-content { display: flex; flex-direction: column; gap: 12px; padding: 14px; min-height: 0; max-height: min(620px, calc(100dvh - 70px)); font-size: 13px; }
 .comment-location { margin: 0; color: var(--komo-muted); font-size: 12px; }

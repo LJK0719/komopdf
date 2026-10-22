@@ -64,7 +64,8 @@ describe('task panel layout and delivery', () => {
       selectedIds={[]} engine={engine} host={host} disabled={false} onBusyChange={onBusyChange}
       onCommitted={onCommitted} onSelectionChange={vi.fn()} />);
     expect(objects).toContain('Scale and rotation');
-    expectFooterAction(objects, 'Move');
+    expect(objects).toContain('Move left'); expect(objects).toContain('Move right');
+    expect(objects).not.toContain('Move X'); expect(objects).not.toContain('Placement coordinates');
   });
 
   it('places OCR execution in the footer and uses the existing strict range rules', () => {

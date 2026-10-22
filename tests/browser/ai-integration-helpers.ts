@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 
-function pdfObjects(objects: string[]): Buffer {
+export function pdfObjects(objects: string[]): Buffer {
   let pdf = '%PDF-1.7\n';
   const offsets = objects.map((object, index) => { const offset = Buffer.byteLength(pdf); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; return offset; });
   const xref = Buffer.byteLength(pdf);

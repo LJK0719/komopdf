@@ -8,7 +8,7 @@ import { AiPanelDiff } from './AiPanelDiff.js';
 import { prepareTextActionApplication } from './text-action-application.js';
 import { useI18n } from './i18n.js';
 import { ensureEditorFont, type EditorFont } from './font-resources.js';
-import { TEXT_ACTION_LABELS, selectionMaterial, selectionUnits, splitTextActionTargets, type AiMaterial, type TextActionSelection, type TextActionTarget } from './text-actions.js';
+import { TEXT_ACTION_LABELS, normalizeActionText, selectionMaterial, selectionUnits, type AiMaterial, type TextActionSelection, type TextActionTarget } from './text-actions.js';
 
 type Outcome = { action: TextAction; targetLanguage: string; detectedLanguage: string; texts: Record<string, string> };
 type Props = {
@@ -59,19 +59,23 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
   const [notice, setNotice] = useState('');
   const [fontId, setFontId] = useState('');
   const [fontSize, setFontSize] = useState('');
-  const [selected, setSelected] = useState(() => new Set(units.map(unit => unit.id)));
   const [preview, setPreview] = useState<EditTransaction | null>(null);
   const [layout, setLayout] = useState<Record<string, string>>({});
   const [applied, setApplied] = useState(false);
+  const appliedRevision = useRef<number | null>(null);
   const controller = useRef<AbortController | null>(null);
-  const partial = useRef<{ signature: string; texts: Map<string, string>; detected: string }>({ signature: '', texts: new Map(), detected: '' });
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; controller.current?.abort(); }; }, []);
   useEffect(() => { if (!active) controller.current?.abort(); }, [active]);
-  useEffect(() => { setPreview(null); setLayout({}); }, [document.revision]);
+  useEffect(() => {
+    setPreview(null); setLayout({});
+    if (appliedRevision.current !== null && document.revision !== appliedRevision.current) {
+      appliedRevision.current = null; setApplied(false); setNotice('');
+    }
+  }, [document.revision]);
   const text = outcome ? units.map(unit => outcome.texts[unit.id] ?? '').join('\n\n') : '';
   const canReplace = outcome && !['explain', 'summarize'].includes(outcome.action);
-  const selectedUnits = units.filter(unit => selected.has(unit.id));
+  const selectedUnits = units;
   const selectedIds = new Set(selectedUnits.flatMap(unit => unit.targetIds));
   const selectedTargets = selection.targets.filter(target => selectedIds.has(target.id));
   const isDraft = Boolean(selection.draft);
@@ -82,41 +86,21 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
   const run = async () => {
     if (controller.current || disabled || !document.permissions.copy) return;
     const abort = new AbortController(); controller.current = abort;
-    const chunks = splitTextActionTargets(units);
-    const batches: typeof chunks[] = [];
-    for (const chunk of chunks) {
-      const last = batches.at(-1);
-      if (!last || last.length >= 12 || last.reduce((sum, item) => sum + item.text.length, 0) + chunk.text.length > 2000) batches.push([chunk]);
-      else last.push(chunk);
-    }
-    const signature = JSON.stringify([selection.id, action, targetLanguage]);
-    if (partial.current.signature !== signature) partial.current = { signature, texts: new Map(), detected: '' };
-    const saved = partial.current;
-    setBusy(true); setError(''); setNotice(''); setPreview(null); setLayout({});
+    setBusy(true); setProgress(t('Working…')); setError(''); setNotice(''); setPreview(null); setLayout({});
     try {
-      for (const [index, batch] of batches.entries()) {
-        abort.signal.throwIfAborted();
-        setProgress(batches.length > 1 ? t('Translating text {done}/{total}', { done: index + 1, total: batches.length }) : t('Working…'));
-        const pending = batch.filter(chunk => !saved.texts.has(chunk.id) && chunk.text.trim());
-        for (const chunk of batch) if (!chunk.text.trim()) saved.texts.set(chunk.id, chunk.text);
-        if (!pending.length) continue;
-        const response = await services.textAction({ requestId: crypto.randomUUID(), action,
-          segments: pending.map(({ id, text }) => ({ id, text })), sourceLanguage: 'auto', targetLanguage, tone: 'neutral' }, abort.signal);
-        abort.signal.throwIfAborted();
-        for (const chunk of pending) {
-          const result = response.segments.find(item => item.id === chunk.id);
-          if (!result) throw new Error('The AI result is incomplete. Try again.');
-          saved.texts.set(chunk.id, result.text);
-        }
-        saved.detected = !saved.detected || saved.detected === response.detectedLanguage ? response.detectedLanguage : 'mul';
-      }
-      const texts = Object.fromEntries(units.map(unit => [unit.id, chunks.filter(chunk => chunk.targetId === unit.id).map(chunk => saved.texts.get(chunk.id) ?? '').join('')]));
-      setOutcome({ action, targetLanguage, detectedLanguage: saved.detected, texts }); setEditOriginal(false);
-      setSelected(new Set(units.map(unit => unit.id))); setApplied(false);
-      partial.current = { signature: '', texts: new Map(), detected: '' };
+      const unit = units[0];
+      if (!unit?.text.trim()) throw new Error('Select text to continue.');
+      const response = await services.textAction({ requestId: crypto.randomUUID(), action,
+        segments: [{ id: unit.id, text: unit.text }], sourceLanguage: 'auto', targetLanguage, tone: 'neutral' }, abort.signal);
+      abort.signal.throwIfAborted();
+      const result = response.segments.find(item => item.id === unit.id);
+      if (!result?.text.trim()) throw new Error('The AI result is incomplete. Try again.');
+      setOutcome({ action, targetLanguage, detectedLanguage: response.detectedLanguage,
+        texts: { [unit.id]: normalizeActionText(result.text) } }); setEditOriginal(false);
+      appliedRevision.current = null; setApplied(false);
     } catch (caught) {
       if (mounted.current) {
-        if (abort.signal.aborted) setNotice(t('Stopped. You can resume without repeating completed parts.'));
+        if (abort.signal.aborted) setNotice(t('Stopped. You can try again.'));
         else setError(caught instanceof Error ? caught.message : String(caught));
       }
     } finally { if (mounted.current) { setBusy(false); setProgress(''); } if (controller.current === abort) controller.current = null; }
@@ -170,7 +154,9 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
     try {
       const info = await checkSources();
       if (info.revision !== preview.baseRevision) throw new Error('The document changed. Review the result again.');
-      await onCommitted(await engine.apply(preview)); setApplied(true); setPreview(null); setNotice(t('Applied. You can undo this change.'));
+      const result = await engine.apply(preview);
+      appliedRevision.current = result.revision;
+      await onCommitted(result); setApplied(true); setPreview(null); setNotice(t('Applied. You can undo this change.'));
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setApplying(false); onBusyChange(false); }
   };
@@ -251,9 +237,7 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
             {units.map(unit => {
               const target = selection.targets.find(target => target.id === unit.targetIds[0])!;
               return <article key={unit.id} className="ai-text-candidate">
-                <label className="ai-candidate-label">{(!isTranslation || editOriginal) && <input type="checkbox" checked={selected.has(unit.id)} disabled={applying || applied} onChange={event => {
-                  setSelected(previous => { const next = new Set(previous); if (event.target.checked) next.add(unit.id); else next.delete(unit.id); return next; }); setPreview(null);
-                }} />}{t('Page {page}', { page: target.pageNumber })}</label>
+                <span className="ai-candidate-label">{t('Pages')} {[...new Set(selection.targets.map(item => item.pageNumber))].join(', ')}</span>
                 {isTranslation ? <div className={showOriginal ? "ai-bilingual" : "ai-translation-only"}>
                   {showOriginal && <label><span>{t('Original text')} <small>{languageName(outcome.detectedLanguage)}</small></span>
                     <textarea readOnly dir="auto" aria-label={t('Original text on page {page}', { page: target.pageNumber })} value={unit.text} /></label>}

@@ -39,9 +39,13 @@ describe('search matching options', () => {
   });
 
   it('applies options across text runs/pages without changing the existing search API', async () => {
-    const extract = vi.fn(async ({ pageIds }: { pageIds: string[] }) => [{ id: 'block', pageId: pageIds[0],
-      runs: [{ text: '😀 C' }, { text: 'at cat cat2' }] }] as TextBlock[]);
-    const engine = { extract } as Pick<EngineAdapter, 'extract'>;
+    const describePage = vi.fn(async (_docId: string, pageId: string) => {
+      const bounds = { x: 20, y: 20, width: 150, height: 12 };
+      return { id: pageId, widthPt: 600, heightPt: 800, rotation: 0, objects: [{ id: 'o1', pageId, bounds,
+        transform: [1, 0, 0, 1, 0, 0], locator: { pageId, containerPath: [], objectIndex: 0 },
+        textBlock: { id: 'block', pageId, bounds, runs: [{ text: '😀 C', style: { fontSize: 12 }, sourceObjectIds: ['o1'] }, { text: 'at cat cat2', style: { fontSize: 12 }, sourceObjectIds: ['o1'] }] } }] };
+    });
+    const engine = { describePage } as unknown as Pick<EngineAdapter, 'describePage'>;
     const snapshot = { id: 'doc', revision: 1, pageOrder: ['p1', 'p2'] };
     const matches = await searchPdfDocument(engine, snapshot, 'cat', new AbortController().signal, vi.fn(),
       { matchCase: true, wholeWord: true });
@@ -49,7 +53,7 @@ describe('search matching options', () => {
       { pageId: 'p1', range: { start: 7, end: 10 } }, { pageId: 'p2', range: { start: 7, end: 10 } },
     ]);
     expect(await searchPdfDocument(engine, snapshot, '', new AbortController().signal, vi.fn())).toEqual([]);
-    expect(extract).toHaveBeenCalledTimes(2);
+    expect(describePage).toHaveBeenCalledTimes(2);
   });
 });
 

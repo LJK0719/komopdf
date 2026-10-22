@@ -46,6 +46,7 @@ import { DocumentToolsPanel, type DocumentToolsDraftHandle } from './DocumentToo
 import { SignaturePanel } from './SignaturePanel.js';
 import { OcrPanel } from './OcrPanel.js';
 import { PdfSearchPanel } from './PdfSearchPanel.js';
+import { PagePlacementLayer, type PagePlacementRequest } from './PagePlacementLayer.js';
 import { PageThumbnail } from './PageThumbnail.js';
 import { PageOrganizer, PageContextMenu, usePageTools, type PageAction } from './PageOrganizer.js';
 import { captureReadingSelection, type TextSelectionTarget } from './PdfTextLayer.js';
@@ -55,7 +56,8 @@ import { AiFloatingWindow } from './AiFloatingWindow.js';
 import { TextActionMenuItems } from './TextActionMenu.js';
 import { KolmoTranslationPanel } from './KolmoTranslationPanel.js';
 import './ai-tools.css';
-import { mergeTextRects, type TextHit } from './text-geometry.js';
+import { mergeTextRects, selectionRects, textClusters, type TextHit } from './text-geometry.js';
+import type { PdfSearchMatch } from './page-search.js';
 import { adjacentPageId } from './page-navigation.js';
 import { readingRegions } from './reading-order.js';
 import { renderPage } from './draw-render.js';
@@ -193,6 +195,9 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const [cropImage, setCropImage] = useState(false);
   const [cropPage, setCropPage] = useState(false);
   const [placement, setPlacement] = useState<{ kind: 'text' } | { kind: 'image'; resourceId: string; width: number; height: number } | null>(null);
+  const [pagePlacement, setPagePlacement] = useState<PagePlacementRequest | null>(null);
+  const [searchOcr, setSearchOcr] = useState<{ id: string; documentId: string } | null>(null);
+  const [resumeSearch, setResumeSearch] = useState(0);
   const [annotationDrawing, setAnnotationDrawing] = useState<AnnotationDrawingOptions | null>(null);
   const [reusableSignature, setReusableSignature] = useState<SignatureDraft | null>(null);
   const [pendingSignature, setPendingSignature] = useState<SignatureDraft | null>(null);
@@ -221,7 +226,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const [error, setError] = useState<string | null>(null);
   const [inlineTextId, setInlineTextId] = useState<string | null>(null);
   const [copiedTextFormat, setCopiedTextFormat] = useState<TextStyle | null>(null);
-  const [searchSelection, setSearchSelection] = useState<{ docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null>(null);
+  const [searchSelection, setSearchSelection] = useState<(Pick<PdfSearchMatch, 'sources' | 'pageId'> & { docId: string; revision: number; key: number }) | null>(null);
   const searchLocationSequence = useRef(0);
   const [outline, setOutline] = useState<OutlineEntry[]>([]);
   const [outlineError, setOutlineError] = useState(false);
@@ -674,7 +679,8 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     }
   };
 
-  const locateTextBlock = (pageId: string, blockId: string, range?: { start: number; end: number }): void => {
+  const locateTextBlock = (match: PdfSearchMatch): void => {
+    const { pageId, blockId } = match;
     if (previewActive || navigationBusy) return;
     if (isDraftDirty) { setError('Apply or discard the current text draft before changing selection'); return; }
     void (async () => {
@@ -697,10 +703,10 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
         if (!latest || latest.info.id !== current.info.id || latest.info.revision !== current.info.revision) return;
         const target = loaded.page.objects.find((object) => object.textBlock?.id === blockId);
         setInlineTextId(null);
-        setSelectedIds(target ? [target.id] : []);
+        setSelectedIds(match.sources.map(source => source.objectId));
         requestAnimationFrame(() => scrollToPage(pageId, target?.bounds.y ?? 0));
-        setSearchSelection(target && range ? { docId: latest.info.id, revision: latest.info.revision,
-          pageId, blockId, start: range.start, end: range.end, key: ++searchLocationSequence.current } : null);
+        setSearchSelection(target ? { ...match, docId: latest.info.id, revision: latest.info.revision,
+          key: ++searchLocationSequence.current } : null);
         setNotice(target ? `Located page ${current.info.pageOrder.indexOf(pageId) + 1}` : 'Referenced text block is currently not visible');
       } catch (caught) {
         setError(formatError(caught));
@@ -1009,8 +1015,8 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
       setAiContextDocumentId(owner); setActiveTool('ai'); setTab('home'); setPointer('select'); setInlineTextId(null);
       const target = loaded.page.objects.find(object => object.textBlock?.id === location?.blockId);
       setSelectedIds([]);
-      setSearchSelection(location?.blockId && location.range ? { docId: material.documentId, revision: material.revision, pageId,
-        blockId: location.blockId, start: location.range[0], end: location.range[1], key: ++searchLocationSequence.current } : null);
+      setSearchSelection(target && location?.blockId && location.range ? { docId: material.documentId, revision: material.revision, pageId,
+        sources: [{ objectId: target.id, blockId: location.blockId, range: location.range }], key: ++searchLocationSequence.current } : null);
       requestAnimationFrame(() => scrollToPage(pageId, target?.bounds.y ?? 0));
     } finally { setActivity('idle'); }
   };
@@ -1021,7 +1027,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     if (tool === 'ai') { if (hasAi) { setAiContextDocumentId(documentRef.current?.info.id ?? null); setActiveTool('ai'); } return; }
     if (tool === 'translate-document') { setTextWindowOpen(false); setDocumentTranslationOpen(true); return; }
     if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) setActiveTool(tool); }); return; }
-    setActiveTool(tool);
+    setPagePlacement(null); setActiveTool(tool);
   };
   const chooseTab = (next: RibbonTab) => {
     if (previewActive) return;
@@ -1030,7 +1036,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   };
   const chooseTabAfterSave = (next: RibbonTab) => {
     if (next === 'pages' && tab !== 'pages' && document) pageTools.select(document.page.id);
-    setTab(next); setActiveTool(null); setCropImage(false); setCropPage(false); setPlacement(null);
+    setTab(next); setActiveTool(null); setCropImage(false); setCropPage(false); setPlacement(null); setPagePlacement(null);
     setPointer(next === 'edit' ? 'edit' : 'select');
     if (next !== 'edit') { setInlineTextId(null); setSelectedIds([]); }
   };
@@ -1052,15 +1058,21 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const viewZoom = useViewZoom({ root: stageRef, documentKey: document?.info.id, pageKey: document?.page.id,
     size: fittedSize, zoom, busy: navigationBusy, enabled: tab !== 'pages' && !panelResizing && !previewActive, onZoom: changeZoom });
   const fitPage = viewZoom.fitPage;
+  const startPagePlacement = (request: PagePlacementRequest) => {
+    if (request.documentId !== documentRef.current?.info.id) return;
+    setPagePlacement(request); setPlacement(null); setPendingSignature(null); setAnnotationDrawing(null);
+    setCropImage(false); setCropPage(false); setInlineTextId(null); setCommentSelection(null); setSelectedIds([]); setPointer('select');
+  };
+  useEffect(() => { setPagePlacement(null); setSearchOcr(null); }, [document?.info.id]);
   const startAnnotation = (next: AnnotationDrawingOptions | null) => {
     if (isBusy) return;
-    setAnnotationDrawing(next); setPendingSignature(null); setPlacement(null); setCropImage(false); setCropPage(false);
+    setPagePlacement(null); setAnnotationDrawing(next); setPendingSignature(null); setPlacement(null); setCropImage(false); setCropPage(false);
     setInlineTextId(null); setSelectedIds([]); setCommentSelection(null);
     if (next) { setPointer('select'); setActiveTool('comment'); window.getSelection()?.removeAllRanges(); }
   };
   const startSignature = (draft: SignatureDraft | null) => {
     if (isBusy) return;
-    setPendingSignature(draft); setAnnotationDrawing(null); setPlacement(null); setCropImage(false); setCropPage(false);
+    setPagePlacement(null); setPendingSignature(draft); setAnnotationDrawing(null); setPlacement(null); setCropImage(false); setCropPage(false);
     setInlineTextId(null); setSelectedIds([]);
     if (draft) { setPointer('select'); window.getSelection()?.removeAllRanges(); }
   };
@@ -1126,7 +1138,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
       startAnnotation({ tool: action === 'note' ? 'text' : action, color: action === 'note' ? '#fff176' : '#226044', opacity: 1, strokeWidth: 2, text: '' });
       return;
     }
-    setAnnotationDrawing(null); setPendingSignature(null);
+    setPagePlacement(null); setAnnotationDrawing(null); setPendingSignature(null);
     if (tab === 'pages' && ['blankPage', 'importPages', 'duplicatePage', 'deletePage', 'rotatePageLeft', 'rotatePageRight', 'copyPages', 'pastePages', 'extractPages'].includes(action)) {
       await pageTools.run(action as PageAction); return;
     }
@@ -1404,7 +1416,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
         if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) setPointer(next); }); return; }
         if (next === 'edit') setTab('edit');
         else if (tab === 'pages') chooseTabAfterSave('home');
-        setPointer(next); setInlineTextId(null); setSelectedIds([]); setCropImage(false); setCropPage(false); setPlacement(null); setAnnotationDrawing(null); setPendingSignature(null);
+        setPagePlacement(null); setPointer(next); setInlineTextId(null); setSelectedIds([]); setCropImage(false); setCropPage(false); setPlacement(null); setAnnotationDrawing(null); setPendingSignature(null);
       }} annotationTool={annotationDrawing?.tool ?? null} canAnnotate={Boolean(document?.info.permissions.annotate && document.info.capabilities.includes('annotation.add'))}
         zoomMode={viewZoom.mode} pageTools={pageTools} overviewColumns={overviewColumns} onOverviewColumns={setOverviewColumns} onTool={chooseTool} onAction={action => void runRibbonAction(action)} view={view} continuous={continuous}
         onView={next => { if (!isBusy) { setView(next); requestAnimationFrame(() => scrollToPage(document?.page.id ?? '')); } }}
@@ -1491,9 +1503,11 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
           ) : (
             <DocumentViewport key={document.info.id} engine={engine} document={document} zoom={zoom} view={view} continuous={continuous}
               root={stageRef} locked={previewActive || navigationBusy || cropImage || cropPage || Boolean(pendingSignature)} pointer={pointer} onActive={activateVisiblePage} onHost={setPageHost}
-              onViewSize={setViewSize} drawing={Boolean(annotationDrawing || pendingSignature)}
+              onViewSize={setViewSize} drawing={Boolean(annotationDrawing || pendingSignature || pagePlacement)}
               renderOverlay={shown => <>
-                {!annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && !inlineTextId && <AnnotationLayer
+                {pagePlacement && <PagePlacementLayer key={`${pagePlacement.documentId}:${shown.page.id}`} request={pagePlacement} document={shown.info} page={shown.page}
+                  engine={engine} disabled={operationBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} onCancel={() => setPagePlacement(null)} />}
+                {!pagePlacement && !annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && !inlineTextId && <AnnotationLayer
                   document={shown.info} page={shown.page} render={shown.render} engine={engine} disabled={operationBusy}
                   selected={commentSelection} onOpen={selection => void openComment(selection)} />}
                 {annotationDrawing && <AnnotationDrawingLayer document={shown.info} page={shown.page} engine={engine}
@@ -1504,15 +1518,17 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
               onEditText={editTextAt} onInsertText={insertTextAt} onAnnotate={annotateSelection} onError={setError}
               onTextAction={host.aiServices ? openTextAction : undefined} aiSelection={textWindowOpen ? activeTextSelection : null}>
               {(shown) => <>
-                {searchSelection?.pageId === shown.page.id && (() => {
-                  const match = shown.page.objects.find(item => item.textBlock?.id === searchSelection.blockId);
-                  return match && <div className="search-match-highlight" style={{ position: 'absolute', pointerEvents: 'none', zIndex: 2, background: '#ffda5044', outline: '2px solid #dca91b',
-                    left: match.bounds.x * zoom, top: match.bounds.y * zoom, width: match.bounds.width * zoom, height: match.bounds.height * zoom }} />;
-                })()}
+                {searchSelection?.pageId === shown.page.id && searchSelection.docId === shown.info.id && searchSelection.revision === shown.info.revision && searchSelection.sources.flatMap(source => {
+                  const object = shown.page.objects.find(item => item.textBlock?.id === source.blockId);
+                  if (!object?.textBlock) return [];
+                  const rects = selectionRects(textClusters(object.textBlock), source.range);
+                  return (rects.length ? rects : [object.bounds]).map((rect, index) => <div key={`${source.blockId}:${index}`} className="search-match-highlight" style={{ position: 'absolute', pointerEvents: 'none', zIndex: 2, background: '#ffda5044', outline: '2px solid #dca91b',
+                    left: rect.x * zoom, top: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom }} />);
+                })}
                 {pendingSignature && <SignaturePlacementLayer key={`${shown.info.id}:${shown.page.id}:${shown.info.revision}`} document={shown.info} page={shown.page}
                   draft={pendingSignature} engine={engine} disabled={isBusy} onBusyChange={setEditPending}
                   onCommitted={handleCommitted} onCancel={() => setPendingSignature(null)} />}
-                {pointer === 'edit' && !annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && <ContextMenu.Root>
+                {pointer === 'edit' && !pagePlacement && !annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && <ContextMenu.Root>
                   <ContextMenu.Trigger className="page-object-tools" onContextMenuCapture={event => {
                     const rect = event.currentTarget.getBoundingClientRect();
                     objectContextPoint.current = { x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom };
@@ -1598,25 +1614,33 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
           {!document && activeTool !== 'ai' && <div className="panel-empty"><FilePlus2 size={28} /><p>{t('Open a PDF to get started.')}</p></div>}
 
           <div hidden={activeTool !== 'search'}>
-          <PdfSearchPanel document={document?.info ?? null} engine={engine} disabled={isBusy} onLocate={locateTextBlock} onCommitted={handleCommitted} onBusyChange={setEditPending} />
+          <PdfSearchPanel document={document?.info ?? null} engine={engine} disabled={isBusy} active={activeTool === 'search'} resumeSearch={resumeSearch}
+            onRequestOcr={host.capabilities.ocr && document?.info.permissions.modify ? () => {
+              void finishDrafts().then(ok => { const current = documentRef.current; if (ok && current) {
+                setSearchOcr({ id: crypto.randomUUID(), documentId: current.info.id }); setActiveTool('ocr');
+              } });
+            } : undefined} onLocate={locateTextBlock} onCommitted={handleCommitted} onBusyChange={setEditPending} />
           </div>
 
           {document && <div hidden={activeTool !== 'arrange' && activeTool !== 'pages'}><ObjectEditPanel mode={activeTool === 'pages' ? 'pages' : 'arrange'} section={pagePanelSection} pageSelection={pageTools.ids} document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} host={host} disabled={isBusy} onBusyChange={setEditPending}
+            onPlacement={startPagePlacement} onCrop={kind => { setPagePlacement(null); if (kind === 'page') setCropPage(true); else setCropImage(true); }}
             onImportPages={() => void pageTools.openImport(document.page.id)}
             onSelectionChange={ids => { setSelectedIds(ids); setSearchSelection(null); }} onCommitted={handleCommitted} /></div>}
 
           {document && <div hidden={activeTool !== 'arrange'}><ParagraphPanel document={document.info} page={document.page} selectedIds={selectedIds}
             engine={engine} draftRef={paragraphDraft} disabled={operationBusy || textDraftDirty} onBusyChange={setEditPending} onDraftChange={setParagraphDraftDirty} onCommitted={handleCommitted} /></div>}
           {document && <div hidden={activeTool !== 'comment' && activeTool !== 'forms'}><DocumentToolsPanel mode={activeTool === 'forms' ? 'forms' : 'comment'} document={document.info} page={document.page} selectedIds={selectedIds}
-            selectedCommentId={commentSelection?.documentId === document.info.id ? commentSelection.id : null} onCommentCreated={(pageId, id) => commentCreated(document.info.id, pageId, id)} active={activeTool === 'comment' || activeTool === 'forms'} drawing={annotationDrawing} onDrawingChange={startAnnotation} onNavigate={annotation => {
+            selectedCommentId={commentSelection?.documentId === document.info.id ? commentSelection.id : null} onCommentCreated={(pageId, id) => commentCreated(document.info.id, pageId, id)} active={activeTool === 'comment' || activeTool === 'forms'} drawing={annotationDrawing} onDrawingChange={startAnnotation} onPlacement={startPagePlacement} onNavigate={annotation => {
               void openComment({ documentId: document.info.id, pageId: annotation.pageId, id: annotation.id });
             }} engine={engine} draftRef={formDraft} onDraftDirtyChange={setFormDraftDirty} disabled={operationBusy || isTextDraftDirty || noteDraftPage !== null || commentDirty} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
           {document && <div hidden={activeTool !== 'sign'}><SignaturePanel document={document.info} disabled={isBusy}
             draft={reusableSignature} onDraftChange={setReusableSignature} placing={Boolean(pendingSignature)} onPlacementRequest={startSignature} /></div>}
 
           {host.capabilities.ocr && document && <div hidden={activeTool !== 'ocr'}><OcrPanel document={document.info} page={document.page} selectedIds={selectedIds}
-            engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
+            request={searchOcr} onBatchFinished={docId => { if (searchOcr?.documentId === docId && documentRef.current?.info.id === docId) {
+              setSearchOcr(null); setActiveTool('search'); setResumeSearch(value => value + 1);
+            } }} engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
 
           <div hidden={activeTool !== 'fonts'}><FontPanel engine={engine} host={host} disabled={operationBusy} onBusyChange={setEditPending} /></div>
           {document && <div hidden={activeTool !== 'export'}><ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} wordAvailable={Boolean(host.convertDocument)} onExport={exportDocument} {...(host.openSavedFile ? { onOpenFile: (handle, reveal) => host.openSavedFile!(handle, reveal) } : {})} /></div>}

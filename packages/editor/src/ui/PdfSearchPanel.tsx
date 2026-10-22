@@ -1,27 +1,27 @@
 import { useI18n } from './i18n.js';
 import { memo, useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
 import type { CommitResult, DocumentInfo, EngineAdapter } from '@pdf-editor/contracts';
-import { CommandRegistry } from '@pdf-editor/commands';
-import { findSearchRanges, nextSearchIndex, type SearchOptions } from './search-matching.js';
+import { nextSearchIndex, type SearchOptions } from './search-matching.js';
+import { searchPage, prepareSearchReplacement, type PdfSearchMatch as Match } from './page-search.js';
+import { AppDialog } from './AppDialog.js';
+import { unrecognizedImageRegions } from './ocr-regions.js';
 import './panel-refresh.css';
 
-type Match = {
-  pageId: string; blockId: string; pageNumber: number; range: { start: number; end: number }; excerpt: string;
-};
 type SearchSnapshot = Pick<DocumentInfo, 'id' | 'revision' | 'pageOrder'>;
 type SearchState = {
   docId: string; revision: number; engine: EngineAdapter;
   matches: Match[]; status: 'searching' | 'complete' | 'stopped' | 'failed'; scannedPages: number;
 };
 type Props = { document: DocumentInfo | null; engine: EngineAdapter; disabled: boolean;
-  onLocate(pageId: string, blockId: string, range?: { start: number; end: number }): void;
+  active?: boolean; onRequestOcr?: (() => void) | undefined; resumeSearch?: number;
+  onLocate(match: Match): void;
   onCommitted?(result: CommitResult): Promise<void>; onBusyChange?(busy: boolean): void };
 
 const SearchResult = memo(function SearchResult({ match, selected, disabled, selectedButton, onLocate }: {
   match: Match; selected: boolean; disabled: boolean; selectedButton: RefObject<HTMLButtonElement | null>; onLocate(match: Match): void;
 }) {
   const { t } = useI18n();
-  const start = Math.min(35, match.range.start), end = start + match.range.end - match.range.start;
+  const { start, end } = match.excerptRange;
   return <button type="button" ref={selected ? selectedButton : undefined} aria-pressed={selected} disabled={disabled}
     className="pdf-search-result"
     onClick={() => onLocate(match)}>{t('Page {page}', { page: match.pageNumber })}: {match.excerpt.slice(0, start)}<mark>{match.excerpt.slice(start, end)}</mark>{match.excerpt.slice(end)}</button>;
@@ -29,7 +29,7 @@ const SearchResult = memo(function SearchResult({ match, selected, disabled, sel
 
 /** Search one page at a time; keep only hit locations and short excerpts, never extracted page text. */
 export async function searchPdfDocument(
-  engine: Pick<EngineAdapter, 'extract'>,
+  engine: Pick<EngineAdapter, 'describePage'>,
   snapshot: SearchSnapshot,
   query: string,
   signal: AbortSignal,
@@ -41,21 +41,15 @@ export async function searchPdfDocument(
   for (let index = 0; index < snapshot.pageOrder.length; index++) {
     if (signal.aborted) break;
     const pageId = snapshot.pageOrder[index]!;
-    const blocks = await engine.extract({ docId: snapshot.id, pageIds: [pageId] });
+    const page = await engine.describePage(snapshot.id, pageId);
     if (signal.aborted) break;
-    for (const block of blocks) {
-      const text = block.runs.map(run => run.text).join('');
-      for (const range of findSearchRanges(text, query, options)) {
-        found.push({ pageId, blockId: block.id, pageNumber: index + 1, range,
-          excerpt: text.slice(Math.max(0, range.start - 35), range.end + 65) });
-      }
-    }
+    found.push(...searchPage(page, index + 1, query, options));
     onProgress([...found], index + 1);
   }
   return found;
 }
 
-export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitted, onBusyChange }: Props) {
+export function PdfSearchPanel({ document, engine, disabled, active = true, onRequestOcr, resumeSearch = 0, onLocate, onCommitted, onBusyChange }: Props) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [matchCase, setMatchCase] = useState(false);
@@ -65,6 +59,29 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
   const [replacing, setReplacing] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [scanPages, setScanPages] = useState<number[]>([]);
+  const [askOcr, setAskOcr] = useState(false);
+  const promptedDocument = useRef('');
+  useEffect(() => {
+    if (!active || !document) return;
+    let cancelled = false;
+    setScanPages([]);
+    void (async () => {
+      const pages: number[] = [];
+      for (const [index, pageId] of document.pageOrder.entries()) {
+        if (cancelled) return;
+        const page = await engine.describePage(document.id, pageId);
+        if (unrecognizedImageRegions(page).length) pages.push(index + 1);
+      }
+      if (!cancelled) {
+        setScanPages(pages);
+        if (pages.length && promptedDocument.current !== document.id) {
+          promptedDocument.current = document.id; setAskOcr(true);
+        }
+      }
+    })().catch(caught => { console.warn('Unable to inspect searchable text', caught); });
+    return () => { cancelled = true; };
+  }, [active, document?.id, document?.revision, engine]);
   const [result, setResult] = useState<SearchState | null>(null);
   const queryInput = useRef<HTMLInputElement>(null);
   const selectedButton = useRef<HTMLButtonElement>(null);
@@ -104,7 +121,7 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
 
   const locate = useCallback((match: Match) => {
     setSelected(match);
-    onLocate(match.pageId, match.blockId, match.range);
+    onLocate(match);
   }, [onLocate]);
 
   function navigate(direction: 1 | -1) {
@@ -152,6 +169,10 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
     }
   }
 
+  useEffect(() => {
+    if (active && query.trim() && !disabled && !replacing) void search();
+  }, [active, resumeSearch]);
+
   function navigateOrSearch(direction: 1 | -1) {
     if (visible) navigate(direction);
     else void search(direction);
@@ -177,12 +198,8 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
     if (!document || !selected || !onCommitted || disabled || replacing || !visible || searching) return;
     setReplacing(true); onBusyChange?.(true); setError('');
     try {
-      const page = await engine.describePage(document.id, selected.pageId);
-      const range: [number, number] = [selected.range.start, selected.range.end];
-      const layout = await engine.previewText({ docId: document.id, pageId: page.id, blockId: selected.blockId, range, text: replacement });
-      if (layout.overflow) throw new Error(t('Text does not fit. Shorten it or use a smaller font size.'));
-      const result = await new CommandRegistry(engine).execute({ id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision, source: 'manual',
-        commands: [{ type: 'text.replace', pageId: page.id, blockId: selected.blockId, range, text: replacement }] }, { document, pages: new Map([[page.id, page]]) });
+      const transaction = await prepareSearchReplacement(engine, document, selected, replacement);
+      const result = await engine.apply(transaction);
       await onCommitted(result);
       invalidateSearch();
       setNotice('Match replaced. Choose Next match or press Enter to continue searching.');
@@ -194,7 +211,18 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
   const countLabel = t('{current} of {count}', { current: selectedIndex + 1, count });
   return <section className="text-edit-panel task-panel pdf-search-panel" aria-label={t('Find in document')}>
     <header className="task-panel-header"><h2>{t('Find in document')}</h2></header>
+    <AppDialog open={active && askOcr} onOpenChange={setAskOcr} title={t('Recognize text for search?')}>
+      <p>{t('This document contains scanned pages. Recognize text throughout the document to make it searchable?')}</p>
+      {!onRequestOcr && <p>{t(document && !document.permissions.modify ? 'This document does not allow adding a searchable text layer.' : 'Open this PDF in the desktop app to recognize scanned text.')}</p>}
+      <footer><button type="button" onClick={() => setAskOcr(false)}>{t('Not now')}</button>
+        {onRequestOcr && <button type="button" className="button button-primary" disabled={disabled} onClick={() => { setAskOcr(false); onRequestOcr(); }}>{t('Recognize entire document')}</button>}</footer>
+    </AppDialog>
     <div className="task-panel-body">
+      {!!scanPages.length && <div className="panel-refresh-note" role="status">
+        <p>{t('Text in images on {count} pages has not been recognized.', { count: scanPages.length })}</p>
+        {onRequestOcr ? <button type="button" disabled={disabled} onClick={() => setAskOcr(true)}>{t('Recognize entire document')}</button>
+          : <p>{t(document && !document.permissions.modify ? 'This document does not allow adding a searchable text layer.' : 'Open this PDF in the desktop app to recognize scanned text.')}</p>}
+      </div>}
       <form onSubmit={event => { event.preventDefault(); if (!searching) void search(); }}>
         {/* Cross-page locate briefly makes the host busy; readOnly preserves query focus. */}
         <label>{t('Find text')}<input ref={queryInput} value={query} disabled={!document || replacing}
@@ -234,7 +262,7 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
       </p>
       {notice ? <p role="status" className="layout-result">{t(notice)}</p> : null}
       {!!count && <div className="pdf-search-results" aria-label={t('Search results')}>
-        {visible?.matches.map(match => <SearchResult key={`${match.pageId}:${match.blockId}:${match.range.start}:${match.range.end}`}
+        {visible?.matches.map((match, index) => <SearchResult key={`${match.pageId}:${match.blockId}:${match.range.start}:${match.range.end}:${index}`}
           match={match} selected={selected === match} disabled={!canNavigate} selectedButton={selectedButton} onLocate={locate} />)}
       </div>}
     </div>
@@ -248,7 +276,9 @@ export function PdfSearchPanel({ document, engine, disabled, onLocate, onCommitt
       </div>
       {onCommitted && document?.permissions.modify && document.capabilities.includes('text.replace') ? <>
         <label>{t('Replace with')}<input value={replacement} disabled={disabled || replacing} onChange={event => setReplacement(event.target.value)} /></label>
-        <button type="button" disabled={!canNavigate || !selected} onClick={() => void replace()}>{t('Replace selected match')}</button>
+        {selected?.isOcr && <p className="task-help">{t('Replacing recognized text changes the searchable text layer, not the scanned image.')}</p>}
+        {selected && !selected.replaceable && <p className="task-help">{t('This text can be searched but cannot be edited.')}</p>}
+        <button type="button" disabled={!canNavigate || !selected?.replaceable} onClick={() => void replace()}>{t('Replace selected match')}</button>
       </> : null}
     </footer>
   </section>;

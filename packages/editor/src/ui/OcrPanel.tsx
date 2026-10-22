@@ -13,11 +13,14 @@ import {
 } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
 import { parsePageIndices } from './page-import-utils.js';
+import { unrecognizedImageRegions, overlapsExistingText } from './ocr-regions.js';
 import './panel-refresh.css';
 
 type OcrStatus = { message: string; values?: Record<string, string | number> };
 
 export type OcrPanelProps = {
+  request?: { id: string; documentId: string } | null;
+  onBatchFinished?(documentId: string): void;
   document: DocumentInfo;
   page: PageModel;
   selectedIds: string[];
@@ -58,6 +61,7 @@ function isValidBounds(b: Rect | undefined): b is Rect {
 }
 
 export function OcrPanel({
+  request, onBatchFinished,
   document,
   page,
   selectedIds,
@@ -67,7 +71,7 @@ export function OcrPanel({
   onCommitted,
 }: OcrPanelProps) {
   useI18n();
-  const [targetMode, setTargetMode] = useState<'current' | 'range'>('current');
+  const [targetMode, setTargetMode] = useState<'current' | 'range' | 'all'>('current');
   const [pageRangeInput, setPageRangeInput] = useState(() => {
     const idx = document.pageOrder.indexOf(page.id);
     return idx >= 0 ? String(idx + 1) : '1';
@@ -173,15 +177,9 @@ export function OcrPanel({
   async function runCurrentPageOcr(): Promise<void> {
     if (locked) return;
 
-    if (hasExistingText) {
-      if (!useImageRegion || !selectedImage) {
-        setError('Page already contains text blocks. Full-page OCR is blocked to avoid duplicate text.');
-        return;
-      }
-      if (selectedImageOverlapsExistingText) {
-        setError('Selected image region overlaps with existing text blocks. OCR is blocked to avoid duplicate text.');
-        return;
-      }
+    if (hasExistingText && !unrecognizedImageRegions(page).length && !(useImageRegion && selectedImage && !selectedImageOverlapsExistingText)) {
+      setError('This page already has searchable text.');
+      return;
     }
 
     const currentDocId = document.id;
@@ -217,7 +215,7 @@ export function OcrPanel({
       }
 
       const lines: CandidateLine[] = (result.lines || [])
-        .filter(l => isValidBounds(l.bounds))
+        .filter(l => isValidBounds(l.bounds) && !overlapsExistingText(page, l.bounds))
         .map((l, index) => {
           const lineTransform = (l as { transform?: Matrix }).transform;
           return {
@@ -367,11 +365,18 @@ export function OcrPanel({
     }
   }
 
-  async function runOcrRange(): Promise<void> {
+  const startedRequest = useRef('');
+  useEffect(() => {
+    if (!request || request.documentId !== document.id || startedRequest.current === request.id || locked || !chosenFontId) return;
+    startedRequest.current = request.id; setTargetMode('all'); void runOcrRange('all');
+  }, [request, document.id, locked, chosenFontId]);
+
+  async function runOcrRange(scope = targetMode): Promise<void> {
     if (locked || !canWriteLayer) return;
     let pageNumbers: number[];
     try {
-      pageNumbers = parsePageIndices(pageRangeInput, document.pageOrder.length).map(index => index + 1);
+      pageNumbers = scope === 'all' ? document.pageOrder.map((_, index) => index + 1)
+        : parsePageIndices(pageRangeInput, document.pageOrder.length).map(index => index + 1);
       if (!pageNumbers.length) throw new Error('Please specify a valid page range (e.g. 1-3, 5).');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Please specify a valid page range (e.g. 1-3, 5).');
@@ -390,6 +395,7 @@ export function OcrPanel({
     stopRequestedRef.current = false;
     let committedPages = 0;
     let skippedPages = 0;
+    let finished = false;
     let currentDocRevision = document.revision;
 
     try {
@@ -402,28 +408,20 @@ export function OcrPanel({
         setStatusMessage({ message: 'Processing page {page} · {committed} pages applied…', values: { page: pageNum, committed: committedPages } });
 
         const targetPage = await engine.describePage(document.id, targetPageId);
-        // Skip pages that already contain text blocks in batch range mode
-        const hasText = targetPage.objects.some(obj => obj.type === 'text' || Boolean(obj.textBlock));
-        if (hasText) {
-          skippedPages++;
-          continue;
+        const regions = unrecognizedImageRegions(targetPage);
+        if (!regions.length) { skippedPages++; continue; }
+        const validLines: CandidateLine[] = [];
+        for (const clip of regions) {
+          if (stopRequestedRef.current) break;
+          const jobId = crypto.randomUUID(); activeJobIdRef.current = jobId;
+          const result = await engine.recognizeOcr!({ docId: document.id, pageId: targetPageId,
+            baseRevision: currentDocRevision, jobId, clip });
+          for (const line of result.lines ?? []) {
+            if (line.text.trim() && isValidBounds(line.bounds) && !overlapsExistingText(targetPage, line.bounds))
+              validLines.push({ ...line, id: crypto.randomUUID() });
+          }
         }
-
-        const jobId = crypto.randomUUID();
-        activeJobIdRef.current = jobId;
-
-        const result = await engine.recognizeOcr!({
-          docId: document.id,
-          pageId: targetPageId,
-          baseRevision: currentDocRevision,
-          jobId,
-        });
-
         if (stopRequestedRef.current) break;
-
-        const validLines = (result.lines || []).filter(
-          l => l.text.trim().length > 0 && isValidBounds(l.bounds)
-        );
 
         if (validLines.length > 0) {
           const commands: EditCommand[] = [];
@@ -485,6 +483,7 @@ export function OcrPanel({
         }
       }
 
+      finished = true;
       if (stopRequestedRef.current) {
         setStatusMessage({ message: 'Stopped. {committed} pages applied and retained; {skipped} pages skipped.', values: { committed: committedPages, skipped: skippedPages } });
       } else {
@@ -496,6 +495,7 @@ export function OcrPanel({
       activeJobIdRef.current = null;
       setBusy(false);
       onBusyChange(false);
+      if (finished) onBatchFinished?.(document.id);
     }
   }
 
@@ -507,9 +507,8 @@ export function OcrPanel({
     setCandidateLines(lines => lines.filter(l => l.id !== id));
   }
 
-  const isCurrentPageBlocked =
-    hasExistingText &&
-    (!useImageRegion || !selectedImage || selectedImageOverlapsExistingText);
+  const isCurrentPageBlocked = hasExistingText && !unrecognizedImageRegions(page).length
+    && !(useImageRegion && selectedImage && !selectedImageOverlapsExistingText);
 
   if (!engine.recognizeOcr) return null;
 
@@ -522,9 +521,10 @@ export function OcrPanel({
         <label>{t("Scope")}<select
             value={targetMode}
             disabled={locked}
-            onChange={e => setTargetMode(e.target.value as 'current' | 'range')}
+            onChange={e => setTargetMode(e.target.value as 'current' | 'range' | 'all')}
           >
             <option value="current">{t('Current page (page {page})', { page: document.pageOrder.indexOf(page.id) + 1 })}</option>
+            <option value="all">{t('Entire document')}</option>
             <option value="range">{t("Page range (batch)")}</option>
           </select>
         </label>
@@ -571,15 +571,11 @@ export function OcrPanel({
 
         {targetMode === 'current' && hasExistingText && (
           <div className="panel-refresh-note" role="status">
-            <strong>{t('Notice: Page already contains text blocks.')}</strong>
-            <p>{t('Full-page OCR is disabled to prevent duplicate text. Only selecting an image region that does not overlap existing text is allowed.')}</p>
-            {useImageRegion && selectedImage && selectedImageOverlapsExistingText ? <p role="alert">{t('Selected image overlaps existing text blocks. Deselect or choose a non-overlapping image.')}</p> : null}
+            <p>{t(isCurrentPageBlocked ? 'This page already has searchable text.' : 'Existing text is kept. Only newly recognized lines are added.')}</p>
           </div>
         )}
 
-        {targetMode === 'range' && (
-          <p className="panel-refresh-muted">{t('Batch OCR applies text one page at a time. Pages with text are skipped; stopping keeps completed pages.')}</p>
-        )}
+        {targetMode !== 'current' && <p className="panel-refresh-muted">{t('Recognizes unsearched image regions and keeps existing text. Stopping keeps completed pages.')}</p>}
 
 
         {targetMode === 'current' && candidateLines.length > 0 && (
@@ -644,7 +640,7 @@ export function OcrPanel({
             {candidateLines.length > 0 ? <button type="button" className="task-panel-primary" disabled={locked || !canWriteLayer}
               onClick={() => void applyCandidates()}>{t('Add searchable text')}</button> : null}
           </> : <button type="button" className="task-panel-primary" disabled={locked || !canWriteLayer}
-            onClick={() => void runOcrRange()}>{busy ? t('Running range…') : t('Run OCR range')}</button>}
+            onClick={() => void runOcrRange()}>{busy ? t('Recognizing…') : t(targetMode === 'all' ? 'Recognize entire document' : 'Run OCR range')}</button>}
           {busy ? <button type="button" onClick={() => void handleStop()}>{t('Stop')}</button> : null}
         </div>
       </footer>

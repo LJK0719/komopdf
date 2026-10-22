@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DocumentInfo, EditableObject } from '@pdf-editor/contracts';
-import { selectionMaterial, splitTextActionTargets, textActionSelection, textActionTarget } from '../src/ui/text-actions.js';
+import { selectionMaterial, selectionUnits, textActionSelection, textActionTarget } from '../src/ui/text-actions.js';
 
 const document: DocumentInfo = { id: 'doc', revision: 3, savedRevision: 1, pageOrder: ['p1', 'p2'], sourceIds: ['s1'],
   permissions: { modify: true, copy: true, annotate: true, fillForms: true, encrypted: false, signed: false }, capabilities: ['text.replace'] };
@@ -21,19 +21,19 @@ describe('text action selection snapshots', () => {
     const target = textActionTarget(object('HelloWorld'), 1, [0, 10], 'Hello World')!;
     expect(target.text).toBe('Hello World'); expect(target.blockText).toBe('HelloWorld'); expect(target.range).toEqual([0, 10]);
   });
-  it('splits long selections without losing text or splitting surrogate pairs', () => {
-    const original = 'A😀B '.repeat(3000) + 'Done.';
-    const target = textActionTarget(object(original), 1)!;
-    const chunks = splitTextActionTargets([target], 400);
-    expect(chunks.length).toBeGreaterThan(1);
-    expect(chunks.map(item => item.text).join('')).toBe(original);
-    for (const chunk of chunks) { expect(chunk.text.length).toBeLessThanOrEqual(400); expect(chunk.text.isWellFormed()).toBe(true); }
+  it('keeps long, multi-paragraph selections in one unit and collapses empty lines', () => {
+    const original = 'A😀B '.repeat(7000) + 'Done.';
+    const targets = [original, '\r\n Second\n\n\n paragraph \r\n', 'Third paragraph'].map(text => textActionTarget(object(text), 1)!);
+    const units = selectionUnits(textActionSelection(document, 'paper.pdf', targets));
+    expect(units).toHaveLength(1);
+    expect(units[0]?.text).toBe(original + '\nSecond\nparagraph\nThird paragraph');
+    expect(units[0]?.targetIds).toEqual(targets.map(target => target.id));
   });
   it('keeps every page in the handoff and distinguishes generated text from the original', () => {
     const first = textActionTarget(object(), 1)!;
     const second = { ...textActionTarget(object('Second page'), 2)!, pageId: 'p2' };
     const material = selectionMaterial(textActionSelection(document, 'paper.pdf', [first, second]), '译文', { sourceLanguage: 'en', targetLanguage: 'zh' });
-    expect(material.text).toBe('Hello world\n\nSecond page'); expect(material.generatedText).toBe('译文');
+    expect(material.text).toBe('Hello world\nSecond page'); expect(material.generatedText).toBe('译文');
     expect(material.locations.map(item => item.pageNumber)).toEqual([1, 2]);
     expect(material.kind).toBe('selection');
   });

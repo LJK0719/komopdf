@@ -3,14 +3,14 @@ import { detectParagraph } from './paragraph-detection.js';
 import { paragraphInputRange } from './source-text.js';
 import type { TextActionTarget, TextActionUnit } from './text-actions.js';
 
-/** Preserve source glyphs first; replace each readable selection exactly once. */
+/** Model input is continuous; source ranges remain exact and independently addressable. */
 export async function prepareTextActionApplication(options: {
   engine: EngineAdapter; document: DocumentInfo; targets: TextActionTarget[];
   units: TextActionUnit[]; texts: Record<string, string>; style: TextStyle;
 }) {
   const { engine, document, targets, units, texts, style } = options;
   const pages = new Map<string, PageModel>();
-  const converted = new Map<string, { blockId: string; offset: number }>();
+  const converted = new Map<string, { blockId: string; offset: number; text: string }>();
   const conversions: EditCommand[] = [];
   const replacements: Extract<EditCommand, { type: 'text.replace' }>[] = [];
   const layout: Record<string, string> = {};
@@ -23,9 +23,8 @@ export async function prepareTextActionApplication(options: {
       if (!page) { page = await engine.describePage(document.id, target.pageId); pages.set(target.pageId, page); }
       const source = page.objects.find(object => object.textBlock?.id === target.blockId)?.textBlock;
       if (!source) throw new Error('The source text changed. Select it again before applying.');
-      const sourceText = source.runs.map(run => run.text).join('');
-      const partial = target.range[0] !== 0 || target.range[1] !== sourceText.length;
-      if (!source.isParagraph && (members.length > 1 || (partial && Object.keys(style).length)) && !converted.has(keyOf(target))) {
+      const partial = target.range[0] !== 0 || target.range[1] !== source.runs.reduce((length, run) => length + run.text.length, 0);
+      if (!source.isParagraph && !source.isOcr && (members.length > 1 || (partial && Object.keys(style).length)) && !converted.has(keyOf(target))) {
         if (!document.capabilities.includes('text.reflow')) throw new Error('This text cannot use a different font until it is converted to an editable paragraph.');
         const paragraph = detectParagraph(page, target.objectId) ?? detectParagraph(page, target.objectId, true);
         if (!paragraph) throw new Error('This text cannot use a different font until it is converted to an editable paragraph.');
@@ -37,37 +36,39 @@ export async function prepareTextActionApplication(options: {
             firstLineIndent: paragraph.firstLineIndent, lineSpacing: paragraph.style.lineSpacing ?? 0,
             spaceBefore: paragraph.style.spaceBefore ?? 0, spaceAfter: paragraph.style.spaceAfter ?? 0 } });
         for (const object of paragraph.objects) converted.set(`${page.id}:${object.textBlock!.id}`, {
-          blockId: `${objectId}:text`, offset: paragraph.sourceRanges[object.id]![0],
+          blockId: `${objectId}:text`, offset: paragraph.sourceRanges[object.id]![0], text: paragraph.text,
         });
       }
     }
   }
   for (const unit of units) {
-    const members = unit.targetIds.map(id => targetById.get(id)!);
-    const first = members[0]!;
-    const mapped = converted.get(keyOf(first));
-    const replacement = texts[unit.id] ?? '';
-    if (mapped) {
-      let start = Infinity, end = -Infinity;
-      for (const target of members) {
-        const position = converted.get(keyOf(target));
-        if (!position || position.blockId !== mapped.blockId || target.pageId !== first.pageId) throw new Error('The source text changed. Select it again before applying.');
-        const source = pages.get(target.pageId)!.objects.find(object => object.textBlock?.id === target.blockId)!.textBlock!;
-        const range = paragraphInputRange(source, target.range, position.offset, false);
-        start = Math.min(start, range[0]); end = Math.max(end, range[1]);
+    const spans: { pageId: string; blockId: string; start: number; end: number; text: string; converted: boolean }[] = [];
+    for (const id of unit.targetIds) {
+      const target = targetById.get(id)!;
+      const source = pages.get(target.pageId)!.objects.find(object => object.textBlock?.id === target.blockId)!.textBlock!;
+      const mapped = converted.get(keyOf(target));
+      const range = mapped ? paragraphInputRange(source, target.range, mapped.offset, false) : target.range;
+      const blockId = mapped?.blockId ?? target.blockId;
+      const fullText = mapped?.text ?? source.runs.map(run => run.text).join('');
+      const previous = spans.at(-1);
+      if (previous && previous.pageId === target.pageId && previous.blockId === blockId && range[0] >= previous.end
+        && !fullText.slice(previous.end, range[0]).trim()) previous.end = range[1];
+      else spans.push({ pageId: target.pageId, blockId, start: range[0], end: range[1], text: fullText, converted: Boolean(mapped) });
+    }
+    layout[unit.id] = 'Layout checked';
+    for (const [index, span] of spans.entries()) {
+      const text = index === 0 ? texts[unit.id] ?? '' : '';
+      const range: [number, number] = [span.start, span.end];
+      if (!span.converted) {
+        const measured = await engine.previewText({ docId: document.id, pageId: span.pageId, blockId: span.blockId,
+          range, text, ...(index === 0 && Object.keys(style).length ? { style } : {}) });
+        if (measured.overflow) layout[unit.id] = 'The result exceeds the text box. Adjust the text, font size, or text box.';
       }
-      replacements.push({ type: 'text.replace', pageId: first.pageId, blockId: mapped.blockId, range: [start, end], text: replacement, style });
-      layout[unit.id] = 'Layout checked';
-    } else {
-      if (members.length !== 1) throw new Error('The source text changed. Select it again before applying.');
-      const measured = await engine.previewText({ docId: document.id, pageId: first.pageId, blockId: first.blockId,
-        range: first.range, text: replacement, ...(Object.keys(style).length ? { style } : {}) });
-      layout[unit.id] = measured.overflow ? 'The result exceeds the text box. Adjust the text, font size, or text box.' : 'Layout fits';
-      replacements.push({ type: 'text.replace', pageId: first.pageId, blockId: first.blockId, range: first.range,
-        text: replacement, ...(Object.keys(style).length ? { style } : {}) });
+      replacements.push({ type: 'text.replace', pageId: span.pageId, blockId: span.blockId, range, text,
+        ...(index === 0 && Object.keys(style).length ? { style } : {}) });
     }
   }
-  if (Object.values(layout).some(value => !['Layout fits', 'Layout checked'].includes(value))) return { transaction: null, layout, addedPages: 0 };
+  if (Object.values(layout).some(value => value !== 'Layout checked')) return { transaction: null, layout, addedPages: 0 };
   replacements.sort((a, b) => a.pageId.localeCompare(b.pageId) || a.blockId.localeCompare(b.blockId) || b.range[0] - a.range[0]);
   const transaction: EditTransaction = { id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision,
     source: 'ai', commands: [...conversions, ...replacements] };

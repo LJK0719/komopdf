@@ -146,8 +146,10 @@ test('cross-page translation binds every selected block to its actual page', asy
   await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
   const panel = await confirmTranslation(page);
   await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('Translated');
-  await expect(panel.getByRole('textbox', { name: 'AI result on page 2' })).toHaveValue('Translated');
-  expect(requests.flatMap(request => request.segments.map(segment => segment.text))).toEqual(['First page.', 'Second page.']);
+  await expect(panel.getByRole('textbox', { name: 'AI result on page 2' })).toHaveCount(0);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.segments).toHaveLength(1);
+  expect(requests[0]?.segments[0]?.text).toBe('First page.\nSecond page.');
 });
 
 test('KOMO sends material only on Send and keeps the conversation when locating another PDF', async ({ page }) => {
