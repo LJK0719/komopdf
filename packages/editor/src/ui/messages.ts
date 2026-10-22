@@ -10,6 +10,16 @@ import { aiToolMessages } from './ai-tool-messages.js';
 import { AI_SERVICE_COPY_MESSAGES } from './ai-service-copy-messages.js';
 import { komoMaterialMessages } from './komo-material-messages.js';
 export const messages: Record<string, string> = {
+  'Page comments': '页面批注', 'Unable to load comments.': '无法读取批注。',
+  'Open comment {number} on page {page}': '打开第 {page} 页的第 {number} 条批注',
+  'Comment content': '批注内容', 'Comment text': '批注正文', 'Loading comment…': '正在读取批注…',
+  'Close comment': '关闭批注', 'Edit comment': '编辑批注', 'Save comment': '保存批注', 'Delete comment': '删除批注',
+  'Delete comment?': '删除这条批注？', 'Save comment changes?': '保存批注修改？',
+  'You can undo this deletion.': '删除后可以撤销。',
+  'Save your edits or discard them before closing this comment.': '关闭批注前，请保存或放弃本次修改。',
+  'The comment changed. Reopen it before editing.': '批注已发生变化，请重新打开后编辑。',
+  'Drawing properties': '绘制属性',
+  'This markup is shown read-only here to preserve its original appearance.': '此处仅查看该标记的内容，保留其原有外观。',
   'Browser export would exceed its memory budget. Export fewer pages, lower DPI, or use the desktop app.': '本次导出将超过浏览器内存预算，请减少页数、降低 DPI 或使用客户端。',
   'Paragraph layout exceeds the web page limit (200 per document, 400 per session). Use the desktop app.': '段落排版将超出网页版页数限制（单文档 200 页、会话共 400 页），请使用客户端；原文档未修改。',
   ...komoMessages,

@@ -5,8 +5,9 @@ import { useI18n } from './i18n.js';
 import type { TextActionSelection } from './text-actions.js';
 
 type Position = { left: number; top: number };
-export function AiFloatingWindow({ title, anchor, hidden, onClose, children }: {
+export function AiFloatingWindow({ title, anchor, hidden, onClose, children, closeLabel = 'Close AI window', className = '' }: {
   title: string; anchor?: TextActionSelection['anchor']; hidden: boolean; onClose(): void; children: ReactNode;
+  closeLabel?: string; className?: string;
 }) {
   const { t } = useI18n();
   const windowRef = useRef<HTMLDivElement>(null);
@@ -30,7 +31,7 @@ export function AiFloatingWindow({ title, anchor, hidden, onClose, children }: {
     window.addEventListener('resize', resize);
     return () => { observer.disconnect(); window.removeEventListener('resize', resize); };
   }, [hidden, anchor]);
-  return createPortal(<div ref={windowRef} className="ai-floating-window ai-owned-focus" role="dialog" aria-modal="false" aria-label={title}
+  return createPortal(<div ref={windowRef} className={`ai-floating-window ai-owned-focus ${className}`} role="dialog" aria-modal="false" aria-label={title}
     hidden={hidden} style={{ left: position.left, top: position.top }} onKeyDown={event => {
       if (event.key === 'Escape' && !event.nativeEvent.isComposing) { event.stopPropagation(); onClose(); }
     }}>
@@ -47,7 +48,7 @@ export function AiFloatingWindow({ title, anchor, hidden, onClose, children }: {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     }} onPointerCancel={() => { drag.current = null; }}>
       <GripHorizontal size={16} aria-hidden="true" /><strong>{title}</strong>
-      <button type="button" className="icon-button" aria-label={t('Close AI window')} onClick={onClose}><X size={17} /></button>
+      <button type="button" className="icon-button" aria-label={t(closeLabel)} onClick={onClose}><X size={17} /></button>
     </header>{children}
   </div>, window.document.body);
 }

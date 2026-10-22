@@ -1,4 +1,7 @@
 export const aiToolMessages: Record<string, string> = {
+  'View original': '查看原文', 'Hide original': '收起原文', 'Translate again': '重新翻译',
+  'Expand window': '展开阅读', 'Reduce window': '收起阅读',
+  'Choose Translate again to update the result.': '点击“重新翻译”以更新译文。',
   'Confirm': '确定', 'Retry': '重试',
   'Translate selected text': '翻译选中文字', 'Close AI window': '关闭 AI 浮窗', 'Reduce comparison': '收起对照',
   'Change target language': '更换目标语言', 'Working…': '正在处理…',

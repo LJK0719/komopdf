@@ -8,7 +8,7 @@ export type KomoAccount = { userId: string; plan: 'free' | 'plus'; freeCredits: 
   remainingCredits: number; tokensPerCredit: number; subscriptionStatus: string | null;
   currentPeriodEnd: number | null; cancelAtPeriodEnd: boolean; billingAvailable: boolean;
   profile: { name: string; email: string; imageUrl: string } };
-type AccountContextValue = { account: KomoAccount | null; ready: boolean; signedIn: boolean;
+type AccountContextValue = { userId: string | null | undefined; account: KomoAccount | null; ready: boolean; signedIn: boolean;
   error: string; refresh(): Promise<void>; login(): void; profile(): void; logout(): Promise<void>;
   request(path: string, body?: unknown): Promise<any>; authenticatedFetch: typeof fetch };
 const Context = createContext<AccountContextValue | null>(null);
@@ -31,7 +31,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     }).catch(() => { if (active) setError('KOMO is currently unavailable. Please try again later.'); });
     return () => { active = false; };
   }, []);
-  if (!key) return <Context.Provider value={{ account: null, signedIn: false, ready: Boolean(error), error,
+  if (!key) return <Context.Provider value={{ userId: undefined, account: null, signedIn: false, ready: Boolean(error), error,
     refresh: async () => {}, login: () => {}, profile: () => {}, logout: async () => {}, authenticatedFetch: fetch,
     request: async () => { throw new Error(error || 'Loading account service…'); } }}>{children}</Context.Provider>;
   return <ClerkProvider publishableKey={key} localization={locale === 'zh-CN' ? zhCN : enUS}><ConnectedAccount>{children}</ConnectedAccount></ClerkProvider>;
@@ -73,7 +73,7 @@ function ConnectedAccount({ children }: { children: ReactNode }) {
     const focus = () => void refresh(); window.addEventListener('focus', focus);
     return () => window.removeEventListener('focus', focus);
   }, [refresh]);
-  return <Context.Provider value={{ account, ready: Boolean(isLoaded), signedIn: Boolean(isSignedIn), error, request, refresh,
+  return <Context.Provider value={{ userId: isLoaded ? userId ?? null : undefined, account, ready: Boolean(isLoaded), signedIn: Boolean(isSignedIn), error, request, refresh,
     login: () => { clerk.openSignIn(); }, profile: () => { clerk.openUserProfile(); }, logout: async () => { await clerk.signOut(); setAccount(null); }, authenticatedFetch }}>{children}</Context.Provider>;
 }
 export function AccountStrip() {

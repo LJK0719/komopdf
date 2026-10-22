@@ -92,7 +92,7 @@ describe('Resizable AI inspector integration', () => {
     expect(source).toContain('aria-valuemin={AI_PANEL_MIN_WIDTH}');
     expect(source).toContain('aria-valuemax={AI_PANEL_MAX_WIDTH}');
     expect(source).toContain('aria-valuenow={AI_PANEL_DEFAULT_WIDTH}');
-    expect(source).toContain('event.target.closest(\'[role="separator"]\')');
+    expect(source).toContain('event.target.closest(\'[role="separator"], .ai-floating-window\')');
     expect(source).toContain('renderAiPanel ? renderAiPanel({');
   });
 

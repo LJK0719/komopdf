@@ -16,13 +16,14 @@ type Props = {
   onBusyChange(busy: boolean): void;
   onCommitted(result: CommitResult): Promise<void>;
   onCancel(): void;
+  onCreated?(pageId: string, annotationId: string): void;
   onDraftChange?(pageId: string, draft: AnnotationDraftHandle | null): void;
 };
 type Gesture = { scope: string; pointerId: number; points: AnnotationPoint[]; startClient: AnnotationPoint; distance: number };
 type Draft = { scope: string; points: AnnotationPoint[] };
 type Note = { scope: string; point: AnnotationPoint; text: string };
 
-export function AnnotationDrawingLayer({ document: info, page, engine, options, disabled, onBusyChange, onCommitted, onCancel, onDraftChange }: Props) {
+export function AnnotationDrawingLayer({ document: info, page, engine, options, disabled, onBusyChange, onCommitted, onCancel, onCreated, onDraftChange }: Props) {
   const { t } = useI18n();
   const svg = useRef<SVGSVGElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -96,6 +97,8 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
           clearDraft();
           setFeedback({ error: false, text: 'Annotation added.' });
         }
+        // The committed page can remount this overlay; opening the saved note belongs to the document, not this instance.
+        if (command.subtype === 'text') onCreated?.(command.pageId, command.annotationId);
       });
       return committed;
     } catch (caught) {

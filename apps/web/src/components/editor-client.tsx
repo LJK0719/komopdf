@@ -6,6 +6,12 @@ import { EditorShell, KomoChatPanel, WasmEngineAdapter, WebHostAdapter, WorkerRp
 import { AccountProvider, AccountStrip, useKomoAccount } from './account-provider';
 import '../app/account/account.css';
 
+function AccountIdentity({ onChange }: { onChange(owner: string | null | undefined): void }) {
+  const { userId } = useKomoAccount();
+  React.useEffect(() => onChange(userId), [userId, onChange]);
+  return null;
+}
+
 function AccountChat({ context, store }: { context: EditorAiContext; store: KomoChatStore }) {
   const { account, signedIn, ready, authenticatedFetch, refresh } = useKomoAccount();
   // Hide a known owner's private draft/history until the next identity is known.
@@ -19,6 +25,7 @@ function AccountChat({ context, store }: { context: EditorAiContext; store: Komo
 }
 
 export default function EditorClient() {
+  const [preferenceOwner, setPreferenceOwner] = React.useState<string | null | undefined>(undefined);
   const [chatStore] = React.useState(createKomoChatStore);
   const [instances, setInstances] = React.useState<{
     engine: WasmEngineAdapter;
@@ -52,6 +59,6 @@ export default function EditorClient() {
 
   if (!instances) return <EditorLoading />;
 
-  return <EditorShell engine={instances.engine} host={instances.host}
-    renderAiPanel={context => <AccountProvider><AccountChat context={context} store={chatStore} /></AccountProvider>} />;
+  return <EditorShell preferenceOwner={preferenceOwner} engine={instances.engine} host={instances.host}
+    renderAiPanel={context => <AccountProvider><AccountIdentity onChange={setPreferenceOwner} /><AccountChat context={context} store={chatStore} /></AccountProvider>} />;
 }

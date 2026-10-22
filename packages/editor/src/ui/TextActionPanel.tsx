@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, MessageSquare, StickyNote, Check, Square, Expand } from 'lucide-react';
+import { preferredAiLanguage, saveAiLanguage } from './ai-preferences.js';
 import { AppDialog } from './AppDialog.js';
 import { AiFloatingWindow } from './AiFloatingWindow.js';
 import { TEXT_LANGUAGES, type CommitResult, type DocumentInfo, type EditCommand, type EditTransaction, type EditorAiServices, type EngineAdapter, type TextAction, type TextStyle } from '@pdf-editor/contracts';
@@ -11,25 +12,45 @@ import { TEXT_ACTION_LABELS, selectionMaterial, selectionUnits, splitTextActionT
 
 type Outcome = { action: TextAction; targetLanguage: string; detectedLanguage: string; texts: Record<string, string> };
 type Props = {
+  preferenceOwner?: string | null | undefined;
+  onCommentCreated?(pageId: string, annotationId: string): void;
   selection: TextActionSelection; document: DocumentInfo; engine: EngineAdapter; services: EditorAiServices;
   active: boolean; onClose(): void;
   fonts: EditorFont[]; disabled: boolean; onBusyChange(busy: boolean): void;
   onCommitted(result: CommitResult): Promise<void>; onDiscuss(material: AiMaterial): void;
   onBeforeWrite(): Promise<boolean>; getDocument(): DocumentInfo; onAdjustSource(target: TextActionTarget): void;
 };
-const LANGUAGE_KEY = 'komopdf.ai.target-language.v1';
-export function preferredAiLanguage(locale: string): string {
-  try { const saved = localStorage.getItem(LANGUAGE_KEY); if (TEXT_LANGUAGES.some(language => language.code === saved)) return saved!; } catch { /* Use the interface language. */ }
-  return locale.startsWith('zh') ? 'zh' : 'en';
-}
-export function TextActionPanel({ selection, document, engine, services, active, onClose, fonts, disabled, onBusyChange, onCommitted, onDiscuss, onBeforeWrite, getDocument, onAdjustSource }: Props) {
+export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, document, engine, services, active, onClose, fonts, disabled, onBusyChange, onCommitted, onDiscuss, onBeforeWrite, getDocument, onAdjustSource }: Props) {
   const { t, locale } = useI18n();
   const action = selection.action;
   const units = useMemo(() => selectionUnits(selection), [selection]);
-  const [targetLanguage, setTargetLanguage] = useState(() => preferredAiLanguage(locale));
+  const [targetLanguage, setTargetLanguage] = useState(() => preferredAiLanguage(locale, preferenceOwner));
   const [choosingLanguage, setChoosingLanguage] = useState(action === 'translate');
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [editOriginal, setEditOriginal] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const preferenceState = useRef({ owner: preferenceOwner, edited: false, save: false });
+  useEffect(() => {
+    if (preferenceOwner === undefined) return;
+    const previous = preferenceState.current;
+    if (previous.owner === undefined && previous.edited) {
+      if (previous.save) saveAiLanguage(preferenceOwner, targetLanguage);
+    } else {
+      setTargetLanguage(preferredAiLanguage(locale, preferenceOwner));
+      previous.edited = false; previous.save = false;
+    }
+    previous.owner = preferenceOwner;
+  }, [preferenceOwner]);
+  const chooseLanguage = (language: string, remember = false) => {
+    preferenceState.current.edited = true;
+    preferenceState.current.save = remember;
+    setTargetLanguage(language);
+    if (remember) saveAiLanguage(preferenceOwner, language);
+  };
+  const rememberLanguage = () => {
+    preferenceState.current.save = true;
+    saveAiLanguage(preferenceOwner, targetLanguage);
+  };
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -170,6 +191,8 @@ export function TextActionPanel({ selection, document, engine, services, active,
       if (!commands.length) return;
       await onCommitted(await engine.apply({ id: crypto.randomUUID(), docId: info.id, baseRevision: info.revision, source: 'ai', commands }));
       setNotice(t('Saved as a comment. You can undo this change.'));
+      const first = commands[0];
+      if (first?.type === 'annotation.add' && onCommentCreated) { close(); onCommentCreated(first.pageId, first.annotationId); }
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setApplying(false); onBusyChange(false); }
   };
@@ -182,7 +205,7 @@ export function TextActionPanel({ selection, document, engine, services, active,
     close(); onDiscuss(material);
   };
   const isTranslation = action === 'translate';
-  const title = t(isTranslation ? 'Bilingual comparison' : TEXT_ACTION_LABELS[action]);
+  const title = t(isTranslation ? 'Translation' : TEXT_ACTION_LABELS[action]);
   const languageName = (code: string) => TEXT_LANGUAGES.find(language => language.code === code)?.name ?? t(code === 'mul' ? 'Multiple languages' : code === 'und' ? 'Unknown language' : code);
   const copyResult = () => { void navigator.clipboard.writeText(text).then(() => setNotice(t('Copied'))).catch(() => setError('Clipboard access was denied. Select the result and use Ctrl/Cmd+C.')); };
   const layoutOptions = !isDraft && !applied && <details className="ai-layout-options"><summary>{t('Layout options')}</summary>
@@ -195,10 +218,10 @@ export function TextActionPanel({ selection, document, engine, services, active,
     <AppDialog open={active && choosingLanguage} onOpenChange={open => { if (!open) { setChoosingLanguage(false); if (!outcome) close(); } }} title={t('Translate selected text')} className="ai-owned-focus ai-language-dialog">
       <form onSubmit={event => {
         event.preventDefault();
-        try { localStorage.setItem(LANGUAGE_KEY, targetLanguage); } catch { /* Keep the choice in this window. */ }
+        rememberLanguage();
         setChoosingLanguage(false); void run();
       }}>
-        <label>{t('Target language')}<select autoFocus aria-label={t('Target language')} value={targetLanguage} onChange={event => setTargetLanguage(event.target.value)}>
+        <label>{t('Target language')}<select autoFocus aria-label={t('Target language')} value={targetLanguage} onChange={event => chooseLanguage(event.target.value)}>
           {TEXT_LANGUAGES.map(language => <option key={language.code} value={language.code}>{language.name}</option>)}
         </select></label>
         <footer><button type="button" className="button" onClick={() => { setChoosingLanguage(false); if (!outcome) close(); }}>{t('Cancel')}</button>
@@ -217,8 +240,12 @@ export function TextActionPanel({ selection, document, engine, services, active,
           {!outcome && <div className="ai-pending-source"><strong>{t('Selected text')}</strong><p dir="auto">{units.map(unit => unit.text).join('\n\n')}</p></div>}
           {outcome && <div className="ai-text-result">
             <div className="ai-result-actions">
-              {isTranslation && <><button type="button" className="text-button" onClick={() => setExpanded(value => !value)}><Expand size={14} />{t(expanded ? 'Reduce comparison' : 'Expand comparison')}</button>
-                <button type="button" className="text-button" disabled={busy} onClick={() => setChoosingLanguage(true)}>{t('Change target language')}</button></>}
+              {isTranslation && <div className="ai-result-language"><label>{t('Target language')}<select aria-label={t('Target language')} value={targetLanguage} disabled={busy} onChange={event => chooseLanguage(event.target.value, true)}>
+                {TEXT_LANGUAGES.map(language => <option key={language.code} value={language.code}>{language.name}</option>)}
+              </select></label><button type="button" className="button" disabled={busy || disabled} onClick={() => { rememberLanguage(); void run(); }}>{t('Translate again')}</button></div>}
+              {isTranslation && outcome.targetLanguage !== targetLanguage && <p role="status">{t('Choose Translate again to update the result.')}</p>}
+              {isTranslation && <><button type="button" className="text-button" onClick={() => setExpanded(value => !value)}><Expand size={14} />{t(expanded ? 'Reduce window' : 'Expand window')}</button>
+                <button type="button" className="text-button" aria-pressed={showOriginal} onClick={() => setShowOriginal(value => !value)}>{t(showOriginal ? 'Hide original' : 'View original')}</button></>}
             </div>
             {document.revision !== selection.revision && !applied && <p className="task-help">{t('The document changed. The original text will be checked before applying.')}</p>}
             {units.map(unit => {
@@ -227,9 +254,9 @@ export function TextActionPanel({ selection, document, engine, services, active,
                 <label className="ai-candidate-label">{(!isTranslation || editOriginal) && <input type="checkbox" checked={selected.has(unit.id)} disabled={applying || applied} onChange={event => {
                   setSelected(previous => { const next = new Set(previous); if (event.target.checked) next.add(unit.id); else next.delete(unit.id); return next; }); setPreview(null);
                 }} />}{t('Page {page}', { page: target.pageNumber })}</label>
-                {isTranslation ? <div className="ai-bilingual">
-                  <label><span>{t('Original text')} <small>{languageName(outcome.detectedLanguage)}</small></span>
-                    <textarea readOnly dir="auto" aria-label={t('Original text on page {page}', { page: target.pageNumber })} value={unit.text} /></label>
+                {isTranslation ? <div className={showOriginal ? "ai-bilingual" : "ai-translation-only"}>
+                  {showOriginal && <label><span>{t('Original text')} <small>{languageName(outcome.detectedLanguage)}</small></span>
+                    <textarea readOnly dir="auto" aria-label={t('Original text on page {page}', { page: target.pageNumber })} value={unit.text} /></label>}
                   <label><span>{t('Translation')} <small>{languageName(outcome.targetLanguage)}</small></span>
                     <textarea dir="auto" aria-label={t('AI result on page {page}', { page: target.pageNumber })} value={outcome.texts[unit.id] ?? ''} disabled={applying || applied}
                       onChange={event => updateText(unit.id, event.target.value)} /></label>
@@ -247,7 +274,7 @@ export function TextActionPanel({ selection, document, engine, services, active,
         </div>
         <footer className="task-panel-footer ai-text-footer">
           {busy ? <button type="button" className="button" onClick={() => controller.current?.abort()}><Square size={14} />{t('Stop')}</button>
-            : <button type="button" className="text-button" disabled={disabled} onClick={() => void run()}>{t(outcome ? 'Run again' : 'Retry')}</button>}
+            : (!outcome || !isTranslation) && <button type="button" className="text-button" disabled={disabled} onClick={() => void run()}>{t(outcome ? 'Run again' : 'Retry')}</button>}
           {outcome && <><button type="button" className={isTranslation ? 'button button-primary' : 'button'} onClick={copyResult}><Copy size={16} />{t(isTranslation ? 'Copy translation' : 'Copy result')}</button>
             {document.permissions.annotate && document.capabilities.includes('annotation.add') && <button type="button" className="button" disabled={disabled || applying || !selectedTargets.length} onClick={() => void addNote()}><StickyNote size={16} />{t('Save as comment')}</button>}
             {canReplace && canModify && (!isTranslation || editOriginal) && <button type="button" className="button button-primary" disabled={disabled || applying || applied || !selectedTargets.length || staleDraft}

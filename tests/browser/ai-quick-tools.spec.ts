@@ -16,7 +16,7 @@ async function confirm(page: Page) {
   await expect(dialog.getByRole('combobox')).toHaveCount(1);
   await dialog.getByRole('combobox', { name: 'Target language', exact: true }).selectOption('zh');
   await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
-  return page.getByRole('dialog', { name: 'Bilingual comparison', exact: true });
+  return page.getByRole('dialog', { name: 'Translation', exact: true });
 }
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -53,6 +53,7 @@ test('a sentence stored as individual PDF glyph objects is translated in one com
   await expect(window.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('Hi');
   expect(requests).toHaveLength(1); expect(requests[0]?.segments).toHaveLength(1);
   expect(requests[0]?.segments[0]?.text).toBe('Hello world');
+  await window.getByRole('button', { name: 'View original', exact: true }).click();
   await expect(window.getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue('Hello world');
   await expect(page.locator('.save-state')).toHaveText('No changes');
   await window.locator('.ai-replace-choice > summary').click();

@@ -1,3 +1,18 @@
+.annotation-interaction-layer { position: absolute; inset: 0; z-index: 7; pointer-events: none; }
+.annotation-marker { position: absolute; display: grid; place-items: center; width: 24px; height: 24px; padding: 2px; border: 1px solid #68592388; border-radius: 5px; color: #272b22; box-shadow: 0 1px 4px #0002; pointer-events: auto; cursor: pointer; }
+.annotation-marker:hover, .annotation-marker[aria-pressed='true'] { outline: 2px solid var(--komo-accent); outline-offset: 2px; }
+.annotation-load-error { position: absolute; top: 8px; left: 8px; background: var(--komo-surface); color: var(--komo-danger); font-size: 12px; padding: 5px 8px; }
+.ai-floating-window.comment-popup { width: min(380px, calc(100vw - 16px)); }
+.comment-popup-content { display: flex; flex-direction: column; gap: 12px; padding: 14px; min-height: 0; max-height: min(620px, calc(100dvh - 70px)); font-size: 13px; }
+.comment-location { margin: 0; color: var(--komo-muted); font-size: 12px; }
+.comment-body { white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; line-height: 1.75; min-height: 52px; max-height: 420px; }
+.comment-popup-content label { display: flex; flex: 1; flex-direction: column; gap: 8px; min-height: 0; }
+.comment-popup-content textarea { width: 100%; min-height: 160px; max-height: min(380px, 45dvh); padding: 9px; border: 1px solid var(--komo-line); border-radius: 5px; resize: vertical; background: var(--komo-surface); color: var(--komo-ink); line-height: 1.65; }
+.comment-popup-content footer, .comment-confirm-actions { display: flex; flex: none; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.comment-popup-content .task-error { color: var(--komo-danger); }
+.annotation-reading-list { order: -1; }
+.annotation-document-list li[data-selected='true'] .annotation-list-item-text { display: block; max-height: 220px; overflow-y: auto; -webkit-line-clamp: unset; }
+.annotation-properties > summary { color: var(--komo-muted); }
 .annotation-drawing-layer { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
 .annotation-drawing-surface { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; user-select: none; }
 .annotation-drawing-text .annotation-drawing-surface { cursor: copy; }

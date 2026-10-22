@@ -32,6 +32,8 @@ type Props = {
   drawing?: AnnotationDrawingOptions | null;
   onDrawingChange?(next: AnnotationDrawingOptions | null): void;
   onNavigate?(annotation: PdfAnnotationInfo): void;
+  selectedCommentId?: string | null;
+  onCommentCreated?(pageId: string, annotationId: string): void;
   onBusyChange(busy: boolean): void;
   onCommitted(result: CommitResult): Promise<void>;
 };
@@ -48,7 +50,7 @@ type FieldPropertiesDraft = {
 
 const DEFAULT_FORM_FONT_ID = 'noto-sans-cjk-sc-regular';
 
-export function DocumentToolsPanel({ mode = 'comment', active = true, document, page, selectedIds, engine, disabled, drawing = null, draftRef, onDraftDirtyChange, onDrawingChange, onNavigate, onBusyChange, onCommitted }: Props) {
+export function DocumentToolsPanel({ mode = 'comment', active = true, document, page, selectedIds, engine, disabled, drawing = null, draftRef, onDraftDirtyChange, onDrawingChange, onNavigate, selectedCommentId, onCommentCreated, onBusyChange, onCommitted }: Props) {
   useI18n();
   const [boundsDraft, setBoundsDraft] = useState<BoundsDraft>({ x: '36', y: '36', width: '180', height: '48' });
   const [annotationText, setAnnotationText] = useState('');
@@ -66,7 +68,8 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   const [fieldMultiple, setFieldMultiple] = useState(false);
   const [fieldPropertyDrafts, setFieldPropertyDrafts] = useState<Record<string, FieldPropertiesDraft>>({});
   const [annotations, setAnnotations] = useState<PdfAnnotationInfo[]>([]);
-  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [localSelectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const selectedAnnotationId = selectedCommentId === undefined ? localSelectedAnnotationId : selectedCommentId;
   const [annotationPage, setAnnotationPage] = useState('');
   const [annotationType, setAnnotationType] = useState('');
   const [annotationSearch, setAnnotationSearch] = useState('');
@@ -167,6 +170,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   const filteredAnnotations = filterAnnotations(currentAnnotations, { pageId: annotationPage === 'current' ? page.id : annotationPage,
     subtype: annotationType, text: annotationSearch });
   const selectedAnnotation = currentAnnotations.find(annotation => annotation.id === selectedAnnotationId && annotation.pageId === page.id);
+  useEffect(() => { if (selectedAnnotation) loadAnnotationFields(selectedAnnotation); }, [selectedAnnotation]);
 
   const draftFields = fieldBaseline.current?.documentId === document.id ? fieldBaseline.current.fields : [];
   const dirty = draftFields.some(field => isFormValueDirty(field, fieldDrafts[field.id])
@@ -233,6 +237,8 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     setFieldDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !filled.has(id))));
     setFieldPropertyDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !updated.has(id))));
     await onCommitted(result);
+    const added = commands.find(command => command.type === 'annotation.add' && command.subtype === 'text');
+    if (added?.type === 'annotation.add') onCommentCreated?.(added.pageId, added.annotationId);
   }
 
   async function run(operation: () => Promise<void>): Promise<void> {
@@ -285,6 +291,10 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     onDrawingChange?.(null);
     setSelectedAnnotationId(annotation.id);
     onNavigate?.(annotation);
+    loadAnnotationFields(annotation);
+  }
+
+  function loadAnnotationFields(annotation: PdfAnnotationInfo): void {
     setBoundsDraft({
       x: formatNumber(annotation.bounds.x), y: formatNumber(annotation.bounds.y),
       width: formatNumber(annotation.bounds.width), height: formatNumber(annotation.bounds.height),
@@ -389,7 +399,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
       {drawing ? <button type="button" onClick={() => onDrawingChange(null)}>{t('Stop drawing')}</button> : null}
     </div> : null}
 
-    {mode === 'comment' ? <div className="document-tools-grid">
+    {mode === 'comment' ? <details className="annotation-properties"><summary>{t('Drawing properties')}</summary><div className="document-tools-grid">
       <label>{t("Color")}<input type="color" value={annotationColor} disabled={locked || !supportsAnnotations}
         onChange={event => { setAnnotationColor(event.target.value); if (drawing) onDrawingChange?.({ ...drawing, color: event.target.value }); }} /></label>
       <label>{t("Opacity")}<input type="number" min="0" max="1" step="0.05" value={opacity} disabled={locked || !supportsAnnotations}
@@ -402,9 +412,9 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
           const value = event.target.value; setStrokeWidth(value);
           if (drawing && Number.isFinite(Number(value)) && Number(value) > 0) onDrawingChange?.({ ...drawing, strokeWidth: Number(value) });
         }} /></label>
-    </div> : null}
+    </div></details> : null}
 
-    <details>
+    <details className="annotation-properties">
       <summary>{t('Placement coordinates')}</summary>
       <div className="document-tools-grid">
         {boundsInput('X', 'x', boundsDraft, setBoundsDraft, locked)}
@@ -415,7 +425,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
       <button type="button" disabled={locked || !selectedBounds} onClick={useSelectionBounds}>{t("Use selection bounds")}</button>
     </details>
 
-    <details open hidden={mode !== 'comment'}>
+    <details className="annotation-reading-list" open hidden={mode !== 'comment'}>
       <summary>{t("Document annotations")}</summary>
       {!supportsAnnotations ? <p role="status">{t("The current PDF core does not advertise annotation editing.")}</p> : null}
       <>
@@ -458,7 +468,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
               }}>{t("Delete")}</button></div>}
           </li>)}
         </ul> : null}
-        <details open={Boolean(selectedAnnotation)}><summary>{t(selectedAnnotation ? 'Edit selected annotation' : 'Advanced annotation controls')}</summary>
+        <details className="annotation-properties"><summary>{t('Advanced annotation controls')}</summary>
         <label>{t("Annotation text")}<textarea rows={2} value={annotationText} disabled={locked || !supportsAnnotations}
           onChange={event => { setAnnotationText(event.target.value); if (drawing) onDrawingChange?.({ ...drawing, text: event.target.value }); }} /></label>
         {canUpdateAnnotation && selectedAnnotation && selectedAnnotation.subtype !== 'other' && selectedAnnotation.subtype !== 'link' && selectedAnnotation.subtype !== 'ink' && <button type="button"
