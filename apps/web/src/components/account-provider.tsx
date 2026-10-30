@@ -21,6 +21,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   const { locale } = useI18n();
   const [key, setKey] = useState('');
   const [error, setError] = useState('');
+  const [configAttempt, setConfigAttempt] = useState(0);
   useEffect(() => {
     let active = true;
     fetch('/api/account/config', { cache: 'no-store' }).then(async response => {
@@ -30,9 +31,9 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       if (active) setKey(data.publishableKey);
     }).catch(() => { if (active) setError('KOMO is currently unavailable. Please try again later.'); });
     return () => { active = false; };
-  }, []);
+  }, [configAttempt]);
   if (!key) return <Context.Provider value={{ userId: undefined, account: null, signedIn: false, ready: Boolean(error), error,
-    refresh: async () => {}, login: () => {}, profile: () => {}, logout: async () => {}, authenticatedFetch: fetch,
+    refresh: async () => { setError(''); setConfigAttempt(attempt => attempt + 1); }, login: () => {}, profile: () => {}, logout: async () => {}, authenticatedFetch: fetch,
     request: async () => { throw new Error(error || 'Loading account service…'); } }}>{children}</Context.Provider>;
   return <ClerkProvider publishableKey={key} localization={locale === 'zh-CN' ? zhCN : enUS}><ConnectedAccount>{children}</ConnectedAccount></ClerkProvider>;
 }
@@ -60,7 +61,7 @@ function ConnectedAccount({ children }: { children: ReactNode }) {
     return data;
   }, [authenticatedFetch]);
   const refresh = useCallback(async () => {
-    if (!isSignedIn) { setAccount(null); return; }
+    if (!isSignedIn) { setAccount(null); setError(''); return; }
     try {
       const snapshot = await request('/api/account');
       if (currentUser.current === userId) { setAccount(snapshot); setError(''); }
@@ -74,7 +75,7 @@ function ConnectedAccount({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('focus', focus);
   }, [refresh]);
   return <Context.Provider value={{ userId: isLoaded ? userId ?? null : undefined, account, ready: Boolean(isLoaded), signedIn: Boolean(isSignedIn), error, request, refresh,
-    login: () => { clerk.openSignIn(); }, profile: () => { clerk.openUserProfile(); }, logout: async () => { await clerk.signOut(); setAccount(null); }, authenticatedFetch }}>{children}</Context.Provider>;
+    login: () => { clerk.openSignIn(); }, profile: () => { clerk.openUserProfile(); }, logout: async () => { await clerk.signOut(); setAccount(null); setError(''); }, authenticatedFetch }}>{children}</Context.Provider>;
 }
 export function AccountStrip() {
   const { account, ready, signedIn, login, error } = useKomoAccount();

@@ -24,10 +24,11 @@ export function usePageTools({ document, engine, host, disabled, execute, onBusy
     execute, onBusy, onError, onImported: setSelected });
   const order = document?.info.pageOrder ?? [];
   const ids = order.filter(id => selected.includes(id));
+  useEffect(() => { setClipboard(null); }, [document?.info.id]);
   useEffect(() => {
     const id = document?.page.id ?? '';
-    setSelected(id ? [id] : []); setFocus(id); anchor.current = id; setClipboard(null);
-  }, [document?.info.id]);
+    setSelected(id ? [id] : []); setFocus(id); anchor.current = id;
+  }, [document?.info.id, document?.page.id]);
   useEffect(() => {
     setSelected(previous => {
       const kept = previous.filter(id => order.includes(id));
@@ -89,6 +90,7 @@ export function usePageTools({ document, engine, host, disabled, execute, onBusy
       const result = await engine.extractPages!({ docId: info.id, pageIds: ids });
       if (action === 'extractPages') {
         const outcome = await host.saveDocument({ ...result, savedRevision: result.sourceRevision }, document.name.replace(/\.pdf$/i, '') + '-pages.pdf');
+        if (outcome?.status === 'cancelled') { onNotice(t('Export cancelled')); return; }
         onNotice(t(outcome?.status === 'download-started' ? 'Selected pages download started.' : 'Selected pages exported.'));
       } else {
         const resource = await engine.registerResource({ docId: info.id, resourceId: crypto.randomUUID(), source: result.kind === 'bytes' ? { kind: 'pdf', bytes: result.bytes } : { kind: 'native-file', handle: result.handle } });

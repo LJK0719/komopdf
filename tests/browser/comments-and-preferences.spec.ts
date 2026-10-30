@@ -73,8 +73,9 @@ test('late account initialization does not overwrite a target language the user 
   await selectAiText(page); await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Translate selected text', exact: true });
   await dialog.getByRole('combobox').selectOption('ja');
+  const accountReady = page.waitForResponse(response => new URL(response.url()).pathname === '/api/account');
   release();
-  await expect(page.locator('.komo-account-strip')).toContainText('credits left');
+  await accountReady;
   await expect(dialog.getByRole('combobox')).toHaveValue('ja');
   await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Translation', exact: true }).getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('日本語の訳文');

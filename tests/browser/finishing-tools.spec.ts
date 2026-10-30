@@ -1,5 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { clickRibbonCommand } from './editor-ui-helpers';
 
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 960 });
@@ -13,7 +14,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('search respects case and moves forward and backward without changing the PDF', async ({ page }) => {
-  await page.getByRole('navigation', { name: 'Quick tools' }).getByRole('button', { name: 'Find & replace', exact: true }).click();
+  await clickRibbonCommand(page, 'Find & replace');
   const search = page.getByRole('region', { name: 'Find in document', exact: true });
   const query = search.getByRole('textbox', { name: 'Find text', exact: true });
   const currentPage = page.getByRole('spinbutton', { name: 'Page', exact: true });
@@ -31,12 +32,13 @@ test('search respects case and moves forward and backward without changing the P
   await expect(search.getByRole('status')).toHaveText('3 of 3');
   await expect(currentPage).toHaveValue('3');
 
+  await search.getByText('Search options', { exact: true }).click();
   await search.getByRole('checkbox', { name: 'Match case', exact: true }).check();
   await search.getByRole('button', { name: 'Find', exact: true }).click();
   await expect(search.getByRole('status')).toHaveText('1 of 1');
   await expect(search.getByRole('button', { name: 'Page 2: alpha', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(currentPage).toHaveValue('2');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
   await page.screenshot({ path: 'tmp/browser/finishing-search.png' });
 });
@@ -54,7 +56,7 @@ test('fit width follows the sidebar and window, while 135% keeps the current pag
   const fullWidth = (await secondPage.boundingBox())!.width;
   await expect(currentPage).toHaveValue('2');
 
-  await page.getByRole('navigation', { name: 'Quick tools' }).getByRole('button', { name: 'Find & replace', exact: true }).click();
+  await clickRibbonCommand(page, 'Find & replace');
   await expect.poll(async () => (await secondPage.boundingBox())!.width).toBeLessThan(fullWidth);
   await expect(fitWidth).toBeEnabled();
   const sidebarWidth = (await secondPage.boundingBox())!.width;
@@ -76,7 +78,7 @@ test('fit width follows the sidebar and window, while 135% keeps the current pag
   await zoom.fill('185%');
   await zoom.press('Escape');
   await expect(zoom).toHaveValue('135%');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
   await page.screenshot({ path: 'tmp/browser/finishing-view-zoom.png' });
 });
@@ -101,7 +103,7 @@ test('zoom preserves the reading point midway down a page as the sidebar and win
   await expect.poll(readingPoint).toBeGreaterThan(290);
   const anchor = await readingPoint();
   const fullWidth = (await sheet.boundingBox())!.width;
-  await page.getByRole('navigation', { name: 'Quick tools' }).getByRole('button', { name: 'Find & replace', exact: true }).click();
+  await clickRibbonCommand(page, 'Find & replace');
   await expect.poll(async () => (await sheet.boundingBox())!.width).toBeLessThan(fullWidth);
   await expect.poll(async () => Math.abs(await readingPoint() - anchor)).toBeLessThan(1);
   await expect(fitWidth).toBeEnabled();
@@ -121,7 +123,7 @@ test('zoom preserves the reading point midway down a page as the sidebar and win
   await expect(zoom).toHaveValue('175%');
   await expect.poll(async () => Math.abs(await readingPoint() - anchor)).toBeLessThan(1);
   await expect(page.getByRole('spinbutton', { name: 'Page', exact: true })).toHaveValue('2');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
 });
 
@@ -152,11 +154,11 @@ test('draw a signature once, move and resize its preview, cancel safely, then re
   await page.mouse.move(corner.x + corner.width / 2 + 30, corner.y + corner.height / 2 + 10, { steps: 6 });
   await page.mouse.up();
   await expect.poll(async () => (await signature.boundingBox())!.width).toBeGreaterThan(original.width + 15);
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
   await preview.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(preview).toHaveCount(0);
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
 
   await panel.getByRole('button', { name: 'Place signature', exact: true }).click();
   await preview.getByRole('button', { name: 'Confirm signature', exact: true }).click();

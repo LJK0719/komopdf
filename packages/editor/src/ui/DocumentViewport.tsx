@@ -175,7 +175,7 @@ function PageSurface({ engine, document, zoom, root, pageId, pageNumber, childre
   return <div ref={setHost} className="page-wrap" data-document-page={pageId} data-page-number={pageNumber}
     style={{ width: Math.ceil(size.widthPt * zoom), height: Math.ceil(size.heightPt * zoom) }}
     onPointerDownCapture={event => {
-      if (active || !shown || locked) return;
+      if (!event.currentTarget.contains(event.target as Node) || active || !shown || locked) return;
       if (pointer === 'edit' && !drawing && event.button === 0) {
         const { pointerId, button, clientX, clientY, ctrlKey, metaKey, shiftKey, altKey } = event;
         selectionStart.current = { pointerId, button, clientX, clientY, ctrlKey, metaKey, shiftKey, altKey };

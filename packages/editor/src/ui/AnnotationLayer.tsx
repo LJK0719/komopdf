@@ -26,7 +26,7 @@ export function AnnotationLayer({ document, page, render, engine, disabled, sele
       return <button key={item.id} type="button" className="annotation-marker" data-annotation-id={item.id} aria-pressed={active}
         aria-label={t('Open comment {number} on page {page}', { number: index + 1, page: document.pageOrder.indexOf(page.id) + 1 })}
         title={item.text || t('No comment text')} disabled={disabled}
-        style={{ left: Math.min(Math.max(0, item.bounds.x * x), Math.max(0, render.width - 24)),
+        style={{ left: item.subtype === 'text' ? Math.min(Math.max(0, item.bounds.x * x), Math.max(0, render.width - 24)) : render.width + 4,
           top: Math.min(Math.max(0, item.bounds.y * y), Math.max(0, render.height - 24)),
           backgroundColor: `rgb(${item.color.map(value => Math.round(value * 255)).join(' ')})` }}
         onPointerDown={event => event.stopPropagation()} onClick={event => {

@@ -107,6 +107,7 @@ type EditorShellProps = {
   onDocumentChange?: (state: { document: DocumentInfo | null; busy: boolean; draftDirty: boolean; name?: string; identity?: string; location?: string }) => void;
   closeDocumentRef?: { current: (() => Promise<boolean>) | null };
   externalBusy?: boolean;
+  suspendOpening?: boolean;
   allowReadOnlyNavigation?: boolean;
   headerActions?: ReactNode;
   workspacePanel?: ReactNode;
@@ -153,7 +154,7 @@ export function mergeSavedRevision(current: LoadedDocument, savedRevision: numbe
 type Activity = 'idle' | 'opening' | 'rendering' | 'saving' | 'editing';
 
 export function EditorShell({ engine, host, preferenceOwner, productName = 'komopdf', aiPanel, renderAiPanel,
-  source: externalSource, sources: externalSources, onSourcesConsumed, onSourceConsumed, onSaved, onResultsReady, onDocumentChange, closeDocumentRef, externalBusy = false, allowReadOnlyNavigation = false, onActivityChange, headerActions,
+  source: externalSource, sources: externalSources, onSourcesConsumed, onSourceConsumed, onSaved, onResultsReady, onDocumentChange, closeDocumentRef, externalBusy = false, suspendOpening = false, allowReadOnlyNavigation = false, onActivityChange, headerActions,
   onOpenFolder, recentFiles, onOpenRecent, onForgetRecent, onRequestRecent, onActivateDocument, onClosePreview,
   workspacePanel, workspaceId, workspacePreview }: EditorShellProps) {
   useI18n();
@@ -163,6 +164,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const [startOpen, setStartOpen] = useState(false);
   const [webRecent, setWebRecent] = useState<RecentFileEntry[]>(readWebRecent);
   const batchOpening = useRef(false);
+  const [openingBatch, setOpeningBatch] = useState(false);
   const openFailure = useRef<string | null>(null);
   const [activeTool, setActiveTool] = useState<EditorTool | null>(null);
   const [textSelections, setTextSelections] = useState<Record<string, TextActionSelection>>({});
@@ -210,6 +212,8 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const { fonts } = useFontResources(engine, host);
   const hasAi = Boolean(renderAiPanel || aiPanel);
   const aiPanelActive = hasAi && activeTool === 'ai';
+  const [aiVisited, setAiVisited] = useState(false);
+  useEffect(() => { if (aiPanelActive) setAiVisited(true); }, [aiPanelActive]);
   const [dragOver, setDragOver] = useState(false);
   const stageRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -443,6 +447,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   };
 
   const openDocument = async (suppliedSource?: DocumentSource): Promise<DocumentInfo | null> => {
+    if (suspendOpening) return null;
     if (!suppliedSource) return openDocuments();
     openFailure.current = null;
     if (isDraftDirty && !await finishDrafts()) return null;
@@ -469,7 +474,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
       for (;;) {
         try {
           const attempt = source.kind === 'bytes' ? { ...source, bytes: source.bytes.slice(0) } : source;
-          loaded = await openLoadedDocument(engine, attempt, password); break;
+          loaded = await openLoadedDocument(engine, attempt, password, () => setNotice('Preparing pages…')); break;
         } catch (caught) {
           if (sequence !== openSequence.current) return null;
           if (!(caught instanceof EngineError) || caught.code !== 'PASSWORD_REQUIRED') throw caught;
@@ -498,14 +503,14 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     } finally { if (sequence === openSequence.current) setActivity('idle'); }
   };
 
-  const openDocuments = async (suppliedSources?: DocumentSource[]): Promise<DocumentInfo | null> => {
-    if (batchOpening.current || (isDraftDirty && !await finishDrafts())) return null;
+  const openDocuments = async (suppliedSources?: DocumentSource[] | Promise<DocumentSource[]>): Promise<DocumentInfo | null> => {
+    if (suspendOpening || batchOpening.current || (isDraftDirty && !await finishDrafts())) return null;
     if (host.capabilities.platform === 'web' && !suppliedSources && sessions.current.current.documents.size >= WEB_LIMITS.openDocuments) {
       setError(t('The web editor can keep only {count} PDFs open. Close one before opening another.', { count: WEB_LIMITS.openDocuments })); return null;
     }
-    batchOpening.current = true;
+    batchOpening.current = true; setOpeningBatch(true); setError(null); setNotice('Reading file…');
     try {
-      const selected = suppliedSources ?? (host.pickDocuments ? await host.pickDocuments() : [await host.pickDocument()].filter((source): source is DocumentSource => source !== null));
+      const selected = suppliedSources ? await suppliedSources : (host.pickDocuments ? await host.pickDocuments() : [await host.pickDocument()].filter((source): source is DocumentSource => source !== null));
       if (!selected.length) { setNotice('No file selected'); return null; }
       const newCount = selected.filter(source => !source.identity || ![...sessions.current.current.documents.values()].some(session => (session.saveIdentity ?? session.identity) === source.identity)).length;
       if (host.capabilities.platform === 'web' && sessions.current.current.documents.size + newCount > WEB_LIMITS.openDocuments) {
@@ -521,7 +526,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
       if (failures.length) setError(failures.join('\n'));
       return last;
     } catch (caught) { setError(formatError(caught)); return null; }
-    finally { batchOpening.current = false; }
+    finally { batchOpening.current = false; setOpeningBatch(false); }
   };
 
   const switchPage = async (pageId: string, targetTopPt?: number): Promise<void> => {
@@ -664,7 +669,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
 
   const moveHistory = async (direction: 'undo' | 'redo'): Promise<void> => {
     const current = documentRef.current;
-    if (!current || isDraftDirty || activity !== 'idle' || (direction === 'undo' ? !history.canUndo : !history.canRedo)) return;
+    if (!current || isTextDraftDirty || noteDraftPage !== null || commentDirty || operationBusy || (direction === 'undo' ? !history.canUndo : !history.canRedo)) return;
     setActivity('editing');
     setError(null);
     try {
@@ -855,7 +860,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const selectedText = useMemo(() => document ? selectedTextObject(document.page, selectedIds)?.textBlock : undefined,
     [document?.page, selectedIds]);
   const modalOpen = Boolean(savePrompt || passwordPrompt);
-  const operationBusy = activity !== 'idle' || editPending || externalBusy || modalOpen;
+  const operationBusy = openingBatch || activity !== 'idle' || editPending || externalBusy || modalOpen;
   const isBusy = operationBusy || isDraftDirty;
   const navigationBusy = activity !== 'idle' || editPending || modalOpen || isDraftDirty || (externalBusy && !allowReadOnlyNavigation);
   useEffect(() => { onActivityChange?.(activity !== 'idle' || editPending || isDraftDirty); }, [activity, editPending, isDraftDirty, onActivityChange]);
@@ -864,8 +869,8 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     ...(sessions.active?.saveIdentity ?? sessions.active?.identity ? { identity: sessions.active?.saveIdentity ?? sessions.active?.identity } : {}),
     ...(sessions.active?.saveLocation ?? sessions.active?.location ? { location: sessions.active?.saveLocation ?? sessions.active?.location } : {}) }); },
     [document?.info, document?.name, operationBusy, isDraftDirty, sessions.active?.saveIdentity, sessions.active?.identity, sessions.active?.saveLocation, sessions.active?.location, onDocumentChange]);
-  const closeHandler = useRef<(docId?: string, continuing?: boolean) => Promise<boolean>>(async () => true);
-  closeHandler.current = async (docId = documentRef.current?.info.id, continuing = false) => {
+  const closeHandler = useRef<(docId?: string, continuing?: boolean, discarded?: Set<string>) => Promise<boolean>>(async () => true);
+  closeHandler.current = async (docId = documentRef.current?.info.id, continuing = false, discarded) => {
     if (docId === documentRef.current?.info.id && isDraftDirty && !await finishDrafts()) return false;
     if (!continuing && operationBusy) { setError('Finish or stop the current operation before closing'); return false; }
     const session = docId ? sessions.current.current.documents.get(docId) : undefined;
@@ -875,7 +880,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     for (;;) {
       const choice = await askSaveChanges(current.name, downloaded);
       if (choice === 'cancel') return false;
-      if (choice === 'discard') return true;
+      if (choice === 'discard') { if (docId) discarded?.add(docId); return true; }
       const saved = await saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, false, recordDownload);
       if (saved) return true;
       downloaded = sessions.current.current.documents.get(current.info.id)?.downloadedRevision === current.info.revision;
@@ -886,11 +891,23 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     let disposed = false;
     let unlisten: (() => void) | undefined;
     if (host.onCloseRequested) {
-      void host.onCloseRequested(async () => {
+      void host.onCloseRequested(async reason => {
         const ids = [...sessions.current.current.documents.keys()];
         if (!ids.length) return closeHandler.current();
-        for (let index = 0; index < ids.length; index++) if (!await closeHandler.current(ids[index], index > 0)) return false;
+        const discarded = new Set<string>();
+        for (let index = 0; index < ids.length; index++) if (!await closeHandler.current(ids[index], index > 0, discarded)) return false;
         try {
+          if (reason === 'update') {
+            setActivity('saving');
+            try {
+              for (const id of ids) {
+                const current = sessions.current.current.documents.get(id)?.loaded;
+                if (current && !discarded.has(id)) await persistRecoverySnapshot(engine, host, current);
+              }
+              for (const id of discarded) await discardRecoveryRecord(host, id);
+              return true;
+            } finally { setActivity('idle'); }
+          }
           for (const id of ids) {
             await engine.close(id); sessions.remove(id);
             await discardRecoveryRecord(host, id).catch(() => undefined);
@@ -917,17 +934,17 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   }, [host, isBusy]);
   const lastExternalSource = useRef<DocumentSource | null>(null);
   useEffect(() => {
-    if (!externalSource || externalSource === lastExternalSource.current) return;
+    if (suspendOpening || activity !== 'idle' || !externalSource || externalSource === lastExternalSource.current) return;
     lastExternalSource.current = externalSource;
     void openDocument(externalSource).then(opened => onSourceConsumed?.(opened !== null), () => onSourceConsumed?.(false));
-  }, [externalSource]);
+  }, [externalSource, suspendOpening, activity]);
 
   const lastExternalSources = useRef<DocumentSource[] | null>(null);
   useEffect(() => {
-    if (!externalSources || externalSources === lastExternalSources.current) return;
+    if (suspendOpening || activity !== 'idle' || !externalSources || externalSources === lastExternalSources.current) return;
     lastExternalSources.current = externalSources;
     void openDocuments(externalSources).finally(() => onSourcesConsumed?.());
-  }, [externalSources]);
+  }, [externalSources, suspendOpening, activity]);
 
   const captureTextSelection = () => {
     const loaded = documentRef.current;
@@ -1058,6 +1075,13 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const viewZoom = useViewZoom({ root: stageRef, documentKey: document?.info.id, pageKey: document?.page.id,
     size: fittedSize, zoom, busy: navigationBusy, enabled: tab !== 'pages' && !panelResizing && !previewActive, onZoom: changeZoom });
   const fitPage = viewZoom.fitPage;
+  useEffect(() => {
+    if (host.capabilities.platform !== 'web') return;
+    const narrow = window.matchMedia('(max-width: 760px)');
+    const adapt = () => { if (narrow.matches) { setRailOpen(false); viewZoom.fitWidth(); } };
+    adapt(); narrow.addEventListener('change', adapt);
+    return () => narrow.removeEventListener('change', adapt);
+  }, [host, document?.info.id, viewZoom.fitWidth]);
   const startPagePlacement = (request: PagePlacementRequest) => {
     if (request.documentId !== documentRef.current?.info.id) return;
     setPagePlacement(request); setPlacement(null); setPendingSignature(null); setAnnotationDrawing(null);
@@ -1354,8 +1378,9 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const tabs = [...sessions.state.documents.values()].map(session => ({ id: session.loaded.info.id, name: session.loaded.name,
     ...(session.saveLocation ?? session.location ? { location: session.saveLocation ?? session.location } : {}),
     dirty: session.loaded.info.revision !== session.loaded.info.savedRevision || (session.loaded.info.id === document?.info.id && isDraftDirty) }));
+  const statusMessage = error ?? (activity === 'editing' ? 'Applying changes…' : activity === 'saving' ? 'Saving…' : notice);
   const showStart = () => { if (!operationBusy) { onRequestRecent?.(); setStartOpen(true); } };
-  const startPage = <StartPage busy={operationBusy} isWeb={host.capabilities.platform === 'web'} onOpen={() => void openDocuments()}
+  const startPage = <StartPage busy={operationBusy} status={notice} isWeb={host.capabilities.platform === 'web'} onOpen={() => void openDocuments()}
     {...(onOpenFolder ? { onOpenFolder: () => { setStartOpen(false); onOpenFolder(); } } : {})}
     recent={recentFiles ?? webRecent} onOpenRecent={entry => { if (onOpenRecent) { setStartOpen(false); onOpenRecent(entry); } else void openDocuments(); }}
     onForgetRecent={id => { if (onForgetRecent) onForgetRecent(id); else setWebRecent(previous => { const next = previous.filter(entry => entry.id !== id); writeWebRecent(next); return next; }); }}>
@@ -1475,7 +1500,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
 
         <section ref={stageRef} hidden={previewActive} className={`canvas-stage ${dragOver ? 'is-dragging' : ''} ${pointer === 'hand' ? 'hand-tool' : ''}`}
           onPointerDown={event => {
-            if (pointer !== 'hand' || event.button !== 0 || (event.target as HTMLElement).closest('button, input, textarea')) return;
+            if (!event.currentTarget.contains(event.target as Node) || pointer !== 'hand' || event.button !== 0 || (event.target as HTMLElement).closest('button, input, textarea')) return;
             pan.current = { x: event.clientX, y: event.clientY, left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop };
             event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault();
           }}
@@ -1493,8 +1518,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
             if (files.length + sessions.current.current.documents.size > WEB_LIMITS.openDocuments) {
               setError(t('The web editor can keep only {count} PDFs open. Close one before opening another.', { count: WEB_LIMITS.openDocuments })); return;
             }
-            void Promise.all(files.map(async file => ({ kind: 'bytes' as const, sourceId: crypto.randomUUID(), name: file.name, bytes: await file.arrayBuffer() })))
-              .then(sources => openDocuments(sources)).catch(() => setError(t('Unable to open this file.')));
+            void openDocuments(Promise.all(files.map(async file => ({ kind: 'bytes' as const, sourceId: crypto.randomUUID(), name: file.name, bytes: await file.arrayBuffer() }))));
           }}>
           {!document ? (
             startPage
@@ -1528,13 +1552,23 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
                 {pendingSignature && <SignaturePlacementLayer key={`${shown.info.id}:${shown.page.id}:${shown.info.revision}`} document={shown.info} page={shown.page}
                   draft={pendingSignature} engine={engine} disabled={isBusy} onBusyChange={setEditPending}
                   onCommitted={handleCommitted} onCancel={() => setPendingSignature(null)} />}
+                {pointer === 'hand' && !pagePlacement && !annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && <ContextMenu.Root>
+                  <ContextMenu.Trigger render={<div />} className="page-object-tools" tabIndex={0} aria-label={t('Page view options')} />
+                  <ContextMenu.Portal><ContextMenu.Positioner className="ui-menu-positioner"><ContextMenu.Popup className="ui-menu">
+                    <ContextMenu.Item className="ui-menu-item" disabled={navigationBusy} onClick={() => viewZoom.fitWidth()}>{t('Fit width')}</ContextMenu.Item>
+                    <ContextMenu.Item className="ui-menu-item" disabled={navigationBusy} onClick={() => viewZoom.fitPage()}>{t('Fit page')}</ContextMenu.Item>
+                    <ContextMenu.Separator className="ui-menu-separator" />
+                    <ContextMenu.Item className="ui-menu-item" disabled={operationBusy} onClick={() => setPointer('select')}>{t('Select text')}</ContextMenu.Item>
+                  </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal>
+                </ContextMenu.Root>}
                 {pointer === 'edit' && !pagePlacement && !annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && <ContextMenu.Root>
                   <ContextMenu.Trigger className="page-object-tools" onContextMenuCapture={event => {
                     const rect = event.currentTarget.getBoundingClientRect();
                     objectContextPoint.current = { x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom };
                     const point = objectContextPoint.current;
                     const id = pickObject(selectionScope(shown.page, selectedIds), point.x, point.y, 3 / zoom)?.id;
-                    const ids = id && !selectedIds.includes(id) ? [id] : selectedIds;
+                    const insideSelection = Boolean((event.target as HTMLElement).closest('.selection-bounds'));
+                    const ids = id ? (selectedIds.includes(id) ? selectedIds : [id]) : insideSelection ? selectedIds : [];
                     const targets = shown.page.objects.filter(object => ids.includes(object.id)).flatMap(object => {
                       const target = textActionTarget(object, shown.info.pageOrder.indexOf(shown.page.id) + 1); return target ? [target] : [];
                     });
@@ -1649,7 +1683,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
               encrypted={document.info.permissions.encrypted} canPrint={document.info.permissions.print === true}
               engine={engine} host={host} onBusyChange={setEditPending} /></div>}
 
-          {hasAi && <div hidden={activeTool !== 'ai'}>
+          {hasAi && (host.capabilities.platform !== 'web' || aiVisited || aiPanelActive) && <div hidden={activeTool !== 'ai'}>
             {renderAiPanel ? renderAiPanel({ documents: [...sessions.state.documents.values()].map(session => {
                 const identity = session.saveIdentity ?? session.identity;
                 return { id: session.loaded.info.id, name: session.loaded.name, info: session.loaded.info, ...(identity ? { identity } : {}) };
@@ -1676,7 +1710,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
 
       <footer className="editor-statusbar">
         <span className={error ? 'status-dot status-dot-error' : 'status-dot'} aria-hidden="true" />
-        <span className="status-message" title={t(error ?? notice)} role={error ? 'alert' : 'status'}>{t(error ?? notice)}</span>
+        <span className="status-message" title={t(statusMessage)} role={error ? 'alert' : 'status'}>{t(statusMessage)}</span>
         <span className="status-spacer" />
         {!previewActive && <ViewControls page={tab === 'pages' && document ? Math.max(0, document.info.pageOrder.indexOf(pageTools.focus)) + 1 : currentPageIndex + 1} pages={document?.info.pageOrder.length ?? 0} zoom={tab === 'pages' ? overviewWidth / 230 : zoom} busy={navigationBusy}
           onPage={page => { const id = document?.info.pageOrder[page - 1]; if (id) { if (tab === 'pages') { pageTools.select(id); stageRef.current?.querySelector<HTMLElement>(`[data-organizer-page="${id}"]`)?.scrollIntoView({ block: 'nearest' }); } else void switchPage(id); } }}
@@ -1703,9 +1737,11 @@ export async function openLoadedDocument(
   engine: EngineAdapter,
   source: DocumentSource,
   password?: string,
+  onOpened?: () => void,
 ): Promise<LoadedDocument> {
   const info = await (password === undefined ? engine.open(source) : engine.open(source, password));
   try {
+    onOpened?.();
     const firstPageId = info.pageOrder[0];
     if (!firstPageId) throw new EngineError('INVALID_REQUEST', 'Document has no displayable pages');
     return await loadPage(engine, info, source.name, firstPageId);

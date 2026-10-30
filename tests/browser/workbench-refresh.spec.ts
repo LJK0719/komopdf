@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('komopdf.ui.language', 'en'));
-  await page.goto('/editor/');
+  await page.goto('/');
 });
 
 async function openPair(page: Page) {

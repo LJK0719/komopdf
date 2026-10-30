@@ -1,7 +1,7 @@
 :root {
-  --komo-font: 'Inter', 'Segoe UI Variable', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --komo-ink: #20362c;
-  --komo-muted: #65736c;
+  --komo-font: 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --komo-ink: #242c29;
+  --komo-muted: #68736e;
   --komo-accent: #217b5e;
   --komo-accent-strong: #184e3d;
   --komo-accent-soft: #e8f3ed;

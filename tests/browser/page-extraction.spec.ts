@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { clickRibbonCommand } from './editor-ui-helpers';
 
 function twoPagePdf(): Buffer {
   const first = 'BT /F1 18 Tf 20 240 Td (First page) Tj ET';
@@ -26,29 +27,36 @@ function twoPagePdf(): Buffer {
 
 test('page extraction creates a separate PDF without changing the source session', async ({ page }) => {
   test.setTimeout(30_000);
+  await page.addInitScript(() => localStorage.setItem('komopdf.ui.language', 'en'));
   await page.goto('/editor/');
   let chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   await (await chooser).setFiles({ name: 'source-pages.pdf', mimeType: 'application/pdf', buffer: twoPagePdf() });
   await expect(page.locator('.page-chip')).toHaveCount(2, { timeout: 60_000 });
-  const tools = page.getByRole('region', { name: 'Page and object editing' });
-  await tools.getByText('Extract pages to a new PDF').click();
-  await tools.getByRole('textbox', { name: 'Pages to extract' }).fill('2');
+  const currentPage = page.getByRole('spinbutton', { name: 'Page', exact: true });
+  await currentPage.fill('2');
+  await currentPage.press('Enter');
+  await expect(currentPage).toHaveValue('2');
+  await expect(page.locator('.page-wrap[data-page-number="2"] .pdf-text-layer')).toContainText('Second page');
   const download = page.waitForEvent('download');
-  await tools.getByRole('button', { name: 'Extract PDF copy' }).click();
-  await expect(tools.getByRole('button', { name: 'Extract PDF copy' })).toBeEnabled({ timeout: 5_000 });
+  await clickRibbonCommand(page, 'Extract pages');
   const extracted = await readFile((await (await download).path())!);
   await expect(page.locator('.page-chip')).toHaveCount(2);
-  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+  await expect(page.locator('.save-state')).toHaveText('No changes');
+  await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
 
   chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  await page.keyboard.press('Control+o');
   await (await chooser).setFiles({ name: 'only-second.pdf', mimeType: 'application/pdf', buffer: extracted });
+  const tabs = page.getByRole('navigation', { name: 'Open PDFs', exact: true });
+  await expect(tabs.getByRole('tab', { name: 'only-second.pdf', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.page-chip')).toHaveCount(1);
-  await page.getByRole('button', { name: 'Select Text object' }).click();
-  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('Second page');
-  await page.getByRole('navigation', { name: 'Open PDFs' }).getByRole('tab', { name: 'source-pages.pdf' }).click();
+  await expect(page.locator('.page-wrap .pdf-text-layer')).toHaveText('Second page');
+  await tabs.getByRole('tab', { name: 'source-pages.pdf', exact: true }).click();
   await expect(page.locator('.page-chip')).toHaveCount(2);
-  await page.getByRole('button', { name: 'Select Text object' }).click();
-  await expect(page.getByRole('textbox', { name: 'Original text' })).toHaveValue('First page');
+  await expect(currentPage).toHaveValue('2');
+  await page.getByRole('button', { name: 'Previous page', exact: true }).click();
+  await expect(page.locator('.page-wrap[data-page-number="1"] .pdf-text-layer')).toHaveText('First page');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
+  await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
 });

@@ -72,6 +72,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   const [annotationSearch, setAnnotationSearch] = useState('');
   const [fields, setFields] = useState<FormFieldInfo[]>([]);
   const [fieldDrafts, setFieldDrafts] = useState<Record<string, FormValue>>({});
+  const [expandedFields, setExpandedFields] = useState<string[]>([]);
   const [dataScope, setDataScope] = useState('');
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -87,7 +88,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   scopeRef.current = scope;
 
   useEffect(() => {
-    setSelectedAnnotationId(null); setAnnotationPage(''); setAnnotationType(''); setAnnotationSearch('');
+    setSelectedAnnotationId(null); setAnnotationPage(''); setAnnotationType(''); setAnnotationSearch(''); setExpandedFields([]);
   }, [document.id]);
   useEffect(() => {
     if (!drawing) return;
@@ -416,7 +417,10 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
               })}
               <button type="button" disabled={locked || field.readOnly || !supportsFormFill || !document.permissions.fillForms}
                 onClick={() => void run(() => fillField(field))}>{t("Apply value")}</button>
-              {supportsFormUpdate && <details><summary>{t('Field properties')}</summary><div role="group" aria-label={t('Properties for {name}', { name: field.name })}>
+              {supportsFormUpdate && <details open={expandedFields.includes(field.id)} onToggle={event => {
+                const open = event.currentTarget.open;
+                setExpandedFields(previous => previous.includes(field.id) === open ? previous : open ? [...previous, field.id] : previous.filter(id => id !== field.id));
+              }}><summary>{t('Field properties')}</summary><div role="group" aria-label={t('Properties for {name}', { name: field.name })}>
                 <label><input type="checkbox" checked={properties.readOnly} disabled={locked || !document.permissions.modify}
                   onChange={event => setFieldPropertyDrafts(current => ({ ...current,
                     [field.id]: { ...properties, readOnly: event.target.checked } }))} />{t("Read-only")}</label>

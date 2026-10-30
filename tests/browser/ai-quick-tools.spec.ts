@@ -118,7 +118,7 @@ test('a scanned image page recommends KOLMOPDF without extracting characters or 
   await (await chooser).setFiles({ name: 'scan.pdf', mimeType: 'application/pdf', buffer: imageAiPdf() });
   await expect(page.getByRole('tab', { name: 'scan.pdf', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.locator('.pdf-text-layer').click({ button: 'right', position: { x: 80, y: 80 } });
-  await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Translate scanned PDF', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Translate scanned PDF', exact: true });
   await expect(dialog).toContainText('KOLMOPDF');
   expect(requests).toHaveLength(0);

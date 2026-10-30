@@ -40,6 +40,11 @@ function AccountContent() {
     catch { setMessage('Unable to sign out. Please try again.'); }
     finally { setBusy(false); }
   };
+  const retryAccount = async () => {
+    setBusy(true); setMessage('');
+    try { await refresh(); }
+    finally { setBusy(false); }
+  };
   const billing = useCallback(async (kind: 'checkout' | 'portal') => {
     setBusy(true); setMessage('');
     try { const result = await request(`/api/account/${kind}`, {}); window.location.assign(result.url); }
@@ -81,7 +86,12 @@ function AccountContent() {
         {account.cancelAtPeriodEnd && account.currentPeriodEnd ? <p className="account-fine-print">{t('Membership ends on {date}', { date: new Date(account.currentPeriodEnd * 1000).toLocaleDateString(locale) })}</p> : null}
         {account.subscriptionStatus === 'past_due' || account.subscriptionStatus === 'unpaid' ? <p className="account-fine-print">{t('Update your payment method to continue using Plus.')}</p> : null}
       </> : signedIn && !error ? <p className="account-loading" role="status">{t('Loading your account…')}</p> : null}
-    {message || error ? <p role="status" className="account-message">{t(message || error)}</p> : null}
+    {message || error ? <section className="account-message"><p role="status">{t(message || error)}</p>
+      {error ? <div className="account-actions">
+        <button type="button" className="site-button site-button-outline" disabled={busy || !ready} onClick={() => void retryAccount()}>{t(busy ? 'Loading…' : 'Retry')}</button>
+        {signedIn ? <><button type="button" className="site-button site-button-outline" disabled={busy} onClick={() => void switchAccount()}>{t('Sign in again')}</button>
+          {!account ? <button type="button" className="site-button site-button-outline" disabled={busy} onClick={() => void signOut()}>{t('Sign out')}</button> : null}</> : null}
+      </div> : null}</section> : null}
     <section className="account-pricing" id="plans" aria-labelledby="plans-title">
       <div className="account-section-heading"><h2 id="plans-title">{t('Choose your KOMO plan')}</h2><p>{t('PDF editing stays free.')}</p></div>
       <div className="account-pricing-grid">

@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
 
 test('mobile website menu keeps download, help and account reachable with keyboard dismissal', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/');
+  await page.goto('/help/');
   const menu = page.locator('.site-mobile-menu');
   const toggle = menu.locator('summary');
   await toggle.click();
@@ -49,13 +49,23 @@ test('public pricing is readable without sign-in and preserves desktop return co
   await expect(pricing.getByRole('link', { name: '登录并升级', exact: true })).toBeVisible();
 });
 
-test('homepage opens the editor rather than pretending to upload a PDF', async ({ page }) => {
+test('homepage is the editor and does not load account services before they are needed', async ({ page }) => {
+  const accountRequests: string[] = [];
+  page.on('request', request => { if (request.url().includes('/api/account/')) accountRequests.push(request.url()); });
   await page.goto('/');
-  const primary = page.locator('.hero-actions').getByRole('link', { name: 'Open editor', exact: true });
-  await expect(primary).toHaveAttribute('href', '/editor/');
-  await expect(page.locator('input[type="file"]')).toHaveCount(0);
-  await expect(page.getByRole('img', { name: 'PDF workspace preview with document tabs, page navigation and editing tools' })).toBeVisible();
-  await expect(page.locator('.preview-tab')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'Open PDF', exact: true })).toBeVisible();
+  await expect(page.locator('.site-hero, .product-preview')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Recent files', exact: true })).toHaveCount(0);
+  expect(accountRequests).toEqual([]);
+  await page.getByRole('button', { name: 'File', exact: true }).click();
+  for (const [name, href] of [['Get the desktop app', '/download/'], ['Help', '/help/'], ['Account', '/account/']]) {
+    await expect(page.getByRole('menuitem', { name: new RegExp(name!) })).toHaveAttribute('href', href!);
+  }
+  await page.keyboard.press('Escape');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
+  expect((await chooser).isMultiple()).toBe(true);
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test('downloads use released artifacts and explain manual web-to-desktop handoff', async ({ page }) => {

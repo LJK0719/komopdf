@@ -41,6 +41,7 @@ export interface EditorAiServices {
   textAction(request: TextActionRequest, signal: AbortSignal): Promise<TextActionResult>;
   kolmoConnection(signal?: AbortSignal): Promise<KolmoConnection>;
   configureKolmo(key: string): Promise<KolmoConnection>;
+  subscribeKolmoConnection?(listener: () => void): Promise<() => void>;
   translateDocument(input: KolmoDocumentInput, options: KolmoTranslationOptions, submissionId: string, signal: AbortSignal): Promise<KolmoJob>;
   getKolmoJob(id: string, signal: AbortSignal): Promise<KolmoJob>;
   cancelKolmoJob(id: string): Promise<KolmoJob>;

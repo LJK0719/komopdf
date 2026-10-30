@@ -12,6 +12,7 @@ export function KolmoTranslationPanel({ active, document, name, services, host, 
   const { t, locale } = useI18n();
   const [connection, setConnection] = useState<KolmoConnection>({ configured: false, points: null });
   const [checking, setChecking] = useState(false);
+  const [connectionVersion, setConnectionVersion] = useState(0);
   const [key, setKey] = useState('');
   const [sourceLanguage, setSourceLanguage] = useState('en');
   const [targetLanguage, setTargetLanguage] = useState(locale.startsWith('zh') ? 'zh' : 'en');
@@ -37,6 +38,16 @@ export function KolmoTranslationPanel({ active, document, name, services, host, 
   const insufficient = connection.points !== null && connection.points < estimated;
   const refreshJobs = () => services.listKolmoJobs().then(setJobs);
   useEffect(() => {
+    if (!active || !services.subscribeKolmoConnection) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void services.subscribeKolmoConnection(() => {
+      if (!disposed) setConnectionVersion(version => version + 1);
+    }).then(stop => { if (disposed) stop(); else unlisten = stop; })
+      .catch(() => { if (!disposed) setError(t('Something went wrong. Please try again.')); });
+    return () => { disposed = true; unlisten?.(); };
+  }, [active, services]);
+  useEffect(() => {
     if (!active) return;
     const abort = new AbortController(); setChecking(true);
     void Promise.all([services.kolmoConnection(abort.signal), services.listKolmoJobs()]).then(([status, saved]) => {
@@ -44,7 +55,7 @@ export function KolmoTranslationPanel({ active, document, name, services, host, 
     }).catch(caught => { if (!abort.signal.aborted) setError(caught instanceof Error ? caught.message : String(caught)); })
       .finally(() => { if (!abort.signal.aborted) setChecking(false); });
     return () => abort.abort();
-  }, [active, services]);
+  }, [active, services, connectionVersion]);
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => {
     if (active && files.length && body.current && resultList.current) {

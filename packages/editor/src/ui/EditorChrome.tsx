@@ -54,6 +54,11 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
           <Menu.Item className="ui-menu-item" onClick={() => onTool('print')} disabled={blocked}><Printer size={16} />{t('Print…')}<kbd>{modifier} P</kbd></Menu.Item>
           <Menu.Separator className="ui-separator" />
           <Menu.Item className="ui-menu-item" onClick={onClose} disabled={!name || busy}><X size={16} />{t(documentActionsDisabled ? 'Close preview' : 'Close document')}{!web && <kbd>{modifier} W</kbd>}</Menu.Item>
+          {web && <><Menu.Separator className="ui-separator" />
+            <Menu.Item className="ui-menu-item" render={<a href="/download/" target="_blank" rel="noreferrer" />}>{t('Get the desktop app')} ↗</Menu.Item>
+            <Menu.Item className="ui-menu-item" render={<a href="/help/" target="_blank" rel="noreferrer" />}>{t('Help')} ↗</Menu.Item>
+            <Menu.Item className="ui-menu-item" render={<a href="/account/" target="_blank" rel="noreferrer" />}>{t('Account')} ↗</Menu.Item>
+          </>}
           <Menu.Separator className="ui-separator" /><div className="application-preferences"><LanguageSelect /></div>
         </Menu.Popup></Menu.Positioner></Menu.Portal>
       </Menu.Root>

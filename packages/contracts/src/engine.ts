@@ -158,7 +158,8 @@ export interface HostAdapter {
   pickFont?(): Promise<FontSelection | null>;
   listSystemFonts?(): Promise<SystemFontEntry[]>;
   getSystemFont?(id: string): Promise<FontSelection>;
-  onCloseRequested?(handler: () => Promise<boolean>): Promise<() => void>;
+  onCloseRequested?(handler: (reason?: 'update') => Promise<boolean>): Promise<() => void>;
+  prepareUpdate?(): Promise<boolean>;
   loadResource(resourceId: string): Promise<ArrayBuffer>;
   readRecovery(id: string): Promise<Uint8Array | null>;
   writeRecovery(id: string, data: Uint8Array): Promise<void>;
