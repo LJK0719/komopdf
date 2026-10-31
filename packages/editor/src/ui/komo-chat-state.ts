@@ -9,7 +9,7 @@ export type ChatRequestContext = {
   materials?: AiMaterial[]; history?: ChatTurn[]; prepared?: PreparedChatContext;
 };
 type RetryDocument = { id: string; revision: number; pageOrder: readonly string[]; permissions?: { copy: boolean } };
-export const CHAT_CONTEXT_EXPIRED = 'The original context has changed. Edit this question and send it with the current material instead.';
+export const CHAT_CONTEXT_EXPIRED = 'The original context has changed. Retry with the current version.';
 export function canRetryContext(saved: ChatRequestContext | undefined, document: RetryDocument | null, getDocument?: (id: string) => RetryDocument | null): boolean {
   if (!saved || !document || saved.documentId !== document.id || saved.revision !== document.revision
     || (saved.scope !== 'document' && (!saved.pageId || !document.pageOrder.includes(saved.pageId)))
@@ -63,7 +63,7 @@ export type ChatCitation = {
   pageId?: string; pageNumber?: number; blockId?: string; range?: { start: number; end: number };
   documentId?: string; revision?: number; name?: string; materialId?: string; kind?: 'source' | 'generated' | 'analysis'; role?: 'attached' | 'result';
 };
-export type ChatFailure = { message: string; action?: 'page' | 'image' | 'clear'; retryable?: boolean };
+export type ChatFailure = { message: string; action?: 'page' | 'image' | 'clear' | 'account'; retryable?: boolean };
 export type ChatExchange = {
   id: string; prompt: string; status: 'pending' | 'complete' | 'failed' | 'cancelled';
   answer?: string; progress?: string; failure?: ChatFailure;
@@ -83,7 +83,7 @@ export function chatFailure(error: unknown): ChatFailure {
   if (error instanceof TypeError) return { message: 'Could not connect to komo. Check your connection, then retry this question.' };
   if (error instanceof AiClientError) {
     if (error.status === 401) return { message: 'Sign in again to continue.', retryable: false };
-    if (error.status === 402) return { message: 'Not enough credits. Start a new conversation or upgrade to Plus.', action: 'clear', retryable: false };
+    if (error.status === 402) return { message: 'Not enough credits. Open Account to continue.', action: 'account', retryable: false };
     if (error.status === 429 || /^(IP_RATE_LIMIT|RATE_LIMIT|IP_CONCURRENCY_LIMIT):/.test(error.message)) return { message: 'komo is receiving too many requests. Wait a moment, then retry this question.' };
     if (error.status === 413 || /^(INVALID_REQUEST|PAYLOAD_TOO_LARGE):/.test(error.message)) return { message: 'This request is too large or its context is unsupported. Choose the current page and try again.', action: 'page' };
     if (error.status === 504 || /^REQUEST_TIMEOUT:/.test(error.message)) return { message: 'komo took too long to respond. Retry this question or choose a smaller scope.' };

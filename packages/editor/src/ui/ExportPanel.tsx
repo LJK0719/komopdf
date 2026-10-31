@@ -61,11 +61,14 @@ export function ExportPanel({ disabled, encrypted, signed, wordAvailable, onExpo
       const result = await onExport(options, controller.signal, value => setProgress(value.progress));
       const outcome: ExportOutcome = Array.isArray(result) ? { status: 'prepared', warnings: result, format: format.toUpperCase(), pageCount: 0 } : result;
       setWarnings(outcome.warnings);
-      if (!controller.signal.aborted) setCompleted(outcome);
+      if (!controller.signal.aborted) {
+        setCompleted(outcome);
+        if (outcome.status !== 'cancelled') { setPassword(''); setConfirmation(''); }
+      }
     } catch (caught) {
       setError(controller.signal.aborted ? 'Conversion cancelled' : caught instanceof Error ? caught.message : typeof caught === 'string' ? caught : 'Export failed');
     } finally {
-      setBusy(false); pending.current = null; setPassword(''); setConfirmation('');
+      setBusy(false); pending.current = null;
     }
   }
 

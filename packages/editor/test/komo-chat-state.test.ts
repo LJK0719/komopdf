@@ -46,8 +46,9 @@ describe('komo conversation state and display', () => {
     expect(expired).toMatchObject({ retryable: false });
     expect(expired.message).toContain('Sign in again');
     const credits = chatFailure(new AiClientError('HTTP_ERROR', 'private upstream', 402));
-    expect(credits).toMatchObject({ retryable: false, action: 'clear' });
-    expect(credits.message).toContain('upgrade to Plus');
+    expect(credits).toMatchObject({ retryable: false, action: 'account' });
+    expect(credits.message).toContain('Open Account');
+    expect(credits.message).not.toContain('new conversation');
     expect(credits.message).not.toContain('private upstream');
   });
   it('renders headings and GFM tables without HTML, script URLs or remote images', () => {

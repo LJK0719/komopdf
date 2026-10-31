@@ -4,8 +4,88 @@ import type { AiHandoff, AiMaterial } from './text-actions.js';
 import { collectDocumentPassages, type DocumentPassage } from './document-ai-context.js';
 
 export type MaterialDocuments = Pick<EditorAiContext, 'document' | 'documents' | 'getDocumentInfo'>;
-export const MATERIAL_EXPIRED = 'This material changed or is no longer available. Remove it and add its current version.';
+export const MATERIAL_EXPIRED = 'The document changed while preparing your materials. Send again to use the latest version.';
+export const MATERIAL_UPDATE_PROMPT = 'File changes detected. Save?';
+export const MATERIAL_CLOSED = 'This reference PDF is closed. Open it again to continue.';
+export const MATERIAL_SELECTION_CHANGED = 'The original selection has changed. Select the passage again or remove this material.';
 export class MaterialContextError extends Error {}
+
+export function materialIssue(material: AiMaterial, context: MaterialDocuments): string | null {
+  const document = materialDocument(context, material.documentId);
+  if (!document) return MATERIAL_CLOSED;
+  if (document.permissions.copy !== true) return 'This PDF does not allow copying its content.';
+  return isMaterialCurrent(material, context) ? null : MATERIAL_UPDATE_PROMPT;
+}
+
+/** Only pending materials are refreshed; sent requests remain immutable. */
+export async function refreshMaterial(material: AiMaterial, context: MaterialDocuments & { engine: EngineAdapter }, signal: AbortSignal): Promise<AiMaterial> {
+  const document = materialDocument(context, material.documentId);
+  if (!document) throw new MaterialContextError(MATERIAL_CLOSED);
+  if (document.permissions.copy !== true) throw new MaterialContextError('This PDF does not allow copying its content.');
+  if (material.kind === 'text') return material;
+  let refreshed: AiMaterial;
+  if (material.kind === 'document') {
+    refreshed = await readDocumentMaterial({ engine: context.engine, document, name: material.name, signal,
+      currentDocument: () => materialDocument(context, material.documentId) });
+  } else {
+    const pages = new Map<string, Awaited<ReturnType<EngineAdapter['extract']>>>();
+    const locations: AiMaterial['locations'] = [];
+    for (const location of material.locations) {
+      signal.throwIfAborted();
+      if (!document.pageOrder.includes(location.pageId)) throw new MaterialContextError(MATERIAL_SELECTION_CHANGED);
+      if (!pages.has(location.pageId)) pages.set(location.pageId, await context.engine.extract({ docId: document.id, pageIds: [location.pageId] }));
+      const text = location.text ?? (material.locations.length === 1 ? material.text : '');
+      if (!text) throw new MaterialContextError(MATERIAL_SELECTION_CHANGED);
+      const blocks = pages.get(location.pageId)!;
+      const matches = (candidates: typeof blocks) => candidates.flatMap(block => {
+        const value = block.runs.map(run => run.text).join('');
+        const start = value.indexOf(text);
+        if (start < 0) return [];
+        const repeated = value.indexOf(text, start + 1);
+        return (repeated < 0 ? [start] : [start, repeated]).map(offset => ({ pageId: location.pageId,
+          pageNumber: document.pageOrder.indexOf(location.pageId) + 1, blockId: block.id,
+          range: [offset, offset + text.length] as [number, number], text }));
+      });
+      const original = matches(blocks.filter(block => block.id === location.blockId));
+      const found = original.length ? original : matches(blocks);
+      if (found.length !== 1) throw new MaterialContextError(MATERIAL_SELECTION_CHANGED);
+      locations.push(found[0]!);
+    }
+    const sourceText = locations.map(location => location.text).join('\n');
+    refreshed = { ...material, revision: document.revision, text: material.sourceText !== undefined ? material.text : sourceText, sourceText, locations };
+  }
+  if (materialDocument(context, document.id)?.revision !== document.revision) throw new MaterialContextError(MATERIAL_EXPIRED);
+  return { ...material, ...refreshed, id: material.id,
+    ...(material.generatedText ? { generatedFromRevision: material.generatedFromRevision ?? material.revision } : {}) };
+}
+
+export async function prepareMaterials(materials: readonly AiMaterial[], context: MaterialDocuments & Pick<EditorAiContext, 'engine' | 'confirmMaterialUpdate' | 'prepareDocument'>,
+  signal: AbortSignal, changedNames: readonly string[] = [], saveDocumentIds: readonly string[] = []): Promise<AiMaterial[] | null> {
+  const changed: AiMaterial[] = [];
+  for (const material of materials) {
+    const issue = materialIssue(material, context);
+    if (issue && issue !== MATERIAL_UPDATE_PROMPT) throw new MaterialContextError(issue);
+    if (issue) changed.push(material);
+  }
+  if (changed.length || changedNames.length) {
+    const names = [...new Set([...changed.map(material => material.name), ...changedNames])];
+    if (await context.confirmMaterialUpdate?.(names, signal) !== 'save') return null;
+    signal.throwIfAborted();
+    for (const id of new Set([...changed.map(material => material.documentId), ...saveDocumentIds])) {
+      if (!context.prepareDocument) throw new MaterialContextError('Unable to save this PDF. Try saving again.');
+      if ((await context.prepareDocument(id, signal)).status === 'cancelled') return null;
+    }
+  }
+  const prepared: AiMaterial[] = [];
+  for (const material of materials) {
+    const next = changed.includes(material) ? await refreshMaterial(material, context, signal) : material;
+    if (next.kind !== 'document' || next === material) await materialPassages(next, context, signal);
+    prepared.push(next);
+  }
+  signal.throwIfAborted();
+  if (prepared.some(material => !isMaterialCurrent(material, context))) throw new MaterialContextError(MATERIAL_EXPIRED);
+  return prepared;
+}
 
 export function materialDocument(context: MaterialDocuments, id: string): DocumentInfo | null {
   if (context.getDocumentInfo) return context.getDocumentInfo(id);
@@ -72,7 +152,7 @@ export async function materialPassages(material: AiMaterial, context: MaterialDo
     passages.push({ pageId: location.pageId, pageNumber: location.pageNumber, blockId: block.id, sourceId,
       blockText, text, range: [...range], bounds: [block.bounds.x, block.bounds.y, block.bounds.width, block.bounds.height] });
   }
-  if (passages.map(passage => passage.text).join('\n') !== material.text || !isMaterialCurrent(material, context)) throw new MaterialContextError(MATERIAL_EXPIRED);
+  if (passages.map(passage => passage.text).join('\n') !== (material.sourceText ?? material.text) || !isMaterialCurrent(material, context)) throw new MaterialContextError(MATERIAL_EXPIRED);
   return passages;
 }
 

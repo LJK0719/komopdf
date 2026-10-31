@@ -13,7 +13,7 @@ export const assistantRefreshMessages: Record<string, string> = {
   'Review and allow sharing before sending your question.': '请先查看共享说明并勾选同意，再发送问题。',
   'Conversations stay with each open PDF in this tab. Only recent answers from its current version are shared.': '对话随当前标签页中打开的各份 PDF 保留。仅共享当前文档版本的近期问答。',
   'Earlier document version · source links are no longer available.': '基于较早的文档版本，来源链接已失效。',
-  'The original context has changed. Edit this question and send it with the current material instead.': '原问题的材料范围已失效。请编辑问题，按当前材料重新发送。',
+  'The original context has changed. Retry with the current version.': '原问题的材料已变化，可使用当前版本重试。',
   'komo is unavailable right now. Check your account above or wait for the current action to finish.': 'komo 暂时不可用。请查看上方账户状态，或等待当前操作完成。',
   'Not enough credits. Open Account to continue.': '额度不足。请打开账户查看可用选项。',
   'Open a PDF or folder to start.': '打开 PDF 或文件夹后开始。',

@@ -124,6 +124,10 @@ export type EditorAiContext = {
   locateMaterial?(material: AiMaterial): Promise<void>;
   draftDirty?: boolean;
   finishDrafts?(): Promise<boolean>;
+  confirmMaterialUpdate?(names: readonly string[], signal: AbortSignal): Promise<'save' | 'cancel'>;
+  prepareDocument?(docId: string, signal: AbortSignal): Promise<
+    { status: 'ready'; document: DocumentInfo; saveStatus: 'not-needed' | 'written' | 'download-started' } | { status: 'cancelled' }
+  >;
   document: DocumentInfo | null;
   page: PageModel | null;
   name: string | null;
@@ -264,6 +268,20 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     if (commentDraft.current && !await commentDraft.current.finish()) return false;
     return true;
   };
+  const [materialPrompt, setMaterialPrompt] = useState<{ names: readonly string[]; resolve(choice: 'save' | 'cancel'): void } | null>(null);
+  const materialResolver = useRef<((choice: 'save' | 'cancel') => void) | null>(null);
+  const confirmMaterialUpdate = (names: readonly string[], signal: AbortSignal) => new Promise<'save' | 'cancel'>(resolve => {
+    materialResolver.current?.('cancel');
+    if (signal.aborted) { resolve('cancel'); return; }
+    const cancel = () => answer('cancel');
+    const answer = (choice: 'save' | 'cancel') => {
+      signal.removeEventListener('abort', cancel);
+      materialResolver.current = null; setMaterialPrompt(null); resolve(choice);
+    };
+    materialResolver.current = answer;
+    signal.addEventListener('abort', cancel, { once: true });
+    setMaterialPrompt({ names, resolve: answer });
+  });
   const [savePrompt, setSavePrompt] = useState<SavePrompt | null>(null);
   const saveResolver = useRef<((choice: SaveChoice) => void) | null>(null);
   const askSaveChanges = (name: string, downloaded = false) => new Promise<SaveChoice>(resolve => {
@@ -275,7 +293,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const [pendingRecovery, setPendingRecovery] = useState<RecoverySessionMeta[]>([]);
   const passwordResolver = useRef<((value: string | null) => void) | null>(null);
   const openSequence = useRef(0);
-  useEffect(() => () => { openSequence.current++; passwordResolver.current?.(null); saveResolver.current?.('cancel'); }, []);
+  useEffect(() => () => { openSequence.current++; passwordResolver.current?.(null); saveResolver.current?.('cancel'); materialResolver.current?.('cancel'); }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -559,6 +577,26 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     const current = targetId ? sessions.current.current.documents.get(targetId)?.loaded : documentRef.current;
     if (!current) return null;
     return saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, saveAs, recordDownload);
+  };
+
+  const prepareDocument: NonNullable<EditorAiContext['prepareDocument']> = async (docId, signal) => {
+    signal.throwIfAborted();
+    const current = sessions.current.current.documents.get(docId)?.loaded;
+    if (!current) throw new Error('This reference PDF is closed. Open it again to continue.');
+    const session = sessions.current.current.documents.get(docId)!;
+    if (current.info.revision === current.info.savedRevision || session.downloadedRevision === current.info.revision) {
+      return { status: 'ready', document: current.info, saveStatus: 'not-needed' };
+    }
+    const outcome: { status: 'written' | 'download-started' | 'cancelled' | 'failed' } = { status: 'cancelled' };
+    await saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, false, recordDownload,
+      status => { outcome.status = status; });
+    signal.throwIfAborted();
+    const saveStatus = outcome.status;
+    if (saveStatus === 'failed') throw new Error('Unable to save this PDF. Try saving again.');
+    if (saveStatus === 'cancelled') return { status: 'cancelled' };
+    const document = sessions.current.current.documents.get(docId)?.loaded.info;
+    if (!document) throw new Error('This reference PDF is closed. Open it again to continue.');
+    return { status: 'ready', document, saveStatus };
   };
 
   const exportDocument = async (options: ExportSettings, signal: AbortSignal,
@@ -859,7 +897,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   }, [document?.page, selectedIds]);
   const selectedText = useMemo(() => document ? selectedTextObject(document.page, selectedIds)?.textBlock : undefined,
     [document?.page, selectedIds]);
-  const modalOpen = Boolean(savePrompt || passwordPrompt);
+  const modalOpen = Boolean(savePrompt || passwordPrompt || materialPrompt);
   const operationBusy = openingBatch || activity !== 'idle' || editPending || externalBusy || modalOpen;
   const isBusy = operationBusy || isDraftDirty;
   const navigationBusy = activity !== 'idle' || editPending || modalOpen || isDraftDirty || (externalBusy && !allowReadOnlyNavigation);
@@ -1396,6 +1434,14 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   return (
     <Tooltip.Provider delay={350}>
     <main className={'editor-shell ' + (tabs.length || workspacePreview ? 'editor-shell-with-tabs ' : '') + (presenting ? 'is-presenting ' : '') + (previewActive ? 'is-workspace-preview ' : '') + (!document && !previewActive ? 'is-start-page' : '')}>
+      {materialPrompt && <AppDialog open onOpenChange={open => { if (!open) materialPrompt.resolve('cancel'); }} title={t('File changes detected. Save?')}>
+        <p className="password-filename">{materialPrompt.names.join(', ')}</p>
+        <p className="dialog-description">{t('Save your PDF changes and continue with the latest materials.')}</p>
+        <div className="dialog-actions"><span className="status-spacer" />
+          <button className="button button-quiet" onClick={() => materialPrompt.resolve('cancel')}>{t('Cancel')}</button>
+          <button className="button button-primary" autoFocus onClick={() => materialPrompt.resolve('save')}>{t('Save')}</button>
+        </div>
+      </AppDialog>}
       {savePrompt && <SaveChangesDialog prompt={savePrompt} />}
       {passwordPrompt && <PasswordDialog prompt={passwordPrompt} />}
       <ImportPagesDialog {...pageTools.importDialogProps} />
@@ -1691,7 +1737,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
               document: aiDocument?.info ?? null, page: aiDocument?.page ?? null, name: aiDocument?.name ?? null,
               selectedIds: aiSession?.selectedIds ?? selectedIds, engine, disabled: operationBusy, draftDirty: isDraftDirty, finishDrafts, onCommitted: handleCommitted,
               handoff: aiHandoff, onHandoffConsumed: id => setAiHandoff(previous => previous?.id === id ? null : previous),
-              getDocumentInfo: id => sessions.current.current.documents.get(id)?.loaded.info ?? null, locateMaterial,
+              getDocumentInfo: id => sessions.current.current.documents.get(id)?.loaded.info ?? null, locateMaterial, confirmMaterialUpdate, prepareDocument,
               openDocument: async source => { const info = await openDocument(source); if (info) setAiContextDocumentId(info.id); return info; }, saveDocument: () => saveDocument(false, aiDocument?.info.id),
               navigationDisabled: navigationBusy || previewActive,
               navigatePage: async pageId => { if (aiDocument) await locateMaterial({ id: 'navigation', kind: 'selection', documentId: aiDocument.info.id, revision: aiDocument.info.revision,
@@ -1777,6 +1823,7 @@ async function saveCurrentDocument(
   setActivity: (activity: Activity) => void,
   saveAs = false,
   onDownload?: (docId: string, revision: number) => void,
+  onOutcome?: (status: 'written' | 'download-started' | 'cancelled' | 'failed') => void,
 ): Promise<SaveConfirmation | null> {
   setActivity('saving');
   setError(null);
@@ -1784,19 +1831,19 @@ async function saveCurrentDocument(
   try {
     const result = await engine.save({ docId: current.info.id, protection: 'preserve' });
     const outcome = await host.saveDocument(result, current.name, { mode: saveAs ? 'save-as' : 'save' });
-    if (outcome?.status === 'cancelled') { setNotice('Save cancelled'); return null; }
+    if (outcome?.status === 'cancelled') { setNotice('Save cancelled'); onOutcome?.('cancelled'); return null; }
     if (outcome?.status === 'download-started') {
       onDownload?.(result.docId, result.savedRevision);
-      setNotice('Download started');
+      setNotice('Download started'); onOutcome?.('download-started');
       return null;
     }
     const confirmed = await engine.confirmSave({ docId: result.docId, savedRevision: result.savedRevision });
     updateSavedRevision(result.docId, confirmed.savedRevision, outcome?.name, outcome || undefined);
-    setNotice('Saved');
+    setNotice('Saved'); onOutcome?.('written');
     return { docId: result.docId, savedRevision: result.savedRevision };
   } catch (caught) {
     setError(formatError(caught));
-    setNotice('Save not completed');
+    setNotice('Save not completed'); onOutcome?.('failed');
     return null;
   } finally {
     setActivity('idle');

@@ -7,7 +7,8 @@ import type { AiHandoff, AiMaterial } from '../src/ui/text-actions.js';
 import { KomoChatPanel } from '../src/ui/KomoChatPanel.js';
 import { attachChatHandoff, canRetryContext, chatHistory, createChatSession, createKomoChatStore, freezeChatRequestContext, synchronizeChatOwner } from '../src/ui/komo-chat-state.js';
 import { needsFullDocument, prepareChatContext } from '../src/ui/komo-chat-context.js';
-import { isMaterialCurrent, materialPassages, readDocumentMaterial, resolveMaterialCitation } from '../src/ui/komo-materials.js';
+import { isMaterialCurrent, materialPassages, prepareMaterials, refreshMaterial, readDocumentMaterial, resolveMaterialCitation, MATERIAL_CLOSED, MATERIAL_SELECTION_CHANGED } from '../src/ui/komo-materials.js';
+import { selectionMaterial } from '../src/ui/text-actions.js';
 
 function info(id: string, pages = [`${id}-page`]): DocumentInfo {
   return { id, revision: 2, savedRevision: 2, pageOrder: pages, sourceIds: [`${id}-source`],
@@ -150,6 +151,92 @@ describe('multi-file reference snapshots, versions and retries', () => {
       return [block('ref', 'ref-page', 'Reference original')];
     });
     await expect(materialPassages(material, context, signal())).rejects.toThrow();
+  });
+});
+
+describe('updated material save and continue', () => {
+  function changed() {
+    const state = fixture();
+    state.documents.set(state.reference.id, { ...state.reference, revision: 3 });
+    state.context.confirmMaterialUpdate = vi.fn(async () => 'save' as const);
+    state.context.prepareDocument = vi.fn(async docId => ({ status: 'ready' as const,
+      document: state.documents.get(docId)!, saveStatus: 'written' as const }));
+    return state;
+  }
+  it('saves the changed reference, remaps its selection and continues without changing the task target', async () => {
+    const { context, material, extract } = changed();
+    extract.mockImplementation(async ({ docId, pageIds }) => [block(docId, pageIds[0]!, 'Added: Reference original')]);
+    const prepared = await prepareMaterials([material], context, signal());
+    expect(context.confirmMaterialUpdate).toHaveBeenCalledExactlyOnceWith(['Reference.pdf'], expect.any(AbortSignal));
+    expect(context.prepareDocument).toHaveBeenCalledExactlyOnceWith('ref', expect.any(AbortSignal));
+    expect(prepared?.[0]).toMatchObject({ id: material.id, revision: 3, generatedText: '参考译文', generatedFromRevision: 2,
+      locations: [{ pageId: 'ref-page', blockId: 'ref-page-block', range: [7, 25], text: 'Reference original' }] });
+    expect(context.document?.id).toBe('main'); expect(material.revision).toBe(2);
+    expect(context.openDocument).not.toHaveBeenCalled();
+    const request = await prepareChatContext({ engine: context.engine, document: context.document!, page: null, selectedIds: [], scope: 'document',
+      visualMode: 'text', instruction: 'Compare', history: [], signal: signal(), materials: prepared!, materialContext: context });
+    expect(request.request.context.referenceEvidence).toMatchObject([
+      { revision: 3, kind: 'source', text: 'Reference original', characterRange: [7, 25] },
+      { revision: 2, kind: 'generated', text: '参考译文' },
+    ]);
+  });
+  it.each(['download-started', 'written'] as const)('continues after %s without changing savedRevision itself', async saveStatus => {
+    const { context, material, documents } = changed();
+    context.prepareDocument = vi.fn(async id => ({ status: 'ready', document: documents.get(id)!, saveStatus }));
+    expect(await prepareMaterials([material], context, signal())).toHaveLength(1);
+    expect(documents.get('ref')?.savedRevision).toBe(2);
+  });
+  it('keeps materials untouched and does not read or save when confirmation is cancelled', async () => {
+    const { context, material, extract } = changed();
+    context.confirmMaterialUpdate = vi.fn(async () => 'cancel');
+    expect(await prepareMaterials([material], context, signal())).toBeNull();
+    expect(context.prepareDocument).not.toHaveBeenCalled(); expect(extract).not.toHaveBeenCalled(); expect(material.revision).toBe(2);
+  });
+  it('does not continue when the file picker is cancelled or saving fails', async () => {
+    const { context, material, extract } = changed();
+    context.prepareDocument = vi.fn(async () => ({ status: 'cancelled' }));
+    expect(await prepareMaterials([material], context, signal())).toBeNull();
+    expect(extract).not.toHaveBeenCalled();
+    context.prepareDocument = vi.fn(async () => { throw new Error('Save failed'); });
+    await expect(prepareMaterials([material], context, signal())).rejects.toThrow('Save failed');
+    expect(material.revision).toBe(2);
+  });
+  it('rereads the full reference rather than only changing its revision', async () => {
+    const { context, material, extract } = changed();
+    extract.mockImplementation(async ({ docId, pageIds }) => [block(docId, pageIds[0]!, 'Updated reference')]);
+    const prepared = await prepareMaterials([{ ...material, kind: 'document' }], context, signal());
+    expect(prepared?.[0]).toMatchObject({ revision: 3, text: 'Updated reference', locations: [{ text: 'Updated reference' }] });
+  });
+  it('finds the same passage on its stable page after block identities change', async () => {
+    const { context, material, extract } = changed();
+    extract.mockImplementation(async ({ docId, pageIds }) => [{ ...block(docId, pageIds[0]!, 'Reference original'), id: 'new-block' }]);
+    expect((await refreshMaterial(material, context, signal())).locations[0]).toMatchObject({ blockId: 'new-block', range: [0, 18] });
+  });
+  it.each(['missing', 'ambiguous', 'deleted-page'])('rejects a %s source instead of inventing updated quotation offsets', async scenario => {
+    const { context, material, extract, documents, reference } = changed();
+    if (scenario === 'deleted-page') documents.set(reference.id, { ...reference, revision: 3, pageOrder: ['new-page'] });
+    else extract.mockImplementation(async ({ docId, pageIds }) => [block(docId, pageIds[0]!, scenario === 'missing' ? 'Rewritten passage' : 'Reference original Reference original')]);
+    await expect(refreshMaterial(material, context, signal())).rejects.toThrow(MATERIAL_SELECTION_CHANGED);
+  });
+  it('distinguishes a closed or restricted PDF from a version that can be saved', async () => {
+    const { context, material, documents, reference } = changed();
+    documents.delete(reference.id);
+    await expect(prepareMaterials([material], context, signal())).rejects.toThrow(MATERIAL_CLOSED);
+    documents.set(reference.id, { ...reference, permissions: { ...reference.permissions, copy: false } });
+    await expect(prepareMaterials([material], context, signal())).rejects.toThrow('does not allow copying');
+    expect(context.confirmMaterialUpdate).not.toHaveBeenCalled();
+  });
+  it('preserves exact source whitespace in selection materials while normalizing action input separately', async () => {
+    const { context, material, extract } = fixture();
+    const text = 'Reference  original\n';
+    const attached = selectionMaterial({ id: 'selection', documentId: 'ref', revision: 2, name: 'Reference.pdf', action: 'explain', targets: [
+      { id: 'target', pageId: 'ref-page', pageNumber: 1, objectId: 'object', blockId: 'ref-page-block', range: [0, text.length], text, blockText: text, rects: [], style: {} },
+    ] });
+    extract.mockImplementation(async ({ docId, pageIds }) => [block(docId, pageIds[0]!, text)]);
+    expect(attached.sourceText).toBe(text);
+    expect(attached.text).toBe(text.trim());
+    expect(await materialPassages(attached, context, signal())).toMatchObject([{ text, range: [0, text.length] }]);
+    expect(material.revision).toBe(2);
   });
 });
 

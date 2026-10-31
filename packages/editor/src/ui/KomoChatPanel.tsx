@@ -6,7 +6,7 @@ import { AiMarkdown } from './AiMarkdown.js';
 import { useI18n } from './i18n.js';
 import { CHAT_COPY_RESTRICTED, ChatContextError, prepareChatContext, SCAN_RECOMMENDATION, type ChatScope, type ChatVisualMode } from './komo-chat-context.js';
 import { CHAT_CONTEXT_EXPIRED, attachChatHandoff, canRetryContext, createChatSession, createKomoChatStore, freezeChatRequestContext, synchronizeChatOwner, chatFailure, chatHistory, type KomoChatStore, type ChatSession, type ChatRequestContext, type ChatExchange, type ChatCitation } from './komo-chat-state.js';
-import { isMaterialCurrent, materialDocument, resolveMaterialCitation } from './komo-materials.js';
+import { isMaterialCurrent, materialDocument, prepareMaterials, resolveMaterialCitation } from './komo-materials.js';
 import { KomoMaterials } from './KomoMaterials.js';
 import type { AiMaterial } from './text-actions.js';
 import './komo-chat.css';
@@ -94,23 +94,44 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
   const update = (id: string, value: Partial<ChatExchange>) => {
     updateSession(previous => ({ ...previous, exchanges: previous.exchanges.map(item => item.id === id ? { ...item, ...value } : item) }));
   };
-  const send = async (question = instruction, nextScope = scope, nextVisualMode = visualMode, retry?: ChatRequestContext) => {
+  const send = async (question = instruction, nextScope = scope, nextVisualMode = visualMode, retry?: ChatRequestContext, refresh?: ChatRequestContext) => {
     const prompt = question.trim();
     if (!canSend || !prompt || controller.current || !context.document) return;
     if (!consent) { setSettingsOpen(true); setNotice('Review and allow sharing before sending your question.'); return; }
     if (retry && !retryIsCurrent(retry)) { setNotice(CHAT_CONTEXT_EXPIRED); return; }
+    const targetId = context.document.id;
+    const abort = new AbortController(); controller.current = abort;
+    setBusy(true); setNotice('');
+    let nextMaterials = refresh ? [...materials, ...(refresh.materials ?? []).filter(material => !materials.some(item => item.id === material.id))] : materials;
+    try {
+      if (context.draftDirty && await context.finishDrafts?.() !== true) throw new ChatContextError('Finish or discard pending paragraph changes before sending.');
+      abort.signal.throwIfAborted();
+      if (!retry) {
+        const prepared = await prepareMaterials(nextMaterials, { ...latest.current, getDocumentInfo: getDocument }, abort.signal);
+        if (!prepared) { controller.current = null; setBusy(false); return; }
+        nextMaterials = prepared;
+        updateSession(previous => ({ ...previous, materials: [
+          ...previous.materials.map(material => prepared.find(item => item.id === material.id) ?? material),
+          ...prepared.filter(material => !previous.materials.some(item => item.id === material.id)),
+        ] }));
+      }
+      if (latest.current.document?.id !== targetId) throw new ChatContextError(CHAT_CONTEXT_EXPIRED);
+    } catch (caught) {
+      if (!abort.signal.aborted) setNotice(caught instanceof Error ? caught.message : 'Unable to finish pending PDF changes.');
+      controller.current = null; setBusy(false); return;
+    }
+    const document = getDocument(targetId)!;
+    if (!document || document.permissions.copy !== true) { controller.current = null; setBusy(false); setNotice(CHAT_COPY_RESTRICTED); return; }
     let saved = retry ?? freezeChatRequestContext({
-      documentId: context.document.id, revision: context.document.revision, scope: nextScope,
-      pageId: context.page?.id ?? null, selectedIds: [...context.selectedIds], visualMode: nextVisualMode, materials,
-      history: chatHistory(exchanges, context.document.revision, getDocument),
+      documentId: document.id, revision: document.revision, scope: nextScope,
+      pageId: refresh?.pageId ?? context.page?.id ?? null, selectedIds: [...(refresh?.selectedIds ?? context.selectedIds)], visualMode: nextVisualMode, materials: nextMaterials,
+      history: chatHistory(exchanges, document.revision, getDocument),
     });
     if (!retryIsCurrent(saved) || saved.materials?.some(material => !isMaterialCurrent(material, latest.current))) {
-      setNotice(CHAT_CONTEXT_EXPIRED); return;
+      setNotice(CHAT_CONTEXT_EXPIRED); controller.current = null; setBusy(false); return;
     }
-    const document = context.document;
-    const abort = new AbortController(); controller.current = abort;
     const id = crypto.randomUUID();
-    setBusy(true); setSettingsOpen(false); setNotice('');
+    setSettingsOpen(false);
     updateSession(previous => ({ ...previous, ...(question === instruction ? { instruction: '' } : {}),
       materials: retry ? previous.materials : previous.materials.filter(material => !saved.materials?.some(item => item.id === material.id)),
       exchanges: [...previous.exchanges, { id, prompt, requestContext: saved, status: 'pending', progress: 'Reading the selected context…' }] }));
@@ -118,10 +139,10 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
     try {
       let prepared = saved.prepared;
       if (!prepared) {
-        const page = saved.scope === 'document' ? null : saved.pageId === context.page?.id ? context.page
+        const page = saved.scope === 'document' ? null : saved.pageId === context.page?.id && document.revision === context.document?.revision ? context.page
           : saved.pageId ? await context.engine.describePage(document.id, saved.pageId) : null;
         abort.signal.throwIfAborted();
-        if (retry?.scope === 'selection' && !retry.selectedIds.every(id => page?.objects.some(object => object.id === id))) throw new ChatContextError(CHAT_CONTEXT_EXPIRED);
+        if (saved.scope === 'selection' && !saved.selectedIds.every(id => page?.objects.some(object => object.id === id))) throw new ChatContextError(CHAT_CONTEXT_EXPIRED);
         prepared = await prepareChatContext({ engine: context.engine, document, page, selectedIds: saved.selectedIds,
           scope: saved.scope, visualMode: saved.visualMode, instruction: prompt,
           history: saved.history ?? [], signal: abort.signal,
@@ -243,6 +264,8 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
                   {!retryable ? <p className="komo-chat-stale">{t(CHAT_CONTEXT_EXPIRED)}</p> : null}
                   <div className="komo-chat-actions">
                     {exchange.failure?.retryable !== false && retryable ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, scope, visualMode, exchange.requestContext)}>{t('Retry question')}</button> : null}
+                    {!retryable ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, exchange.requestContext?.scope ?? scope, exchange.requestContext?.visualMode ?? visualMode, undefined, exchange.requestContext)}>{t('Retry with current version')}</button> : null}
+                    {exchange.failure?.action === 'account' ? <a href="/account/" target="_blank" rel="noreferrer">{t('Account')}</a> : null}
                     <button type="button" onClick={() => editQuestion(exchange.prompt)}>{t('Edit question')}</button>
                     {exchange.failure?.action === 'page' ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, 'page')}>{t('Ask about current page')}</button> : null}
                     {exchange.failure?.action === 'image' ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, 'page', 'always')}>{t('Ask with page image')}</button> : null}

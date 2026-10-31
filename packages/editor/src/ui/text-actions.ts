@@ -57,8 +57,8 @@ export function textActionUnits(page: PageModel, targets: readonly TextActionTar
 }
 export type AiMaterial = {
   id: string; documentId: string; revision: number; name: string;
-  kind: 'selection' | 'document' | 'text'; text: string;
-  generatedText?: string; action?: TextAction; sourceLanguage?: string; targetLanguage?: string;
+  kind: 'selection' | 'document' | 'text'; text: string; sourceText?: string;
+  generatedText?: string; generatedFromRevision?: number; action?: TextAction; sourceLanguage?: string; targetLanguage?: string;
   locations: { pageId: string; pageNumber: number; blockId?: string; range?: TextRange; text?: string }[];
 };
 export type AiHandoff = { id: string; materials: AiMaterial[]; question?: string };
@@ -82,8 +82,9 @@ export function textActionSelection(document: DocumentInfo, name: string, target
 }
 export function selectionMaterial(selection: TextActionSelection, generatedText?: string, languages?: { sourceLanguage: string; targetLanguage: string }): AiMaterial {
   return { id: crypto.randomUUID(), documentId: selection.documentId, revision: selection.revision, name: selection.name,
-    kind: selection.draft ? 'text' : 'selection', text: selectionUnits(selection).map(unit => unit.text).join('\n\n'), action: selection.action,
-    ...(generatedText ? { generatedText } : {}), ...(languages ?? {}),
+    kind: selection.draft ? 'text' : 'selection', text: selectionUnits(selection).map(unit => unit.text).join('\n\n'),
+    sourceText: selection.targets.map(target => target.text).join('\n'), action: selection.action,
+    ...(generatedText ? { generatedText, generatedFromRevision: selection.revision } : {}), ...(languages ?? {}),
     locations: selection.targets.map(target => ({ pageId: target.pageId, pageNumber: target.pageNumber,
       ...(selection.draft ? {} : { blockId: target.blockId, range: target.range }), text: target.text })) };
 }

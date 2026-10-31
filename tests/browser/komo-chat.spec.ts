@@ -366,12 +366,14 @@ test('a revision keeps old answers but invalidates sources, retry context and fo
   await expect(chat.getByText('Earlier document version · source links are no longer available.', { exact: true }).first()).toBeVisible();
   await expect(chat.getByRole('button', { name: 'report.pdf · Source · page 2', exact: true })).toBeDisabled();
   await expect(chat.getByRole('button', { name: 'Retry question', exact: true })).toHaveCount(0);
-  await expect(chat.getByText('The original context has changed. Edit this question and send it with the current material instead.', { exact: true })).toBeVisible();
+  await expect(chat.getByText('The original context has changed. Retry with the current version.', { exact: true })).toBeVisible();
   expect(requests).toHaveLength(2);
-  await chat.getByRole('button', { name: 'Send', exact: true }).click();
+  await chat.getByRole('button', { name: 'Retry with current version', exact: true }).click();
   await expect(chat.getByText('Current version answer.', { exact: true })).toBeVisible();
+  expect(requests[2]!.instruction).toBe('Question from the old version.');
   expect(requests[2]!.document.revision).toBeGreaterThan(requests[0]!.document.revision);
   expect(requests[2]!.context.history).toEqual([]);
+  await expect(chat.getByRole('textbox', { name: 'Message' })).toHaveValue('Draft survives revision');
 });
 
 test('an unavailable account explains why sending is disabled without granting sharing', async ({ page }) => {
@@ -388,3 +390,74 @@ test('an unavailable account explains why sending is disabled without granting s
   await chat.locator('.komo-chat-settings > summary').click();
   await expect(chat.getByRole('checkbox')).not.toBeChecked();
 });
+
+for (const decision of ['save', 'cancel', 'failed-save'] as const) {
+  test(`updated reference ${decision} preserves the composer and saves before continuing automatically`, async ({ page }) => {
+    const requests: AiRequest[] = [];
+    await page.route('**/api/v1/ai/requests', async route => {
+      const request = route.request().postDataJSON() as AiRequest; requests.push(request);
+      await route.fulfill({ contentType: 'text/event-stream', body: answerEvents(request, 'Latest reference answer.') });
+    });
+    await openPdf(page, false, 1, 'main.pdf');
+    await openPdf(page, false, 2, 'reference.pdf');
+    await page.getByRole('tab', { name: 'main.pdf', exact: true }).click();
+    await page.getByRole('button', { name: 'Ask komo', exact: true }).click();
+    const chat = page.getByRole('region', { name: 'komo', exact: true });
+    await allowSharing(chat);
+    await chat.getByRole('combobox', { name: 'Add reference PDF', exact: true }).selectOption({ label: 'reference.pdf' });
+    await expect(chat.locator('.komo-material-card')).toHaveCount(1);
+    await expect(chat.getByRole('combobox', { name: 'Add reference PDF', exact: true })).toBeEnabled();
+    await page.getByRole('tab', { name: /^reference\.pdf(?: Unsaved changes)?$/ }).click();
+    await page.getByRole('navigation', { name: 'PDF tools', exact: true }).getByRole('button', { name: 'Pages', exact: true }).click();
+    await page.getByRole('button', { name: 'Rotate right', exact: true }).click();
+    await expect(page.getByRole('button', { name: /Undo \(/ })).toBeEnabled();
+    await page.getByRole('tab', { name: 'main.pdf', exact: true }).click();
+    await page.getByRole('button', { name: 'Ask komo', exact: true }).click();
+    const message = chat.getByRole('textbox', { name: 'Message', exact: true });
+    await message.fill('Compare the latest reference.');
+    await chat.getByRole('button', { name: 'Send', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'File changes detected. Save?', exact: true });
+    await expect(dialog).toBeVisible(); expect(requests).toHaveLength(0);
+    await expect(page.locator('#komo-question')).toHaveValue('Compare the latest reference.');
+    await expect(page.locator('.komo-chat-exchange')).toHaveCount(0);
+    if (decision === 'save') await page.screenshot({ path: 'tmp/browser/material-update-confirm.png' });
+    if (decision === 'cancel') {
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(dialog).not.toBeVisible();
+      await expect(message).toHaveValue('Compare the latest reference.');
+      await expect(chat.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
+      await expect(chat.locator('.komo-material-card')).toHaveCount(1); expect(requests).toHaveLength(0);
+      await chat.getByRole('button', { name: 'Send', exact: true }).click();
+      await expect(dialog).toBeVisible();
+    }
+    if (decision === 'failed-save') {
+      await page.evaluate(() => {
+        const click = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function () {
+          if (this.download) {
+            HTMLAnchorElement.prototype.click = click;
+            throw new Error('Synthetic download unavailable');
+          }
+          return click.call(this);
+        };
+      });
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(chat.getByText('Unable to save this PDF. Try saving again.', { exact: true })).toBeVisible();
+      await expect(message).toHaveValue('Compare the latest reference.');
+      await expect(chat.locator('.komo-chat-exchange')).toHaveCount(0); expect(requests).toHaveLength(0);
+      await chat.getByRole('button', { name: 'Send', exact: true }).click();
+      await expect(dialog).toBeVisible();
+    }
+    const downloading = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    expect((await downloading).suggestedFilename()).toBe('reference.pdf');
+    await expect(chat.getByText('Latest reference answer.', { exact: true })).toBeVisible();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.context.referenceEvidence?.some(evidence => evidence.revision > 0 && evidence.kind === 'source')).toBe(true);
+    await expect(page.getByRole('tab', { name: 'main.pdf', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(message).toHaveValue('');
+    await page.getByRole('tab', { name: /^reference\.pdf(?: Unsaved changes)?$/ }).click();
+    await expect(page.locator('.save-state')).toHaveText('Download started');
+    await page.screenshot({ path: `tmp/browser/material-update-${decision}.png` });
+  });
+}

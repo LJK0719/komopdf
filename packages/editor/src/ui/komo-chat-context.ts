@@ -168,7 +168,9 @@ export async function prepareChatContext(options: {
     if (attachedText) {
       const sourceId = source.sourceIds[0];
       if (!sourceId) throw new MaterialContextError(MATERIAL_EXPIRED);
-      referenceEvidence.push({ id: `r${referenceEvidence.length + 1}`, docId: source.id, revision: source.revision,
+      const generatedRevision = material.generatedFromRevision ?? material.revision;
+      if (generatedRevision !== source.revision) declare({ ...source, revision: generatedRevision, pageOrder: [] }, material.name, 'excerpts', [], 0);
+      referenceEvidence.push({ id: `r${referenceEvidence.length + 1}`, docId: source.id, revision: generatedRevision,
         sourceId, materialId: material.id, kind: 'generated', role: 'result', text: attachedText });
     }
     assertCurrent(source);
