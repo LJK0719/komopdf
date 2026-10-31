@@ -13,6 +13,14 @@
       "sha256": "4522976531fe0af8420f5e380a83027882bcb65898dac06057957ff5d6c5d096",
       "bytes": 591880971,
       "minimumOs": "Windows 10 22H2 or later, 64-bit"
+    },
+    {
+      "target": "macos-arm64",
+      "name": "komopdf-0.1.17-macos-arm64.dmg",
+      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.17/komopdf-0.1.17-macos-arm64.dmg",
+      "sha256": "d07d1195f963a9a9705257d8a239275b833b9e56fefd8dd7a80da223118d0e1c",
+      "bytes": 410650136,
+      "minimumOs": "macOS 13.0 or later, Apple Silicon"
     }
   ]
 }
