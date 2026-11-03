@@ -51,7 +51,7 @@ export type EditableObject = {
 };
 export type PageModel = { id: string; widthPt: number; heightPt: number; rotation: 0 | 90 | 180 | 270; objects: EditableObject[] };
 export type RenderRequest = { docId: string; pageId: string; scale: number; clip?: Rect };
-export type RenderResult = { width: number; height: number; stride: number; format: 'rgba'; pixels: ArrayBuffer; revision: number };
+export type RenderResult = { width: number; height: number; stride: number; format: 'rgba'; pixels: ArrayBuffer; byteOffset?: number; revision: number };
 export type ExtractionRequest = { docId: string; pageIds: string[] };
 export type OcrRecognitionRequest = { docId: string; pageId: string; baseRevision: number; jobId: string; clip?: Rect };
 export type OcrRecognitionLine = { text: string; confidence: number; bounds: Rect; rotated180?: boolean; transform?: Matrix };

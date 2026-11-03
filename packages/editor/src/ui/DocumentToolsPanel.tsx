@@ -12,6 +12,7 @@ import {
   type PdfAnnotationInfo,
 } from '@pdf-editor/contracts';
 import { useFontResources } from './font-resources.js';
+import { isRenderCancelled, renderWork } from './render-work.js';
 import type { PagePlacementRequest } from './PagePlacementLayer.js';
 import { annotationTypeLabels, filterAnnotations, type AnnotationDrawingOptions } from './annotation-drawing.js';
 import './annotations.css';
@@ -80,6 +81,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   const [loadError, setLoadError] = useState('');
   const [reload, setReload] = useState(0);
   const loadSequence = useRef(0);
+  const annotationCache = useRef({ engine, documentId: '', reload: 0, pages: new Map<string, { version: number; items: PdfAnnotationInfo[] }>() });
   const fieldBaseline = useRef<{ documentId: string; fields: FormFieldInfo[] } | null>(null);
   const documentScope = `${document.id}\0${document.revision}`;
   const documentScopeRef = useRef(documentScope); documentScopeRef.current = documentScope;
@@ -112,21 +114,37 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
   useEffect(() => {
     const sequence = ++loadSequence.current;
     const expectedScope = documentScope;
+    const controller = new AbortController();
     setLoading(canReadAnnotations || canReadForms);
     setLoadError('');
     setDataScope('');
-
-    const annotationRequest = canReadAnnotations
-      ? Promise.allSettled(document.pageOrder.map(pageId => engine.describeAnnotations!(document.id, pageId))).then(pages => {
-        const failed = pages.filter(result => result.status === 'rejected');
-        if (failed.length && loadSequence.current === sequence) {
-          console.warn('Unable to read some page comments', failed);
-          setLoadError(t('Comments on {count} pages could not be loaded.', { count: failed.length }));
-        }
-        return pages.flatMap(result => result.status === 'fulfilled' ? result.value : []);
-      }) : Promise.resolve<PdfAnnotationInfo[]>([]);
+    if (annotationCache.current.engine !== engine || annotationCache.current.documentId !== document.id || annotationCache.current.reload !== reload) {
+      annotationCache.current = { engine, documentId: document.id, reload, pages: new Map() };
+    }
+    const cache = annotationCache.current.pages;
+    const retained = new Set(document.pageOrder);
+    for (const id of cache.keys()) if (!retained.has(id)) cache.delete(id);
+    const readAnnotations = async () => {
+      const items: PdfAnnotationInfo[] = [];
+      let failures = 0;
+      for (const pageId of document.pageOrder) {
+        controller.signal.throwIfAborted();
+        const version = engine.getPageVersion?.(document.id, pageId) ?? document.revision;
+        const saved = cache.get(pageId);
+        if (saved?.version === version) { items.push(...saved.items); continue; }
+        try {
+          const next = await renderWork(engine, () => engine.describeAnnotations!(document.id, pageId),
+            { signal: controller.signal, priority: 'thumbnail' });
+          if (version === (engine.getPageVersion?.(document.id, pageId) ?? document.revision)) cache.set(pageId, { version, items: next });
+          items.push(...next);
+        } catch (error) { if (isRenderCancelled(error)) throw error; failures++; }
+      }
+      if (failures && loadSequence.current === sequence) setLoadError(t('Comments on {count} pages could not be loaded.', { count: failures }));
+      return items;
+    };
+    const annotationRequest = canReadAnnotations ? readAnnotations() : Promise.resolve<PdfAnnotationInfo[]>([]);
     const formRequest = canReadForms
-      ? engine.describeForms!(document.id)
+      ? renderWork(engine, () => engine.describeForms!(document.id), { signal: controller.signal, priority: 'page' })
       : Promise.resolve<FormFieldInfo[]>([]);
 
     void Promise.all([annotationRequest, formRequest]).then(([nextAnnotations, nextFields]) => {
@@ -155,7 +173,7 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
       if (loadSequence.current === sequence && documentScopeRef.current === expectedScope) setLoading(false);
     });
 
-    return () => { loadSequence.current += 1; };
+    return () => { loadSequence.current += 1; controller.abort(); };
   }, [canReadAnnotations, canReadForms, document.id, documentScope, engine, reload]);
 
   const currentFields = dataScope === documentScope

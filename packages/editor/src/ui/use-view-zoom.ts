@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { calculateFitZoom, clampViewZoom, type ViewZoomMode, type ViewZoomSize, type ViewZoomViewport } from './view-zoom.js';
+import { calculateFitZoom, clampViewZoom, type ReadingZoomPoint, type ViewZoomMode, type ViewZoomSize, type ViewZoomViewport } from './view-zoom.js';
 
 export type { ViewZoomMode, ViewZoomSize } from './view-zoom.js';
 
@@ -11,10 +11,10 @@ type ViewZoomOptions = {
   zoom: number;
   busy: boolean;
   enabled: boolean;
-  onZoom(zoom: number): void | Promise<void>;
+  onZoom(zoom: number, point?: ReadingZoomPoint): void | Promise<void>;
 };
 
-/** Reading-only zoom state. Rendering remains with the caller; no document edits or history entries. */
+/** Reading-only zoom state; bitmap refinement never delays the logical view. */
 export function useViewZoom(options: ViewZoomOptions) {
   const { root, documentKey, pageKey, size, zoom, busy, enabled } = options;
   const [selection, setSelection] = useState<{ documentKey: string | undefined; mode: ViewZoomMode }>({ documentKey, mode: 'manual' });
@@ -27,7 +27,9 @@ export function useViewZoom(options: ViewZoomOptions) {
   useLayoutEffect(() => {
     const stage = root.current;
     if (!stage || !enabled || !documentKey) { setViewport(null); return; }
+    let frame = 0;
     const measure = () => {
+      frame = 0;
       const pages = stage.querySelector<HTMLElement>('.document-pages');
       if (!pages) { setViewport(null); return; }
       const style = getComputedStyle(pages);
@@ -42,9 +44,9 @@ export function useViewZoom(options: ViewZoomOptions) {
         && previous.paddingX === next.paddingX && previous.paddingY === next.paddingY && previous.columnGap === next.columnGap ? previous : next);
     };
     measure();
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(() => { if (!frame) frame = requestAnimationFrame(measure); });
     observer.observe(stage);
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); if (frame) cancelAnimationFrame(frame); };
   }, [root, documentKey, enabled, size?.columns]);
 
   useLayoutEffect(() => {
@@ -52,7 +54,6 @@ export function useViewZoom(options: ViewZoomOptions) {
     const scale = calculateFitZoom(mode, size, viewport);
     if (scale === null || Math.abs(scale - zoom) < 0.0001) return;
     const previous = attempted.current;
-    // A busy -> idle transition must not repeat the same request if rendering failed.
     if (previous?.documentKey === documentKey && previous.pageKey === pageKey && previous.mode === mode && previous.scale === scale) return;
     attempted.current = { documentKey, pageKey, mode, scale };
     void latest.current.onZoom(scale);
@@ -60,13 +61,14 @@ export function useViewZoom(options: ViewZoomOptions) {
 
   const selectMode = useCallback((next: ViewZoomMode) => {
     attempted.current = null;
-    setSelection({ documentKey: latest.current.documentKey, mode: next });
+    const documentKey = latest.current.documentKey;
+    setSelection(previous => previous.documentKey === documentKey && previous.mode === next ? previous : { documentKey, mode: next });
   }, []);
   const exitFitMode = useCallback(() => selectMode('manual'), [selectMode]);
-  const manualZoom = useCallback((scale: number) => {
+  const manualZoom = useCallback((scale: number, point?: ReadingZoomPoint) => {
     if (!Number.isFinite(scale) || scale <= 0) return;
     exitFitMode();
-    return latest.current.onZoom(clampViewZoom(scale));
+    return latest.current.onZoom(clampViewZoom(scale), point);
   }, [exitFitMode]);
   const fitWidth = useCallback(() => selectMode('fit-width'), [selectMode]);
   const fitPage = useCallback(() => selectMode('fit-page'), [selectMode]);

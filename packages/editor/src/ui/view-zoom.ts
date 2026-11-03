@@ -34,10 +34,13 @@ export function calculateFitZoom(mode: Exclude<ViewZoomMode, 'manual'>, page: Vi
 }
 
 type ViewOrigin = { left: number; top: number };
+export type ReadingZoomPoint = { x: number; y: number };
 export type ReadingZoomAnchor = { xPt: number; yPt: number; offsetX: number; offsetY: number };
 
-/** Keep the first visible point in page space, not the page's old CSS offset. */
-export function captureReadingZoomAnchor(page: ViewOrigin, viewport: ViewOrigin, zoom: number): ReadingZoomAnchor {
+/** Pinch keeps the point under the pointer; Fit keeps the first visible PDF point. */
+export function captureReadingZoomAnchor(page: ViewOrigin, viewport: ViewOrigin, zoom: number, point?: ReadingZoomPoint): ReadingZoomAnchor {
+  if (point) return { xPt: (point.x - page.left) / zoom, yPt: (point.y - page.top) / zoom,
+    offsetX: point.x - viewport.left, offsetY: point.y - viewport.top };
   const x = page.left - viewport.left, y = page.top - viewport.top;
   return { xPt: Math.max(0, -x) / zoom, yPt: Math.max(0, -y) / zoom,
     offsetX: Math.max(0, x), offsetY: Math.max(0, y) };

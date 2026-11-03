@@ -1,10 +1,11 @@
 import { useI18n } from './i18n.js';
 import { memo, useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
-import type { CommitResult, DocumentInfo, EngineAdapter } from '@pdf-editor/contracts';
+import type { CommitResult, DocumentInfo, EngineAdapter, PageModel } from '@pdf-editor/contracts';
 import { nextSearchIndex, type SearchOptions } from './search-matching.js';
 import { searchPage, prepareSearchReplacement, type PdfSearchMatch as Match } from './page-search.js';
 import { AppDialog } from './AppDialog.js';
 import { unrecognizedImageRegions } from './ocr-regions.js';
+import { isRenderCancelled, renderWork } from './render-work.js';
 import './panel-refresh.css';
 
 type SearchSnapshot = Pick<DocumentInfo, 'id' | 'revision' | 'pageOrder'>;
@@ -41,7 +42,9 @@ export async function searchPdfDocument(
   for (let index = 0; index < snapshot.pageOrder.length; index++) {
     if (signal.aborted) break;
     const pageId = snapshot.pageOrder[index]!;
-    const page = await engine.describePage(snapshot.id, pageId);
+    let page: PageModel;
+    try { page = await renderWork(engine, () => engine.describePage(snapshot.id, pageId), { signal, priority: 'page' }); }
+    catch (error) { if (isRenderCancelled(error)) break; throw error; }
     if (signal.aborted) break;
     found.push(...searchPage(page, index + 1, query, options));
     onProgress([...found], index + 1);
@@ -64,23 +67,24 @@ export function PdfSearchPanel({ document, engine, disabled, active = true, onRe
   const promptedDocument = useRef('');
   useEffect(() => {
     if (!active || !document) return;
-    let cancelled = false;
+    const controller = new AbortController();
     setScanPages([]);
     void (async () => {
       const pages: number[] = [];
       for (const [index, pageId] of document.pageOrder.entries()) {
-        if (cancelled) return;
-        const page = await engine.describePage(document.id, pageId);
+        const page = await renderWork(engine, () => engine.describePage(document.id, pageId),
+          { signal: controller.signal, priority: 'thumbnail' });
+        if (controller.signal.aborted) return;
         if (unrecognizedImageRegions(page).length) pages.push(index + 1);
       }
-      if (!cancelled) {
+      if (!controller.signal.aborted) {
         setScanPages(pages);
         if (pages.length && promptedDocument.current !== document.id) {
           promptedDocument.current = document.id; setAskOcr(true);
         }
       }
-    })().catch(caught => { console.warn('Unable to inspect searchable text', caught); });
-    return () => { cancelled = true; };
+    })().catch(caught => { if (!isRenderCancelled(caught)) console.warn('Unable to inspect searchable text', caught); });
+    return () => controller.abort();
   }, [active, document?.id, document?.revision, engine]);
   const [result, setResult] = useState<SearchState | null>(null);
   const queryInput = useRef<HTMLInputElement>(null);

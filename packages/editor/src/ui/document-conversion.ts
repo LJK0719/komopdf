@@ -1,5 +1,6 @@
 import { EngineError, WEB_LIMITS, type ConversionRequest, type ConversionProgress, type ConvertedDocument, type DocumentInfo, type EngineAdapter, type PageModel } from '@pdf-editor/contracts';
 import { readingRegions } from './reading-order.js';
+import { rgbaPixels } from './draw-render.js';
 
 export const BROWSER_EXPORT_LIMITS = Object.freeze({ pageInstances: 200, bufferedBytes: 64 * 1024 * 1024, htmlBytes: 16 * 1024 * 1024 });
 const exportMemoryError = () => new EngineError('RESOURCE_LIMIT', 'Browser export would exceed its memory budget. Export fewer pages, lower DPI, or use the desktop app.');
@@ -69,7 +70,7 @@ export async function convertInBrowser(engine: EngineAdapter, document: Document
       const canvas = new OffscreenCanvas(render.width, render.height), context = canvas.getContext('2d');
       if (!context) throw new Error('Image encoding is unavailable');
       try {
-        context.putImageData(new ImageData(new Uint8ClampedArray(render.pixels), render.width, render.height), 0, 0);
+        context.putImageData(new ImageData(rgbaPixels(render), render.width, render.height), 0, 0);
         const blob = await canvas.convertToBlob({ type: request.format === 'jpeg' ? 'image/jpeg' : 'image/png', quality: request.quality / 100 });
         signal.throwIfAborted();
         if (request.format === 'html') {

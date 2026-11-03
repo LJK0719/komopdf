@@ -64,7 +64,7 @@ test('pristine inline input hits the actual source positions including the last 
   await expect.poll(() => offset(page)).toBe(text.length);
   await expect(page.locator('.direct-text-editor')).toHaveAttribute('data-pristine', 'true');
   await page.getByRole('textbox', { name: 'Page text', exact: true }).press('Control+Enter');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
 });
 
@@ -80,7 +80,7 @@ test('SimSun source caret reaches both final Chinese glyphs without importing or
     expect((await caret.boundingBox())!.x).toBeCloseTo(box.x + box.width, 0);
   }
   await page.getByRole('textbox', { name: 'Page text', exact: true }).press('Escape');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
 });
 
 test('IME composition uses the native input caret and does not submit an unfinished composition', async ({ page }) => {
@@ -97,7 +97,7 @@ test('IME composition uses the native input caret and does not submit an unfinis
   await session.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 });
   await input.press('Escape');
   await expect(input).toHaveCount(0);
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await session.detach();
 });
 
@@ -128,5 +128,5 @@ test('edited content uses its visible DOM layout and undo restores source caret 
   await expect.poll(() => offset(page)).toBe(text.length);
   await expect(page.locator('.inline-source-caret')).toHaveAttribute('data-offset', String(text.length));
   await input.press('Escape');
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
 });

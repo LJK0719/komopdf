@@ -64,6 +64,7 @@ export function paragraphEditRange(region: ReadingRegion, targets: readonly Text
 export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert, onAnnotate, onError, onTextAction, aiSelection }: Props) {
   const { t } = useI18n();
   const layer = useRef<HTMLDivElement>(null);
+  const viewScale = useRef(zoom); viewScale.current = zoom;
   const anchor = useRef<DomPoint | null>(null);
   const affinity = useRef<{ objectId: string; offset: number; bounds: Rect } | null>(null);
   const [targets, setTargets] = useState<TextSelectionTarget[]>([]);
@@ -189,7 +190,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     displayedSelection.current = [];
     setCaret(null); setTargets([]); anchor.current = null; affinity.current = null;
     pageHitTests.set(root, (clientX, clientY) => {
-      const rect = root.getBoundingClientRect(), x = (clientX - rect.left) / zoom, y = (clientY - rect.top) / zoom;
+      const rect = root.getBoundingClientRect(), x = (clientX - rect.left) / viewScale.current, y = (clientY - rect.top) / viewScale.current;
       let best: { objectId: string; offset: number; bounds: Rect } | null = null, distance = Infinity;
       for (const object of objects) {
         const hit = hitText(textClusters(object.textBlock!), x, y);
@@ -204,7 +205,7 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
       return best && span ? domTextPoint(span, best.offset) : null;
     });
     return () => { pageHitTests.delete(root); };
-  }, [shown.page, zoom]);
+  }, [shown.page]);
   const copy = async () => {
     try { if (shown.info.permissions.copy) await navigator.clipboard.writeText(contextText.current || text); }
     catch { onError(t('Clipboard access was denied. Use Ctrl/Cmd+C to copy selected text.')); }
@@ -220,23 +221,23 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     let offset = 0;
     return <Fragment key={item.id}>
       {prefix && <span className="pdf-text-separator" style={{
-        left: Math.min(shown.page.widthPt - 1, preceding.x + preceding.width) * zoom, top: preceding.y * zoom,
-        width: Math.max(1, sameLine ? first.x - preceding.x - preceding.width : (block.runs[0]?.style.fontSize ?? 12) / 3) * zoom,
-        height: Math.max(2, preceding.height) * zoom, fontSize: prefix.includes('\n') ? 1 : (block.runs[0]?.style.fontSize ?? 12) * zoom,
+        left: Math.min(shown.page.widthPt - 1, preceding.x + preceding.width), top: preceding.y,
+        width: Math.max(1, sameLine ? first.x - preceding.x - preceding.width : (block.runs[0]?.style.fontSize ?? 12) / 3),
+        height: Math.max(2, preceding.height), fontSize: prefix.includes('\n') ? 1 : (block.runs[0]?.style.fontSize ?? 12),
       }}>{prefix}</span>}
       {!clusters.length ? <span data-text-object={item.id} className="pdf-text-fallback" style={{
-        left: item.bounds.x * zoom, top: item.bounds.y * zoom, width: item.bounds.width * zoom,
-        fontSize: (block.runs[0]?.style.fontSize ?? 12) * zoom, lineHeight: block.runs[0]?.style.lineHeight ?? 1.2,
-        letterSpacing: (block.runs[0]?.style.characterSpacing ?? 0) * zoom }}>{value}</span>
+        left: item.bounds.x, top: item.bounds.y, width: item.bounds.width,
+        fontSize: block.runs[0]?.style.fontSize ?? 12, lineHeight: block.runs[0]?.style.lineHeight ?? 1.2,
+        letterSpacing: block.runs[0]?.style.characterSpacing ?? 0 }}>{value}</span>
       : <span data-text-object={item.id} className="pdf-text-object">{clusters.map((cluster, index) => {
         const gap = value.slice(offset, cluster.range[0]); offset = cluster.range[1];
-        return <span key={index} className="pdf-character" style={{ left: cluster.bounds.x * zoom, top: cluster.bounds.y * zoom,
-          width: cluster.bounds.width * zoom, height: cluster.bounds.height * zoom, fontSize: cluster.bounds.height * zoom }}>
+        return <span key={index} className="pdf-character" style={{ left: cluster.bounds.x, top: cluster.bounds.y,
+          width: cluster.bounds.width, height: cluster.bounds.height, fontSize: cluster.bounds.height }}>
           {gap}{cluster.text}{index === clusters.length - 1 ? value.slice(offset) : ''}
         </span>;
       })}</span>}
     </Fragment>;
-  }), [objects, prefixes, shown.page.widthPt, zoom]);
+  }), [objects, prefixes, shown.page.widthPt]);
 
   return <ContextMenu.Root onOpenChange={open => { menuOpen.current = open; }}>
     <ContextMenu.Trigger render={<div />} ref={layer} className="pdf-text-layer" aria-label={t('Select text')} tabIndex={0}
@@ -325,7 +326,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') affinity.current = null;
         if (event.key === 'Enter' && editTarget && canEdit && !disabled) { event.preventDefault(); onEdit(shown, editTarget.objectId, editTarget.range, true); }
       }}>
-      {textNodes}
+      <div className="pdf-text-content" style={{ position: 'absolute', left: 0, top: 0, width: shown.page.widthPt, height: shown.page.heightPt,
+        transformOrigin: '0 0', transform: `scale(${zoom})` }}>{textNodes}</div>
       <div className="pdf-selection-paint" aria-hidden="true">{mergeTextRects((targets.length ? targets : aiSelection?.revision === shown.info.revision ? aiSelection.targets.filter(target => target.pageId === shown.page.id) : []).flatMap(target => target.rects), shown.page.rotation % 180 !== 0).map((rect, index) =>
         <i key={index} style={{ left: rect.x * zoom, top: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom }} />)}</div>
       {caret && <i className="reading-caret" aria-hidden="true" style={{ left: caret.x * zoom, top: caret.y * zoom,

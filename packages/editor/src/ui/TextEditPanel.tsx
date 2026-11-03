@@ -7,13 +7,13 @@ import {
   type DocumentInfo,
   type EngineAdapter,
   type PageModel,
-  type RenderResult,
   type TextBlock,
   type TextLayoutResult,
   type TextStyle,
   type EditTransaction,
 } from '@pdf-editor/contracts';
 import { CommandRegistry } from '@pdf-editor/commands';
+import type { PageGeometry } from './draw-render.js';
 import { resolveFormattingFont } from './font-face-matcher.js';
 import {
   useFontResources,
@@ -35,7 +35,7 @@ type Props = {
   searchSelection?: { docId: string; revision: number; pageId: string; blockId: string; start: number; end: number; key: number } | null;
   inlineTextId?: string | null;
   inlineHost?: HTMLElement | null;
-  render?: RenderResult | null;
+  render?: PageGeometry | null;
   onInlineClose?(): void;
   engine: EngineAdapter;
   disabled?: boolean;

@@ -1,11 +1,12 @@
 import { useI18n } from './i18n.js';
 import { ContextMenu } from '@base-ui/react/context-menu';
-import type { PageModel, PdfAnnotationInfo, RenderResult } from '@pdf-editor/contracts';
+import type { PageModel, PdfAnnotationInfo } from '@pdf-editor/contracts';
+import type { PageGeometry } from './draw-render.js';
 
 type Props = {
   annotations: PdfAnnotationInfo[];
   page: PageModel;
-  render: RenderResult;
+  render: PageGeometry;
   pageOrder: string[];
   disabled?: boolean;
   onNavigate(targetPageId: string, targetTopPt?: number): void;

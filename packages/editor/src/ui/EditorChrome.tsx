@@ -97,8 +97,8 @@ export function EditorToolbar({ tool, onTool, hasDocument, ocr, locked, onOpen, 
   </div>;
 }
 
-export function ViewControls({ page, pages, zoom, busy, onPage, onZoom, onFit, onFitWidth, zoomMode = 'manual' }: {
-  page: number; pages: number; zoom: number; busy: boolean;
+export function ViewControls({ page, pages, zoom, busy, zoomBusy = busy, onPage, onZoom, onFit, onFitWidth, zoomMode = 'manual' }: {
+  page: number; pages: number; zoom: number; busy: boolean; zoomBusy?: boolean;
   onPage(page: number): void; onZoom(zoom: number): void; onFit(): void;
   onFitWidth?(): void; zoomMode?: ViewZoomMode;
 }) {
@@ -122,10 +122,10 @@ export function ViewControls({ page, pages, zoom, busy, onPage, onZoom, onFit, o
       onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span>/ {pages}</span></label>
     <IconButton label={t('Next page')} disabled={busy || page >= pages} onClick={() => onPage(page + 1)}><ChevronRight size={16} /></IconButton>
     <span className="toolbar-divider" />
-    <IconButton label={t('Zoom out')} disabled={busy || !pages || zoom <= MIN_VIEW_ZOOM} onClick={() => onZoom(clampViewZoom(zoom / 1.25))}><Minus size={16} /></IconButton>
+    <IconButton label={t('Zoom out')} disabled={zoomBusy || !pages || zoom <= MIN_VIEW_ZOOM} onClick={() => onZoom(clampViewZoom(zoom / 1.25))}><Minus size={16} /></IconButton>
     <label className="page-number-input"><span className="sr-only">{t('Zoom')}</span>
       <input aria-label={t('Zoom')} title={t('Zoom (25–400%)')} type="text" inputMode="decimal" list={presetsId}
-        style={{ width: 70 }} value={zoomDraft ?? formatZoomPercent(zoom)} disabled={busy || !pages}
+        style={{ width: 70 }} value={zoomDraft ?? formatZoomPercent(zoom)} disabled={zoomBusy || !pages}
         onFocus={event => { cancelZoomDraft.current = false; event.currentTarget.select(); }}
         onChange={event => setZoomDraft(event.target.value)} onBlur={event => commitZoom(event.currentTarget.value)}
         onKeyDown={event => {
@@ -135,10 +135,10 @@ export function ViewControls({ page, pages, zoom, busy, onPage, onZoom, onFit, o
         }} />
       <datalist id={presetsId}>{[25, 50, 75, 100, 125, 150, 200, 300, 400].map(percent => <option key={percent} value={`${percent}%`} />)}</datalist>
     </label>
-    <IconButton label={t('Zoom in')} disabled={busy || !pages || zoom >= MAX_VIEW_ZOOM} onClick={() => onZoom(clampViewZoom(zoom * 1.25))}><Plus size={16} /></IconButton>
-    {onFitWidth && <IconButton label={t('Fit width')} disabled={busy || !pages} aria-pressed={zoomMode === 'fit-width'}
+    <IconButton label={t('Zoom in')} disabled={zoomBusy || !pages || zoom >= MAX_VIEW_ZOOM} onClick={() => onZoom(clampViewZoom(zoom * 1.25))}><Plus size={16} /></IconButton>
+    {onFitWidth && <IconButton label={t('Fit width')} disabled={zoomBusy || !pages} aria-pressed={zoomMode === 'fit-width'}
       style={zoomMode === 'fit-width' ? fitStyle : undefined} onClick={onFitWidth}><MoveHorizontal size={16} /></IconButton>}
-    <IconButton label={t('Fit page')} disabled={busy || !pages} aria-pressed={zoomMode === 'fit-page'}
+    <IconButton label={t('Fit page')} disabled={zoomBusy || !pages} aria-pressed={zoomMode === 'fit-page'}
       style={zoomMode === 'fit-page' ? fitStyle : undefined} onClick={onFit}><Maximize size={16} /></IconButton>
   </div>;
 }

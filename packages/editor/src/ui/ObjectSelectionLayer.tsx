@@ -1,6 +1,7 @@
 import { translate as t, useI18n } from './i18n.js';
-import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import type { EditableObject, PageModel, Rect, RenderResult } from '@pdf-editor/contracts';
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import type { EditableObject, PageModel, Rect } from '@pdf-editor/contracts';
+import type { PageGeometry } from './draw-render.js';
 import { frameBounds, localFrameDelta, resizedTextFrame, selectionTextFrame, type TextFrame } from './text-frame.js';
 import { containsRect, isContainerInterior, normalizeSelection, pickObject, selectionScope } from './object-selection.js';
 import { hitText, textClusters, type TextHit } from './text-geometry.js';
@@ -11,7 +12,7 @@ export const ObjectSelectionStartContext = createContext<{ current: SelectionPoi
 
 type Props = {
   page: PageModel;
-  render: RenderResult;
+  render: PageGeometry;
   selectedIds: string[];
   disabled: boolean;
   canTransform: boolean;
@@ -162,14 +163,13 @@ function computeRotateMatrix(
 }
 
 const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group', shading: 'Gradient' };
-const ObjectHitbox = memo(function ObjectHitbox({ object, selected, hovered, disabled, zIndex, scaleX, scaleY, dx, dy, onSelect }: {
+const ObjectHitbox = memo(function ObjectHitbox({ object, selected, hovered, disabled, zIndex, dx, dy, onSelect }: {
   object: EditableObject; selected: boolean; hovered: boolean; disabled: boolean; zIndex: number | undefined;
-  scaleX: number; scaleY: number; dx: number; dy: number; onSelect: Props['onSelect'];
+  dx: number; dy: number; onSelect: Props['onSelect'];
 }) {
   return <button type="button" disabled={disabled} data-object-id={object.id} data-object-type={object.type}
     className={`object-hitbox${selected ? ' object-hitbox-selected' : ''}${object.textBlock ? ' object-hitbox-text' : ''}${hovered ? ' object-hitbox-hovered' : ''}`}
-    style={{ zIndex, left: object.bounds.x * scaleX, top: object.bounds.y * scaleY,
-      width: Math.max(object.bounds.width * scaleX, 6), height: Math.max(object.bounds.height * scaleY, 6),
+    style={{ zIndex, left: object.bounds.x, top: object.bounds.y, width: object.bounds.width, height: object.bounds.height,
       ...(dx || dy ? { transform: `translate(${dx}px, ${dy}px)` } : {}) }}
     onClick={event => { event.stopPropagation(); if (!disabled && event.detail === 0) onSelect(object.id, event.ctrlKey || event.metaKey || event.shiftKey); }}
     aria-pressed={selected} aria-label={`Select ${names[object.type]} object`} />;
@@ -219,16 +219,27 @@ export function ObjectSelectionLayer({
   const selectedObjects = useMemo(() => objects.filter(object => idsFor(object).some(id => selectedSet.has(id))), [objects, selectedSet]);
   const textFrame = useMemo(() => selectionTextFrame(page, selectedObjects), [page, selectedObjects]);
   const textOnly = selectedObjects.length === 1 && Boolean(selectedObjects[0]?.textBlock);
-  const hoveredText = objects.find(object => object.id === hoveredId && object.textBlock && !idsFor(object).some(id => selectedSet.has(id)));
+  const hoveredObject = useMemo(() => hoveredId ? objects.find(object => object.id === hoveredId
+    && !idsFor(object).some(id => selectedSet.has(id))) : undefined, [objects, hoveredId, selectedSet]);
   const hoveredBounds = useMemo(() => {
-    const frame = hoveredText ? selectionTextFrame(page, [hoveredText]) : null;
-    return frame ? frameBounds(frame) : hoveredText?.bounds;
-  }, [page, hoveredText]);
+    const frame = hoveredObject?.textBlock ? selectionTextFrame(page, [hoveredObject]) : null;
+    return frame ? frameBounds(frame) : hoveredObject?.bounds;
+  }, [page, hoveredObject]);
   const resizeEnabled = !textOnly || Boolean(textFrame && onResizeText);
   const stacking = useMemo(() => new Map(objects.slice().sort((a, b) => b.bounds.width * b.bounds.height - a.bounds.width * a.bounds.height)
     .map((object, index) => [object.id, index])), [objects]);
   const movingIds = preview?.type === 'move' ? preview.ids : null;
   const movingSet = useMemo(() => new Set(movingIds), [movingIds]);
+  const selectCallback = useRef(onSelect); selectCallback.current = onSelect;
+  const selectHitbox = useCallback((id: string, additive: boolean) => selectCallback.current(id, additive), []);
+  const moveX = preview?.type === 'move' ? preview.dx / scaleX : 0;
+  const moveY = preview?.type === 'move' ? preview.dy / scaleY : 0;
+  const hitboxes = useMemo(() => objects.map(object => {
+    const moving = idsFor(object).some(id => movingSet.has(id));
+    return <ObjectHitbox key={object.id} object={object} selected={idsFor(object).some(id => selectedSet.has(id))}
+      hovered={!disabled && hoveredId === object.id} disabled={disabled} zIndex={stacking.get(object.id)}
+      dx={moving ? moveX : 0} dy={moving ? moveY : 0} onSelect={selectHitbox} />;
+  }), [objects, selectedSet, movingSet, hoveredId, disabled, stacking, moveX, moveY, selectHitbox]);
   const hitAt = (clientX: number, clientY: number) => {
     const rect = layerRef.current!.getBoundingClientRect();
     return pickObject(objects, (clientX - rect.left) / scaleX, (clientY - rect.top) / scaleY, 3 / Math.max(scaleX, scaleY));
@@ -532,16 +543,13 @@ export function ObjectSelectionLayer({
         moved.current = false;
       }}
     >
-      {objects.map(object => {
-        const moving = idsFor(object).some(id => movingSet.has(id));
-        return <ObjectHitbox key={object.id} object={object} selected={idsFor(object).some(id => selectedSet.has(id))}
-          hovered={!disabled && hoveredId === object.id} disabled={disabled} zIndex={stacking.get(object.id)} scaleX={scaleX} scaleY={scaleY}
-          dx={moving && preview?.type === 'move' ? preview.dx : 0} dy={moving && preview?.type === 'move' ? preview.dy : 0} onSelect={onSelect} />;
-      })}
+      <div className="object-hitboxes" style={{ width: page.widthPt, height: page.heightPt,
+        transform: `scale(${scaleX}, ${scaleY})` }}>{hitboxes}</div>
 
-      {hoveredBounds && !disabled && <div className="object-text-hover" aria-hidden="true" style={{
+      {hoveredBounds && !disabled && <div className={`object-text-hover${hoveredObject?.textBlock ? '' : ' object-shape-hover'}`} aria-hidden="true" style={{
         zIndex: objects.length, left: hoveredBounds.x * scaleX, top: hoveredBounds.y * scaleY,
-        width: hoveredBounds.width * scaleX, height: hoveredBounds.height * scaleY,
+        width: Math.max(hoveredBounds.width * scaleX, hoveredObject?.textBlock ? 0 : 6),
+        height: Math.max(hoveredBounds.height * scaleY, hoveredObject?.textBlock ? 0 : 6),
       }} />}
 
       {bounds && selectedObjects.length > 0 && (

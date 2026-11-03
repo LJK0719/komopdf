@@ -127,9 +127,9 @@ export function PageContextMenu({ tools, onOpen, children }: { tools: PageTools;
   </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal></ContextMenu.Root>;
 }
 
-export function PageOrganizer({ document, engine, tools, disabled, width, columns, onOpen }: {
+export function PageOrganizer({ document, engine, tools, disabled, width, columns, pixelRatio, onOpen }: {
   document: LoadedDocument; engine: EngineAdapter; tools: PageTools; disabled: boolean;
-  width: number; columns: number; onOpen(id: string): void;
+  width: number; columns: number; pixelRatio: number; onOpen(id: string): void;
 }) {
   const { t } = useI18n();
   const grid = useRef<HTMLDivElement>(null);
@@ -178,7 +178,7 @@ export function PageOrganizer({ document, engine, tools, disabled, width, column
             void tools.reorder(dragging.current, id, event.clientX > rect.left + rect.width / 2);
             dragging.current = []; setDrop(null);
           }} onDragEnd={() => { dragging.current = []; setDrop(null); }}>
-          <div className="organizer-preview"><PageThumbnail engine={engine} docId={document.info.id} pageId={id} revision={document.info.revision} scale={0.5} /></div>
+          <div className="organizer-preview"><PageThumbnail engine={engine} docId={document.info.id} pageId={id} revision={document.info.revision} pixelRatio={pixelRatio} /></div>
           <span className="organizer-page-label"><span aria-hidden="true" className="page-selection-check">{tools.ids.includes(id) ? '✓' : ''}</span>{index + 1}</span>
         </ContextMenu.Trigger>
       </PageContextMenu>)}

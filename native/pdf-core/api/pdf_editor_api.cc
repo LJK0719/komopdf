@@ -369,9 +369,26 @@ static_assert(offsetof(PdeEditCommand, values) == 48,
 
 struct Document {
   ~Document() {
+    ClearRenderPage();
     if (pdf) {
       FPDF_CloseDocument(pdf);
     }
+  }
+
+  void ClearRenderPage() {
+    if (render_page) {
+      FPDF_ClosePage(render_page);
+      render_page = nullptr;
+    }
+  }
+
+  FPDF_PAGE RenderPage(uint32_t page_index) {
+    if (!render_page || render_page_index != page_index) {
+      ClearRenderPage();
+      render_page = FPDF_LoadPage(pdf, static_cast<int>(page_index));
+      render_page_index = page_index;
+    }
+    return render_page;
   }
 
   uint32_t handle = 0;
@@ -384,6 +401,8 @@ struct Document {
   std::string source_password;
   int64_t source_size = 0;
   FPDF_DOCUMENT pdf = nullptr;
+  FPDF_PAGE render_page = nullptr;
+  uint32_t render_page_index = 0;
   bool editing_allowed = false;
   uint32_t revision = 0;
   uint32_t saved_revision = 0;
@@ -6873,6 +6892,7 @@ void ReserveTransactionIds(const EditTransaction& transaction,
 void InstallCandidate(Document* document,
                       FPDF_DOCUMENT candidate,
                       CandidateMetadata metadata) {
+  document->ClearRenderPage();
   FPDF_DOCUMENT previous = document->pdf;
   document->pdf = candidate;
   document->metadata = std::move(metadata);
@@ -7609,8 +7629,8 @@ const char* pde_render(uint32_t document,
       return nullptr;
     }
 
-    ScopedPage page(FPDF_LoadPage(value->pdf, static_cast<int>(page_index)));
-    if (!page.get()) {
+    FPDF_PAGE page = value->RenderPage(page_index);
+    if (!page) {
       SetError("CORE_UNAVAILABLE", "The PDF page could not be loaded.");
       return nullptr;
     }
@@ -7629,9 +7649,9 @@ const char* pde_render(uint32_t document,
       SetUnexpectedError();
       return nullptr;
     }
-    FPDF_RenderPageBitmap(bitmap.get(), page.get(), offset_x, offset_y,
+    FPDF_RenderPageBitmap(bitmap.get(), page, offset_x, offset_y,
                           static_cast<int>(full_width),
-                          static_cast<int>(full_height), 0, FPDF_ANNOT);
+                          static_cast<int>(full_height), 0, FPDF_ANNOT | FPDF_RENDER_LIMITEDIMAGECACHE);
     if (CPDFDocumentFromFPDFDocument(value->pdf)->GetRoot()->KeyExist("AcroForm")) {
       FPDF_FORMFILLINFO callbacks{};
       callbacks.version = 2;
@@ -7645,10 +7665,10 @@ const char* pde_render(uint32_t document,
       }
       // Draw existing widget appearances only. No document/page actions or
       // JavaScript callbacks are executed by the editor.
-      FORM_OnAfterLoadPage(page.get(), form.get());
-      FPDF_FFLDraw(form.get(), bitmap.get(), page.get(), offset_x, offset_y,
+      FORM_OnAfterLoadPage(page, form.get());
+      FPDF_FFLDraw(form.get(), bitmap.get(), page, offset_x, offset_y,
                    static_cast<int>(full_width), static_cast<int>(full_height), 0, 0);
-      FORM_OnBeforeClosePage(page.get(), form.get());
+      FORM_OnBeforeClosePage(page, form.get());
     }
     for (size_t offset = 0; offset < g_binary.size(); offset += 4) {
       std::swap(g_binary[offset], g_binary[offset + 2]);

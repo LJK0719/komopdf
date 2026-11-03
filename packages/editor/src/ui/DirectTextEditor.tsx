@@ -6,7 +6,8 @@ import { TextActionMenuItems } from './TextActionMenu.js';
 import { textActionSelection, textActionTarget, type TextActionSelection } from './text-actions.js';
 import { Bold, Italic, Underline } from 'lucide-react';
 import { CommandRegistry } from '@pdf-editor/commands';
-import type { CommitResult, DocumentInfo, EngineAdapter, PageModel, RenderResult, StyledTextRun, TextBlock, TextRange, TextStyle } from '@pdf-editor/contracts';
+import type { CommitResult, DocumentInfo, EngineAdapter, PageModel, StyledTextRun, TextBlock, TextRange, TextStyle } from '@pdf-editor/contracts';
+import type { PageGeometry } from './draw-render.js';
 import { useFontResources, findSelectionFontInfo, loadFontPreview, prepareEditorFonts } from './font-resources.js';
 import { resolveSourceFont } from './font-face-matcher.js';
 import { selectionTextFrame } from './text-frame.js';
@@ -27,7 +28,7 @@ type Props = {
   document: DocumentInfo; page: PageModel; selectedIds: string[]; inlineId: string | null;
   name?: string;
   onTextAction?: ((selection: TextActionSelection, action: import('@pdf-editor/contracts').TextAction | 'ask') => void) | undefined;
-  host: HTMLElement | null; render: RenderResult; engine: EngineAdapter; disabled: boolean;
+  host: HTMLElement | null; render: PageGeometry; engine: EngineAdapter; disabled: boolean;
   handle: RefObject<TextEditorHandle | null>; initialRange?: TextRange | null; initialRangeIsLogical?: boolean; initialHit?: TextHit | null; onClose(): void; onEdit(): void; onManageFonts(): void;
   onParagraph(id: string): void;
   copiedFormat: TextStyle | null; onCopyFormat(style: TextStyle): void;

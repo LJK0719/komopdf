@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { useDocumentSessions } from '../src/ui/use-document-sessions.js';
+import { matchesPageRender, pageRenderGeometry } from '../src/ui/draw-render.js';
 import type { DocumentInfo, EngineAdapter, PageModel, RenderResult } from '@pdf-editor/contracts';
 import { mergeSavedRevision, replaceLoadedDocument, type LoadedDocument } from '../src/ui/EditorShell.js';
 
@@ -42,7 +46,7 @@ const previous: LoadedDocument = {
   info: { ...documentInfo, id: 'old-doc', pageOrder: ['page-old'] },
   name: 'old.pdf',
   page,
-  render,
+  render: { ...pageRenderGeometry(page, 1.25, 0, 1), bitmap: render },
 };
 
 describe('Document replacement', () => {
@@ -78,12 +82,33 @@ describe('Document replacement', () => {
   });
 });
 
+describe('Inactive document bitmaps', () => {
+  it('releases background pixels while retaining page metadata and view state', () => {
+    let sessions!: ReturnType<typeof useDocumentSessions>;
+    function Capture() { sessions = useDocumentSessions(); return null; }
+    renderToStaticMarkup(createElement(Capture));
+    sessions.add(previous);
+    sessions.setSelectedIds(['selected-object']);
+    const next = { ...previous, info: { ...previous.info, id: 'second-doc' }, name: 'second.pdf' };
+    sessions.add(next);
+    const inactive = sessions.current.current.documents.get(previous.info.id)!;
+    expect(inactive.loaded.render.bitmap).toBeNull();
+    expect(inactive.loaded.page).toBe(previous.page);
+    expect(inactive.loaded.info).toBe(previous.info);
+    expect(inactive.selectedIds).toEqual(['selected-object']);
+    sessions.activate(previous.info.id);
+    expect(sessions.current.current.activeId).toBe(previous.info.id);
+    expect(sessions.current.current.documents.get('second-doc')!.loaded.render.bitmap).toBeNull();
+    expect(matchesPageRender(inactive.loaded.render, inactive.zoom, 1)).toBe(false);
+  });
+});
+
 describe('Resizable AI inspector integration', () => {
   it('keeps renderAiPanel and exposes an accessible outer separator only for AI', () => {
     const source = readFileSync(resolve(__dirname, '../src/ui/EditorShell.tsx'), 'utf-8');
     expect(source).toContain("const aiPanelActive = hasAi && activeTool === 'ai'");
     expect(source).toContain('usePanelResize(aiPanelActive, railVisible)');
-    expect(source).toContain("enabled: tab !== 'pages' && !panelResizing");
+    expect(source).toContain('renderPaused={viewInteracting || panelResizing}');
     expect(source).toContain('data-ai-panel={aiPanelActive}');
     expect(source).toContain('{aiPanelActive && <div ref={separatorRef}');
     expect(source).toContain('role="separator" tabIndex={0}');
@@ -144,7 +169,7 @@ describe('Host workspace slots', () => {
     expect(source).toContain("event.target.closest('.workspace-rail-content')");
     expect(source).toContain("if (previewActive && tool !== 'ai') return");
     expect(source).toContain('hidden={!panelVisible}');
-    expect(source).toContain("enabled: tab !== 'pages' && !panelResizing && !previewActive");
+    expect(source).toContain("enabled: tab !== 'pages' && !previewActive");
     expect(source).toContain('{!previewActive && <ViewControls');
     const aiRender = source.slice(source.indexOf('{renderAiPanel ?'), source.indexOf('}) : aiPanel}'));
     expect(aiRender).toContain('selectedIds: aiSession?.selectedIds ?? selectedIds, engine, disabled: operationBusy');

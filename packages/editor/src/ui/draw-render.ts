@@ -1,18 +1,39 @@
 import { WEB_LIMITS, type EngineAdapter, type PageModel, type Rect, type RenderResult } from '@pdf-editor/contracts';
+import { isRenderCancelled, renderWork, type RenderPriority, type RenderWorkOptions } from './render-work.js';
 
 const TILE_SIZE = 512;
-// At most ~59 MiB of visible canvas pixels; an inactive tab can retain a <=32 MiB full render.
-const MAX_VISIBLE_TILES = 56;
 
-export async function renderPage(engine: EngineAdapter, docId: string, page: PageModel, scale: number, revision: number): Promise<RenderResult> {
-  const width = Math.ceil(page.widthPt * scale);
-  const height = Math.ceil(page.heightPt * scale);
-  if (width * height <= WEB_LIMITS.renderPixels && width <= 8192 && height <= 8192) {
-    return engine.render({ docId, pageId: page.id, scale });
+export type PageRender = {
+  width: number; height: number; zoom: number; pixelRatio: number; revision: number;
+  mode: 'full' | 'tiles'; bitmap: RenderResult | null;
+};
+export type PageGeometry = Pick<PageRender, 'width' | 'height'>;
+
+export function devicePixelRatio(): number {
+  const ratio = typeof window === 'undefined' ? 1 : window.devicePixelRatio;
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
+}
+
+export function pageRenderGeometry(page: PageModel, zoom: number, revision: number, pixelRatio = devicePixelRatio()): PageRender {
+  const width = page.widthPt * zoom, height = page.heightPt * zoom;
+  const physicalWidth = Math.ceil(page.widthPt * (zoom * pixelRatio));
+  const physicalHeight = Math.ceil(page.heightPt * (zoom * pixelRatio));
+  const full = physicalWidth * physicalHeight <= WEB_LIMITS.renderPixels && physicalWidth <= 8192 && physicalHeight <= 8192;
+  return { width, height, zoom, pixelRatio, revision, mode: full ? 'full' : 'tiles', bitmap: null };
+}
+
+export function matchesPageRender(render: PageRender, zoom: number, pixelRatio: number): boolean {
+  return render.zoom === zoom && render.pixelRatio === pixelRatio && (render.mode === 'tiles' || render.bitmap !== null);
+}
+
+export async function renderPage(engine: EngineAdapter, docId: string, page: PageModel, zoom: number, revision: number,
+  pixelRatio = devicePixelRatio(), options: RenderWorkOptions = {}): Promise<PageRender> {
+  const render = pageRenderGeometry(page, zoom, revision, pixelRatio);
+  if (render.mode === 'full') {
+    render.bitmap = await renderWork(engine, () => engine.render({ docId, pageId: page.id, scale: zoom * pixelRatio }), options);
+    render.revision = render.bitmap.revision;
   }
-  // RenderResult carries full-page dimensions for the selection and inline-edit layers,
-  // but no full-page bitmap is allocated. Pixels live only in visible tile canvases.
-  return { width, height, stride: width * 4, format: 'rgba', pixels: new ArrayBuffer(0), revision };
+  return render;
 }
 
 export function tileClip(page: PageModel, scale: number, column: number, row: number): Rect {
@@ -23,123 +44,140 @@ export function tileClip(page: PageModel, scale: number, column: number, row: nu
   return { x: left / scale, y: top / scale, width: right - left / scale, height: bottom - top / scale };
 }
 
+type TileMount = (() => void) & { setPaused(paused: boolean): void };
+type TileOptions = { paused?: boolean; priority?(): RenderPriority; onReady?(): void };
+
 export function mountVisiblePageTiles(
   layer: HTMLElement,
   stage: HTMLElement,
   engine: EngineAdapter,
   docId: string,
   page: PageModel,
-  scale: number,
-  render: RenderResult,
+  render: PageRender,
   onError: (error: unknown) => void,
-  onViewportLimitChange: (limited: boolean) => void,
-): () => void {
+  options: TileOptions = {},
+): TileMount {
   const version = engine.getPageVersion?.(docId, page.id) ?? render.revision;
+  const scale = render.zoom * render.pixelRatio;
+  const physicalWidth = Math.ceil(page.widthPt * scale), physicalHeight = Math.ceil(page.heightPt * scale);
   const tiles = new Map<string, HTMLCanvasElement>();
   let frame = 0;
-  let rendering = false;
-  let disposed = false;
-  let viewportLimited = false;
-
+  let disposed = false, failed = false, running = false, ready = false;
+  let paused = options.paused ?? false;
+  let pending: AbortController | null = null;
+  const isCurrent = () => !disposed && !failed && version === (engine.getPageVersion?.(docId, page.id) ?? version);
+  const release = (canvas: HTMLCanvasElement) => { canvas.width = 0; canvas.height = 0; canvas.remove(); };
+  const reportReady = () => {
+    if (!ready && tiles.size && [...tiles.values()].every(canvas => canvas.width > 0)) { ready = true; options.onReady?.(); }
+  };
   const drawNext = () => {
-    if (disposed || rendering) return;
-    const pending = [...tiles].find(([, canvas]) => canvas.width === 0);
-    if (!pending) return;
-    const [key, canvas] = pending;
+    if (!isCurrent() || paused || running) return;
+    const next = [...tiles].find(([, canvas]) => canvas.width === 0);
+    if (!next) { reportReady(); return; }
+    const [key, canvas] = next;
     const [column, row] = key.split(',').map(Number);
     const clip = tileClip(page, scale, column!, row!);
-    rendering = true;
-    void engine.render({ docId, pageId: page.id, scale, clip }).then(bitmap => {
-      if (disposed || tiles.get(key) !== canvas) return;
-      if (version !== (engine.getPageVersion?.(docId, page.id) ?? bitmap.revision)) throw new Error('Page changed while rendering a tile');
-      canvas.style.left = `${Math.floor(clip.x * scale)}px`;
-      canvas.style.top = `${Math.floor(clip.y * scale)}px`;
-      drawRender(canvas, bitmap);
-    }).catch(error => {
-      if (disposed || tiles.get(key) !== canvas) return;
-      tiles.delete(key);
-      canvas.remove();
-      onError(error);
-    }).finally(() => { rendering = false; drawNext(); });
+    const controller = new AbortController();
+    pending = controller; running = true;
+    const finish = () => { pending = null; running = false; drawNext(); };
+    const fail = (error: unknown) => {
+      if (isRenderCancelled(error) || !isCurrent() || tiles.get(key) !== canvas) return;
+      failed = true; tiles.delete(key); release(canvas); onError(error);
+    };
+    void renderWork(engine, () => engine.render({ docId, pageId: page.id, scale, clip }),
+      { signal: controller.signal, priority: options.priority?.() ?? 'active' }).then(bitmap => {
+      try {
+        if (!isCurrent() || tiles.get(key) !== canvas) return;
+        if (version !== (engine.getPageVersion?.(docId, page.id) ?? bitmap.revision)) { failed = true; return; }
+        canvas.style.left = `${Math.floor(clip.x * scale) / render.pixelRatio}px`;
+        canvas.style.top = `${Math.floor(clip.y * scale) / render.pixelRatio}px`;
+        drawRender(canvas, bitmap, { width: bitmap.width / render.pixelRatio, height: bitmap.height / render.pixelRatio });
+        reportReady();
+      } catch (error) { fail(error); }
+      finally { finish(); }
+    }, error => { try { fail(error); } finally { finish(); } });
   };
 
   const update = () => {
     frame = 0;
-    if (disposed) return;
+    if (!isCurrent() || paused) return;
     const bounds = layer.getBoundingClientRect();
     const viewport = stage.getBoundingClientRect();
-    const left = Math.max(0, Math.floor(viewport.left - bounds.left));
-    const top = Math.max(0, Math.floor(viewport.top - bounds.top));
-    const right = Math.min(render.width, Math.ceil(viewport.right - bounds.left));
-    const bottom = Math.min(render.height, Math.ceil(viewport.bottom - bounds.top));
+    const displayScale = (bounds.right - bounds.left) / (page.widthPt * render.zoom);
+    if (!(displayScale > 0)) return;
+    const density = render.pixelRatio / displayScale;
+    const left = Math.max(0, Math.floor((viewport.left - bounds.left) * density));
+    const top = Math.max(0, Math.floor((viewport.top - bounds.top) * density));
+    const right = Math.min(physicalWidth, Math.ceil((viewport.right - bounds.left) * density));
+    const bottom = Math.min(physicalHeight, Math.ceil((viewport.bottom - bounds.top) * density));
     const visible: { column: number; row: number; distance: number }[] = [];
-    for (let row = Math.floor(top / TILE_SIZE); row < Math.ceil(bottom / TILE_SIZE); row++) {
-      for (let column = Math.floor(left / TILE_SIZE); column < Math.ceil(right / TILE_SIZE); column++) {
-        const distance = Math.abs((column + 0.5) * TILE_SIZE - (left + right) / 2)
-          + Math.abs((row + 0.5) * TILE_SIZE - (top + bottom) / 2);
-        visible.push({ column, row, distance });
+    if (right > left && bottom > top) {
+      for (let row = Math.floor(top / TILE_SIZE); row < Math.ceil(bottom / TILE_SIZE); row++) {
+        for (let column = Math.floor(left / TILE_SIZE); column < Math.ceil(right / TILE_SIZE); column++) {
+          const distance = Math.abs((column + 0.5) * TILE_SIZE - (left + right) / 2)
+            + Math.abs((row + 0.5) * TILE_SIZE - (top + bottom) / 2);
+          visible.push({ column, row, distance });
+        }
       }
     }
     visible.sort((a, b) => a.distance - b.distance);
-    const limited = visible.length > MAX_VISIBLE_TILES;
-    if (limited !== viewportLimited) {
-      viewportLimited = limited;
-      onViewportLimitChange(limited);
-    }
-    const wanted = new Set(visible.slice(0, MAX_VISIBLE_TILES).map(tile => `${tile.column},${tile.row}`));
+    const wanted = new Set(visible.map(tile => `${tile.column},${tile.row}`));
     for (const [key, canvas] of tiles) {
       if (wanted.has(key)) continue;
-      tiles.delete(key);
-      canvas.width = 0;
-      canvas.height = 0;
-      canvas.remove();
+      tiles.delete(key); release(canvas);
     }
-    for (const tile of visible.slice(0, MAX_VISIBLE_TILES)) {
+    const ordered = new Map<string, HTMLCanvasElement>();
+    for (const tile of visible) {
       const key = `${tile.column},${tile.row}`;
-      if (tiles.has(key)) continue;
-      const canvas = document.createElement('canvas');
-      canvas.width = 0;
-      canvas.height = 0;
-      canvas.className = 'pdf-tile';
-      canvas.setAttribute('aria-hidden', 'true');
-      layer.append(canvas);
-      tiles.set(key, canvas);
+      let canvas = tiles.get(key);
+      if (!canvas) {
+        canvas = document.createElement('canvas');
+        canvas.width = 0; canvas.height = 0;
+        canvas.className = 'pdf-tile'; canvas.setAttribute('aria-hidden', 'true');
+        layer.append(canvas);
+      }
+      ordered.set(key, canvas);
     }
+    tiles.clear();
+    for (const [key, canvas] of ordered) tiles.set(key, canvas);
     drawNext();
   };
-  const schedule = () => { if (!disposed && !frame) frame = requestAnimationFrame(update); };
+  const schedule = () => { if (!disposed && !paused && !frame) frame = requestAnimationFrame(update); };
   stage.addEventListener('scroll', schedule, { passive: true });
   const resize = new ResizeObserver(schedule);
-  resize.observe(stage);
+  resize.observe(stage); resize.observe(layer);
   update();
-  return () => {
-    disposed = true;
+  const dispose = () => {
+    disposed = true; pending?.abort();
     if (frame) cancelAnimationFrame(frame);
-    stage.removeEventListener('scroll', schedule);
-    resize.disconnect();
-    for (const canvas of tiles.values()) { canvas.width = 0; canvas.height = 0; canvas.remove(); }
+    stage.removeEventListener('scroll', schedule); resize.disconnect();
+    for (const canvas of tiles.values()) release(canvas);
     tiles.clear();
   };
+  return Object.assign(dispose, { setPaused(value: boolean) {
+    if (paused === value) return;
+    paused = value;
+    if (paused) pending?.abort(); else update();
+  } });
 }
 
-
-export function drawRender(canvas: HTMLCanvasElement | null, render: RenderResult): void {
-  if (!canvas) return;
-  canvas.width = render.width;
-  canvas.height = render.height;
-  const context = canvas.getContext('2d');
-  if (!context) return;
-
+/** Native responses can share a buffer with their metadata prefix. */
+export function rgbaPixels(render: RenderResult): Uint8ClampedArray<ArrayBuffer> {
+  const offset = render.byteOffset ?? 0;
   const rowBytes = render.width * 4;
-  let pixels: Uint8ClampedArray<ArrayBuffer>;
-  if (render.stride === rowBytes) {
-    pixels = new Uint8ClampedArray(render.pixels);
-  } else {
-    pixels = new Uint8ClampedArray(rowBytes * render.height);
-    const source = new Uint8Array(render.pixels);
-    for (let row = 0; row < render.height; row += 1) {
-      pixels.set(source.subarray(row * render.stride, row * render.stride + rowBytes), row * rowBytes);
-    }
+  if (render.stride === rowBytes) return new Uint8ClampedArray(render.pixels, offset);
+  const pixels = new Uint8ClampedArray(rowBytes * render.height);
+  const source = new Uint8Array(render.pixels, offset);
+  for (let row = 0; row < render.height; row++) {
+    pixels.set(source.subarray(row * render.stride, row * render.stride + rowBytes), row * rowBytes);
   }
-  context.putImageData(new ImageData(pixels, render.width, render.height), 0, 0);
+  return pixels;
+}
+
+export function drawRender(canvas: HTMLCanvasElement | null, render: RenderResult, display?: PageGeometry): void {
+  if (!canvas) return;
+  canvas.width = render.width; canvas.height = render.height;
+  if (display) { canvas.style.width = `${display.width}px`; canvas.style.height = `${display.height}px`; }
+  const context = canvas.getContext('2d');
+  if (context) context.putImageData(new ImageData(rgbaPixels(render), render.width, render.height), 0, 0);
 }

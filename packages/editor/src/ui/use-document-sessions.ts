@@ -30,7 +30,16 @@ const initialView = (): SessionView => ({ history: { canUndo: false, canRedo: fa
 export function useDocumentSessions() {
   const [state, setState] = useState<SessionsState>(() => ({ documents: new Map(), activeId: null, empty: initialView() }));
   const current = useRef(state);
-  const commit = useCallback((next: SessionsState) => { current.current = next; setState(next); }, []);
+  const commit = useCallback((next: SessionsState) => {
+    let documents = next.documents;
+    for (const [id, session] of documents) {
+      if (id === next.activeId || !session.loaded.render.bitmap) continue;
+      if (documents === next.documents) documents = new Map(documents);
+      documents.set(id, { ...session, loaded: { ...session.loaded, render: { ...session.loaded.render, bitmap: null } } });
+    }
+    const value = documents === next.documents ? next : { ...next, documents };
+    current.current = value; setState(value);
+  }, []);
   const patch = useCallback((id: string, update: Partial<DocumentSession> | ((session: DocumentSession) => DocumentSession)) => {
     const state = current.current, session = state.documents.get(id);
     if (!session) return;

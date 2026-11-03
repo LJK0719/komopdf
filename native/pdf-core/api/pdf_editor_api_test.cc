@@ -183,6 +183,34 @@ std::vector<uint8_t> RenderPixels(uint32_t document,
                               pde_binary_data() + pde_binary_size());
 }
 
+void TestRenderPageReuse() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R >>",
+      Stream("1 0 0 rg 0 0 300 200 re f 0 1 0 rg 70 40 120 90 re f"),
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 6 0 R >>",
+      Stream("0 0 1 rg 0 0 300 200 re f")});
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "render-cache", "render-cache-source", nullptr);
+  Require(doc != 0, "open render cache fixture");
+  const auto full = RenderPixels(doc, 0, 600, 400);
+  for (size_t repeat = 0; repeat < 3; ++repeat) {
+    Require(pde_render(doc, 0, 256, 160, -150, -80, 600, 400) != nullptr,
+            "render repeated clipped page");
+    const std::vector<uint8_t> tile(pde_binary_data(), pde_binary_data() + pde_binary_size());
+    for (uint32_t y = 0; y < 160; ++y) {
+      for (uint32_t x = 0; x < 256; ++x) {
+        Require(PixelAt(tile, 256, x, y) == PixelAt(full, 600, x + 150, y + 80),
+                "cached tile pixels match full-page pixels");
+      }
+    }
+  }
+  Require(RenderPixels(doc, 1, 600, 400) != full, "switching cached page changes pixels");
+  Require(RenderPixels(doc, 0, 600, 400) == full, "returning to a page preserves pixels");
+  Require(pde_close(doc) == 1, "close document with cached render page");
+}
+
 void TestDeletePreservesFontIdentity() {
   for (const bool direct : {false, true}) {
     const std::string first = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
@@ -4520,6 +4548,7 @@ int main(int argc, char** argv) {
 
   RemoveUnicodeFixture();
   TestTextTransactions();
+  TestRenderPageReuse();
   TestDeletePreservesFontIdentity();
   TestNativeLongPath();
   TestRangeFormatting();

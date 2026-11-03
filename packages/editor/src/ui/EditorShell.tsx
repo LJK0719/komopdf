@@ -11,7 +11,6 @@ import {
   type HostAdapter,
   type OutlineEntry,
   type PageModel,
-  type RenderResult,
   type SaveConfirmation,
   type SaveOutcome,
   type TextStyle,
@@ -23,7 +22,7 @@ import { DirectTextEditor, type TextEditorHandle } from './DirectTextEditor.js';
 import { DocumentViewport, type PageView, type PointerTool, type ViewportSize } from './DocumentViewport.js';
 import { useViewZoom } from './use-view-zoom.js';
 import { usePanelResize, AI_PANEL_DEFAULT_WIDTH, AI_PANEL_MIN_WIDTH, AI_PANEL_MAX_WIDTH } from './usePanelResize.js';
-import { captureReadingZoomAnchor, readingZoomScrollDelta, type ReadingZoomAnchor } from './view-zoom.js';
+import { captureReadingZoomAnchor, clampViewZoom, readingZoomScrollDelta, type ReadingZoomAnchor, type ReadingZoomPoint } from './view-zoom.js';
 import { AnnotationLayer, type CommentSelection } from './AnnotationLayer.js';
 import { AnnotationPopup } from './AnnotationPopup.js';
 import { AnnotationDrawingLayer, type AnnotationDraftHandle } from './AnnotationDrawingLayer.js';
@@ -60,7 +59,9 @@ import { mergeTextRects, selectionRects, textClusters, type TextHit } from './te
 import type { PdfSearchMatch } from './page-search.js';
 import { adjacentPageId } from './page-navigation.js';
 import { readingRegions } from './reading-order.js';
-import { renderPage } from './draw-render.js';
+import { matchesPageRender, pageRenderGeometry, renderPage, type PageRender } from './draw-render.js';
+import { isRenderCancelled, renderWork, setRenderWorkPaused } from './render-work.js';
+import { usePixelRatio } from './use-pixel-ratio.js';
 import { ObjectSelectionLayer as SelectionLayer } from './ObjectSelectionLayer.js';
 import { normalizeSelection, objectSelectionIds, pickObject, selectionScope } from './object-selection.js';
 import { detectParagraph, selectedTextObject } from './paragraph-detection.js';
@@ -147,7 +148,7 @@ export type LoadedDocument = {
   info: DocumentInfo;
   name: string;
   page: PageModel;
-  render: RenderResult;
+  render: PageRender;
   pageVersion?: number;
 };
 
@@ -163,8 +164,17 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   workspacePanel, workspaceId, workspacePreview }: EditorShellProps) {
   useI18n();
   const sessions = useDocumentSessions();
+  const pixelRatio = usePixelRatio();
+  const [viewInteracting, setViewInteracting] = useState(false);
+  const densityAttempt = useRef('');
+  const viewWork = useRef<{ owner: object; timer: ReturnType<typeof setTimeout> | null; resizing: boolean }>({ owner: {}, timer: null, resizing: false });
   const { document, documentRef, setDocument, history, setHistory, zoom, setZoom, selectedIds, setSelectedIds,
     view, setView, continuous, setContinuous, pointer, setPointer, tab, setTab } = sessions;
+  useLayoutEffect(() => {
+    const work = viewWork.current;
+    setViewInteracting(false);
+    return () => { if (work.timer) clearTimeout(work.timer); work.timer = null; setRenderWorkPaused(engine, work.owner, false); };
+  }, [engine, document?.info.id]);
   const [startOpen, setStartOpen] = useState(false);
   const [webRecent, setWebRecent] = useState<RecentFileEntry[]>(readWebRecent);
   const batchOpening = useRef(false);
@@ -229,7 +239,9 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const railVisible = railOpen && (railTab === 'files' ? hasWorkspace : Boolean(document) && tab !== 'pages');
   const panelVisible = Boolean(activeTool) && (!previewActive || activeTool === 'ai');
   const { workspaceRef, separatorRef, resizing: panelResizing } = usePanelResize(aiPanelActive, railVisible);
+  viewWork.current.resizing = panelResizing;
   const [activity, setActivity] = useState<Activity>('idle');
+  useLayoutEffect(() => { setRenderWorkPaused(engine, viewWork.current.owner, viewInteracting || panelResizing); }, [engine, viewInteracting, panelResizing]);
   const [notice, setNotice] = useState('Ready');
   const [error, setError] = useState<string | null>(null);
   const [inlineTextId, setInlineTextId] = useState<string | null>(null);
@@ -238,7 +250,8 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const searchLocationSequence = useRef(0);
   const [outline, setOutline] = useState<OutlineEntry[]>([]);
   const [outlineError, setOutlineError] = useState(false);
-  const [pageAnnotations, setPageAnnotations] = useState<import('@pdf-editor/contracts').PdfAnnotationInfo[]>([]);
+  const [pageAnnotationData, setPageAnnotationData] = useState<{ docId: string; pageId: string; version: number;
+    items: import('@pdf-editor/contracts').PdfAnnotationInfo[] } | null>(null);
   const [editPending, setEditPending] = useState(false);
   const [textDraftDirty, setTextDraftDirty] = useState(false);
   const [paragraphDraftDirty, setParagraphDraftDirty] = useState(false);
@@ -336,6 +349,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   }, [document?.page.id]);
 
 
+  const outlineOrder = useMemo(() => document?.info.pageOrder.join('\0'), [document?.info.pageOrder]);
   useEffect(() => {
     const info = document?.info;
     setOutline([]);
@@ -346,21 +360,24 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
       if (!cancelled) setOutline(entries);
     }).catch(() => { if (!cancelled) setOutlineError(true); });
     return () => { cancelled = true; };
-  }, [engine, document?.info.id, document?.info.revision]);
+  }, [engine, document?.info.id, outlineOrder]);
 
+  const activePageVersion = document ? engine.getPageVersion?.(document.info.id, document.page.id) ?? document.info.revision : undefined;
+  const annotationsCurrent = Boolean(pageAnnotationData && document && pageAnnotationData.docId === document.info.id
+    && pageAnnotationData.pageId === document.page.id && pageAnnotationData.version === activePageVersion);
+  const pageAnnotations = annotationsCurrent ? pageAnnotationData!.items : [];
   useEffect(() => {
-    setPageAnnotations([]);
     const info = document?.info;
     const pageId = document?.page.id;
     if (!info || !pageId || !engine.describeAnnotations) return;
-    let cancelled = false;
-    void engine.describeAnnotations(info.id, pageId).then(annotations => {
-      if (!cancelled) setPageAnnotations(annotations);
-    }).catch(() => {
-      if (!cancelled) setPageAnnotations([]);
+    const controller = new AbortController();
+    void renderWork(engine, () => engine.describeAnnotations!(info.id, pageId), { signal: controller.signal, priority: 'page' }).then(annotations => {
+      if (!controller.signal.aborted) setPageAnnotationData({ docId: info.id, pageId, version: activePageVersion!, items: annotations });
+    }).catch(caught => {
+      if (!isRenderCancelled(caught) && !controller.signal.aborted) setPageAnnotationData({ docId: info.id, pageId, version: activePageVersion!, items: [] });
     });
-    return () => { cancelled = true; };
-  }, [engine, document?.info.id, document?.page.id, document?.info.revision]);
+    return () => controller.abort();
+  }, [engine, document?.info.id, document?.page.id, activePageVersion]);
 
   useEffect(() => () => {
     for (const session of sessions.current.current.documents.values()) void engine.close(session.loaded.info.id).catch(() => undefined);
@@ -653,7 +670,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
       const info = { ...target.loaded.info, revision: result.revision, pageOrder: result.pageOrder };
       const pageId = info.pageOrder.includes(target.loaded.page.id) ? target.loaded.page.id : info.pageOrder[0];
       if (!pageId) return;
-      const loaded = await loadPage(engine, info, target.loaded.name, pageId, target.zoom);
+      const loaded = await loadPage(engine, info, target.loaded.name, pageId, target.zoom, false);
       sessions.patch(result.docId, { loaded, history: { canUndo: result.canUndo, canRedo: result.canRedo } });
       triggerAutoRecovery(info, loaded.name); return;
     }
@@ -774,24 +791,30 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     select();
   };
 
-  const changeZoom = async (scale: number): Promise<void> => {
+  const finishViewInteraction = useCallback(() => {
+    const work = viewWork.current;
+    if (work.timer) clearTimeout(work.timer);
+    work.timer = null; setViewInteracting(false);
+    setRenderWorkPaused(engine, work.owner, work.resizing);
+  }, [engine]);
+  const changeZoom = (scale: number, point?: ReadingZoomPoint): Promise<void> => {
     const current = documentRef.current;
-    if (!current || navigationBusy) return;
-    setActivity('rendering'); setError(null);
-    try {
-      const render = await renderPage(engine, current.info.id, current.page, scale, current.info.revision);
-      const latest = documentRef.current;
-      if (!latest || latest.info.id !== current.info.id || latest.page.id !== current.page.id || latest.info.revision !== current.info.revision) return;
-      const root = stageRef.current;
-      const page = [...(root?.querySelectorAll<HTMLElement>('[data-document-page]') ?? [])].find(node => node.dataset.documentPage === current.page.id);
-      if (root && page) {
-        zoomAnchor.current = { pageId: current.page.id, scale,
-          position: captureReadingZoomAnchor(page.getBoundingClientRect(), root.getBoundingClientRect(), zoom) };
-      }
-      const updated = { ...latest, render };
-      documentRef.current = updated; setDocument(updated); setZoom(scale);
-    } catch (caught) { setError(formatError(caught)); }
-    finally { setActivity('idle'); }
+    if (!current || zoomBusy || !Number.isFinite(scale) || scale <= 0) return Promise.resolve();
+    scale = clampViewZoom(scale);
+    const previousZoom = sessions.current.current.documents.get(current.info.id)?.zoom ?? zoom;
+    if (previousZoom === scale) return Promise.resolve();
+    const root = stageRef.current;
+    const underPointer = point && window.document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>('[data-document-page]');
+    const page = underPointer && root?.contains(underPointer) ? underPointer
+      : root?.querySelector<HTMLElement>(`[data-document-page="${current.page.id}"]`);
+    if (root && page) zoomAnchor.current = { pageId: page.dataset.documentPage!, scale,
+      position: captureReadingZoomAnchor(page.getBoundingClientRect(), root.getBoundingClientRect(), previousZoom, point) };
+    const work = viewWork.current;
+    setRenderWorkPaused(engine, work.owner, true);
+    setViewInteracting(true); setZoom(scale);
+    if (work.timer) clearTimeout(work.timer);
+    work.timer = setTimeout(finishViewInteraction, 120);
+    return Promise.resolve();
   };
 
   const switchDocument = async (docId: string): Promise<void> => {
@@ -901,6 +924,31 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const operationBusy = openingBatch || activity !== 'idle' || editPending || externalBusy || modalOpen;
   const isBusy = operationBusy || isDraftDirty;
   const navigationBusy = activity !== 'idle' || editPending || modalOpen || isDraftDirty || (externalBusy && !allowReadOnlyNavigation);
+  const zoomBusy = activity !== 'idle' || editPending || modalOpen || (externalBusy && !allowReadOnlyNavigation);
+  useEffect(() => {
+    const current = documentRef.current;
+    if (!current || matchesPageRender(current.render, zoom, pixelRatio)) { densityAttempt.current = ''; return; }
+    if (viewInteracting || panelResizing || previewActive || tab === 'pages' || editPending || modalOpen || activity !== 'idle') {
+      densityAttempt.current = ''; return;
+    }
+    const version = engine.getPageVersion?.(current.info.id, current.page.id) ?? current.info.revision;
+    if ((current.pageVersion ?? current.render.revision) !== version) return;
+    const key = JSON.stringify([current.info.id, current.page.id, version, zoom, pixelRatio]);
+    if (densityAttempt.current === key) return;
+    densityAttempt.current = key;
+    const controller = new AbortController();
+    const isCurrent = () => {
+      const latest = documentRef.current;
+      return !controller.signal.aborted && latest?.info.id === current.info.id && latest.page.id === current.page.id
+        && version === (engine.getPageVersion?.(latest.info.id, latest.page.id) ?? latest.info.revision)
+        && sessions.current.current.documents.get(latest.info.id)?.zoom === zoom;
+    };
+    void renderPage(engine, current.info.id, current.page, zoom, current.info.revision, pixelRatio,
+      { signal: controller.signal, priority: 'active' }).then(render => {
+      if (isCurrent()) setDocument({ ...documentRef.current!, render, pageVersion: version });
+    }).catch(caught => { if (!isRenderCancelled(caught) && isCurrent()) setError(formatError(caught)); });
+    return () => controller.abort();
+  }, [engine, pixelRatio, zoom, document?.info.id, document?.page.id, document?.render, activity, editPending, modalOpen, previewActive, tab, viewInteracting, panelResizing]);
   useEffect(() => { onActivityChange?.(activity !== 'idle' || editPending || isDraftDirty); }, [activity, editPending, isDraftDirty, onActivityChange]);
   useEffect(() => { onDocumentChange?.({ document: document?.info ?? null, busy: operationBusy, draftDirty: isDraftDirty,
     ...(document ? { name: document.name } : {}),
@@ -1111,7 +1159,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const fittedSize = document && viewSize?.docId === document.info.id && viewSize.pageId === document.page.id && viewSize.view === view
     ? viewSize : document && view === 'single' ? { widthPt: document.page.widthPt, heightPt: document.page.heightPt, columns: 1 as const } : null;
   const viewZoom = useViewZoom({ root: stageRef, documentKey: document?.info.id, pageKey: document?.page.id,
-    size: fittedSize, zoom, busy: navigationBusy, enabled: tab !== 'pages' && !panelResizing && !previewActive, onZoom: changeZoom });
+    size: fittedSize, zoom, busy: zoomBusy, enabled: tab !== 'pages' && !previewActive, onZoom: changeZoom });
   const fitPage = viewZoom.fitPage;
   useEffect(() => {
     if (host.capabilities.platform !== 'web') return;
@@ -1157,38 +1205,71 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const changeOverviewZoom = (scale: number) => {
     setOverviewColumns(0); setOverviewWidth(Math.max(100, Math.min(900, scale * 230)));
   };
-  const wheelState = useRef({ tab, isBusy: navigationBusy || previewActive, zoom, overviewWidth, overviewColumns, changeZoom: viewZoom.manualZoom, exitFitMode: viewZoom.exitFitMode });
-  wheelState.current = { tab, isBusy: navigationBusy || previewActive, zoom, overviewWidth, overviewColumns, changeZoom: viewZoom.manualZoom, exitFitMode: viewZoom.exitFitMode };
+  const wheelState = useRef({ tab, isBusy: zoomBusy || previewActive, zoom, overviewWidth, overviewColumns, changeZoom: viewZoom.manualZoom, finish: finishViewInteraction });
+  wheelState.current = { tab, isBusy: zoomBusy || previewActive, zoom, overviewWidth, overviewColumns, changeZoom: viewZoom.manualZoom, finish: finishViewInteraction };
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
-    let timer: ReturnType<typeof setTimeout>;
-    let requested: number | null = null;
+    let frame = 0, requested: number | null = null;
+    let point: ReadingZoomPoint | undefined;
+    let gesture: { zoom: number } | null = null;
+    const flush = () => {
+      frame = 0;
+      const scale = requested; requested = null;
+      const current = wheelState.current;
+      if (scale === null || current.isBusy) return;
+      if (current.tab === 'pages') { setOverviewColumns(0); setOverviewWidth(scale); }
+      else void current.changeZoom(scale, point);
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(flush); };
     const wheel = (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
       const current = wheelState.current;
-      if (current.isBusy) return;
-      const factor = Math.exp(-Math.max(-120, Math.min(120, event.deltaY)) * 0.002);
+      if (current.isBusy || gesture) return;
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? stage.clientHeight : 1);
+      const factor = Math.exp(-Math.max(-120, Math.min(120, delta)) * 0.002);
       if (current.tab === 'pages') {
-        const width = current.overviewColumns ? stage.querySelector('.organizer-page')?.getBoundingClientRect().width ?? current.overviewWidth : current.overviewWidth;
-        setOverviewColumns(0); setOverviewWidth(Math.max(100, Math.min(900, width * factor)));
-      } else {
-        current.exitFitMode();
-        requested = Math.max(0.25, Math.min(4, (requested ?? current.zoom) * factor));
-        clearTimeout(timer);
-        timer = setTimeout(() => { const scale = requested; requested = null; if (scale !== null) void wheelState.current.changeZoom(scale); }, 100);
-      }
+        const width = requested ?? (current.overviewColumns ? stage.querySelector('.organizer-page')?.getBoundingClientRect().width ?? current.overviewWidth : current.overviewWidth);
+        requested = Math.max(100, Math.min(900, width * factor));
+      } else requested = clampViewZoom((requested ?? current.zoom) * factor);
+      point = { x: event.clientX, y: event.clientY }; schedule();
+    };
+    type NativeGesture = Event & { scale?: number; clientX?: number; clientY?: number };
+    const start = (event: Event) => {
+      event.preventDefault();
+      const current = wheelState.current;
+      if (!current.isBusy && current.tab !== 'pages') gesture = { zoom: current.zoom };
+    };
+    const change = (event: NativeGesture) => {
+      event.preventDefault();
+      if (!gesture || wheelState.current.isBusy || !(event.scale! > 0)) return;
+      const bounds = stage.getBoundingClientRect();
+      point = { x: event.clientX ?? bounds.left + bounds.width / 2, y: event.clientY ?? bounds.top + bounds.height / 2 };
+      requested = clampViewZoom(gesture.zoom * event.scale!); schedule();
+    };
+    const end = (event: Event) => {
+      event.preventDefault();
+      if (!gesture) return;
+      if (frame) cancelAnimationFrame(frame);
+      flush(); gesture = null; wheelState.current.finish();
     };
     stage.addEventListener('wheel', wheel, { passive: false });
-    return () => { stage.removeEventListener('wheel', wheel); clearTimeout(timer); };
-  }, []);
+    stage.addEventListener('gesturestart', start, { passive: false });
+    stage.addEventListener('gesturechange', change, { passive: false });
+    stage.addEventListener('gestureend', end, { passive: false });
+    return () => {
+      stage.removeEventListener('wheel', wheel); stage.removeEventListener('gesturestart', start);
+      stage.removeEventListener('gesturechange', change); stage.removeEventListener('gestureend', end);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [document?.info.id]);
   const runRibbonAction = async (action: RibbonAction): Promise<void> => {
     if (previewActive) return;
     const current = documentRef.current;
     if (!current) return;
     if (action === 'fit' || action === 'fitWidth') {
-      if (navigationBusy) return;
+      if (zoomBusy) return;
       if (tab === 'pages') setOverviewColumns(3);
       else if (action === 'fitWidth') viewZoom.fitWidth(); else fitPage();
       return;
@@ -1495,7 +1576,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
         hasDocument={Boolean(document)} busy={operationBusy} ocr={host.capabilities.ocr} railOpen={railOpen} onToggleRail={() => setRailOpen(value => !value)}
         selection={selectedText ? 'text' : selectedObjects.length === 1 && selectedObjects[0]?.type === 'image' ? 'image' : selectedObjects.length ? 'objects' : null}>
         {document && <DirectTextEditor document={document.info} name={document.name} page={document.page} selectedIds={selectedIds} inlineId={inlineTextId}
-          onTextAction={host.aiServices ? openTextAction : undefined} host={pageHost} render={document.render} engine={engine} disabled={operationBusy} handle={textEditor} initialRange={inlineRange} initialRangeIsLogical={inlineRangeIsLogical} initialHit={inlineHit}
+          onTextAction={host.aiServices ? openTextAction : undefined} host={pageHost} render={{ width: document.page.widthPt * zoom, height: document.page.heightPt * zoom }} engine={engine} disabled={operationBusy} handle={textEditor} initialRange={inlineRange} initialRangeIsLogical={inlineRangeIsLogical} initialHit={inlineHit}
           onClose={() => { setInlineTextId(null); setInlineRange(null); setInlineHit(null); }} onEdit={() => { if (selectedIds[0]) editTextAt(document, selectedIds[0]); }} onManageFonts={() => chooseTool('fonts')}
           onParagraph={id => { setSelectedIds([id]); setInlineRange(null); setInlineHit(null); setInlineTextId(id); }}
           copiedFormat={copiedTextFormat} onCopyFormat={setCopiedTextFormat}
@@ -1523,7 +1604,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
                   onContextMenu={() => pageTools.select(pageId, {}, true)}
                   aria-label={t('Open page {page}', { page: index + 1 })}>
                   <span>{String(index + 1).padStart(2, '0')}</span>
-                  <PageThumbnail engine={engine} docId={document.info.id} pageId={pageId} revision={document.info.revision} />
+                  <PageThumbnail engine={engine} docId={document.info.id} pageId={pageId} revision={document.info.revision} pixelRatio={pixelRatio} />
                 </ContextMenu.Trigger>
               </PageContextMenu>
             )) : (
@@ -1569,16 +1650,18 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
           {!document ? (
             startPage
           ) : tab === 'pages' ? (
-            <PageOrganizer document={document} engine={engine} tools={pageTools} disabled={isBusy} width={overviewWidth} columns={overviewColumns} onOpen={openOverviewPage} />
+            <PageOrganizer document={document} engine={engine} tools={pageTools} disabled={isBusy} width={overviewWidth} columns={overviewColumns} pixelRatio={pixelRatio} onOpen={openOverviewPage} />
           ) : (
-            <DocumentViewport key={document.info.id} engine={engine} document={document} zoom={zoom} view={view} continuous={continuous}
+            <DocumentViewport key={document.info.id} engine={engine} document={document} zoom={zoom} pixelRatio={pixelRatio} renderPaused={viewInteracting || panelResizing} view={view} continuous={continuous}
               root={stageRef} locked={previewActive || navigationBusy || cropImage || cropPage || Boolean(pendingSignature)} pointer={pointer} onActive={activateVisiblePage} onHost={setPageHost}
               onViewSize={setViewSize} drawing={Boolean(annotationDrawing || pendingSignature || pagePlacement)}
-              renderOverlay={shown => <>
+              renderOverlay={(shown, _host, geometry) => <>
                 {pagePlacement && <PagePlacementLayer key={`${pagePlacement.documentId}:${shown.page.id}`} request={pagePlacement} document={shown.info} page={shown.page}
                   engine={engine} disabled={operationBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} onCancel={() => setPagePlacement(null)} />}
                 {!pagePlacement && !annotationDrawing && !pendingSignature && !placement && !cropImage && !cropPage && !inlineTextId && <AnnotationLayer
-                  document={shown.info} page={shown.page} render={shown.render} engine={engine} disabled={operationBusy}
+                  document={shown.info} page={shown.page} render={geometry} engine={engine} disabled={operationBusy}
+                  annotations={shown.page.id === document.page.id && annotationsCurrent ? pageAnnotations : undefined}
+                  loading={shown.page.id === document.page.id && !annotationsCurrent}
                   selected={commentSelection} onOpen={selection => void openComment(selection)} />}
                 {annotationDrawing && <AnnotationDrawingLayer document={shown.info} page={shown.page} engine={engine}
                   options={annotationDrawing} disabled={operationBusy || isTextDraftDirty || commentDirty || (noteDraftPage !== null && noteDraftPage !== shown.page.id)} onBusyChange={setEditPending}
@@ -1587,7 +1670,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
               </>}
               onEditText={editTextAt} onInsertText={insertTextAt} onAnnotate={annotateSelection} onError={setError}
               onTextAction={host.aiServices ? openTextAction : undefined} aiSelection={textWindowOpen ? activeTextSelection : null}>
-              {(shown) => <>
+              {(shown, _host, geometry) => <>
                 {searchSelection?.pageId === shown.page.id && searchSelection.docId === shown.info.id && searchSelection.revision === shown.info.revision && searchSelection.sources.flatMap(source => {
                   const object = shown.page.objects.find(item => item.textBlock?.id === source.blockId);
                   if (!object?.textBlock) return [];
@@ -1623,7 +1706,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
                     if (id && !selectedIds.includes(id)) selectObject(id, false);
                     if (!id && !(event.target as HTMLElement).closest('.selection-bounds')) setSelectedIds([]);
                   }}>
-                    <SelectionLayer page={shown.page} render={shown.render} selectedIds={selectedIds} onSelect={selectObject}
+                    <SelectionLayer page={shown.page} render={geometry} selectedIds={selectedIds} onSelect={selectObject}
                       onBoxSelect={ids => {
                         const select = () => { setSelectedIds(ids); setSearchSelection(null); setInlineTextId(null); };
                         if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) select(); }); } else select();
@@ -1661,7 +1744,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
                     <ContextMenu.Item className="ui-menu-item" disabled={isBusy} onClick={() => chooseTab('pages')}>{t('Organize pages')}</ContextMenu.Item>
                   </ContextMenu.Popup></ContextMenu.Positioner></ContextMenu.Portal>
                 </ContextMenu.Root>}
-                {pointer === 'select' && !annotationDrawing && !pendingSignature && <PdfLinkLayer annotations={pageAnnotations} page={shown.page} render={shown.render}
+                {pointer === 'select' && !annotationDrawing && !pendingSignature && <PdfLinkLayer annotations={pageAnnotations} page={shown.page} render={geometry}
                   pageOrder={shown.info.pageOrder} disabled={isBusy} onNavigate={(id, top) => void switchPage(id, top)} />}
                 {placement && <div className="placement-layer" onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); void placeObject((event.clientX - rect.left) / zoom, (event.clientY - rect.top) / zoom); }}><span>{t('Click on the page to place it. Press Esc to cancel.')}</span></div>}
                 {cropPage && <ImageCropOverlay page bounds={{ x: 0, y: 0, width: shown.page.widthPt, height: shown.page.heightPt }} scale={zoom} disabled={isBusy}
@@ -1758,7 +1841,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
         <span className={error ? 'status-dot status-dot-error' : 'status-dot'} aria-hidden="true" />
         <span className="status-message" title={t(statusMessage)} role={error ? 'alert' : 'status'}>{t(statusMessage)}</span>
         <span className="status-spacer" />
-        {!previewActive && <ViewControls page={tab === 'pages' && document ? Math.max(0, document.info.pageOrder.indexOf(pageTools.focus)) + 1 : currentPageIndex + 1} pages={document?.info.pageOrder.length ?? 0} zoom={tab === 'pages' ? overviewWidth / 230 : zoom} busy={navigationBusy}
+        {!previewActive && <ViewControls page={tab === 'pages' && document ? Math.max(0, document.info.pageOrder.indexOf(pageTools.focus)) + 1 : currentPageIndex + 1} pages={document?.info.pageOrder.length ?? 0} zoom={tab === 'pages' ? overviewWidth / 230 : zoom} busy={navigationBusy} zoomBusy={zoomBusy}
           onPage={page => { const id = document?.info.pageOrder[page - 1]; if (id) { if (tab === 'pages') { pageTools.select(id); stageRef.current?.querySelector<HTMLElement>(`[data-organizer-page="${id}"]`)?.scrollIntoView({ block: 'nearest' }); } else void switchPage(id); } }}
           onZoom={scale => { if (tab === 'pages') changeOverviewZoom(scale); else void viewZoom.manualZoom(scale); }}
           zoomMode={tab === 'pages' ? 'manual' : viewZoom.mode} {...(tab === 'pages' ? {} : { onFitWidth: viewZoom.fitWidth })}
@@ -1803,10 +1886,12 @@ async function loadPage(
   name: string,
   pageId: string,
   scale = RENDER_SCALE,
+  renderPixels = true,
 ): Promise<LoadedDocument> {
   const pageVersion = engine.getPageVersion?.(info.id, pageId) ?? info.revision;
   const page = await engine.describePage(info.id, pageId);
-  const render = await renderPage(engine, info.id, page, scale, info.revision);
+  const render = renderPixels ? await renderPage(engine, info.id, page, scale, info.revision)
+    : pageRenderGeometry(page, scale, info.revision);
   if (pageVersion !== (engine.getPageVersion?.(info.id, pageId) ?? render.revision)) {
     throw new EngineError('STALE_REVISION', 'Page changed while rendering');
   }

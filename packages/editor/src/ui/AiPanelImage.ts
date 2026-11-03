@@ -1,4 +1,5 @@
 import type { EngineAdapter, Rect, RenderResult } from '@pdf-editor/contracts';
+import { rgbaPixels } from './draw-render.js';
 
 /**
  * 将渲染得到的 RGBA 像素或截图裁剪转为网关所需的 base64 编码 PNG 字符串。
@@ -15,15 +16,10 @@ export function encodeRenderedImage(render: RenderResult, mimeType: 'image/png' 
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Page image encoding is unavailable');
   const rowBytes = render.width * 4;
-  const source = new Uint8Array(render.pixels);
-  if (render.stride < rowBytes || source.length < render.stride * render.height) {
+  if (render.stride < rowBytes || render.pixels.byteLength - (render.byteOffset ?? 0) < render.stride * render.height) {
     throw new Error('Page image pixels are incomplete');
   }
-  const pixels = new Uint8ClampedArray(rowBytes * render.height);
-  for (let row = 0; row < render.height; row += 1) {
-    pixels.set(source.subarray(row * render.stride, row * render.stride + rowBytes), row * rowBytes);
-  }
-  ctx.putImageData(new ImageData(pixels, render.width, render.height), 0, 0);
+  ctx.putImageData(new ImageData(rgbaPixels(render), render.width, render.height), 0, 0);
   // JPEG has no alpha; composite transparent page areas onto white before encoding.
   ctx.globalCompositeOperation = 'destination-over';
   ctx.fillStyle = '#fff';

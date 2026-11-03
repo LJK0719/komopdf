@@ -1,5 +1,5 @@
 import { useI18n } from './i18n.js';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CommandRegistry } from '@pdf-editor/commands';
 import { WEB_LIMITS, type CommandType, type CommitResult, type DocumentInfo, type EditCommand,
   type EngineAdapter, type HostAdapter, type PageModel } from '@pdf-editor/contracts';
@@ -36,14 +36,14 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
   const [numberTotal, setNumberTotal] = useState<PageNumberTotal>('selected');
   const [numberPosition, setNumberPosition] = useState<'left' | 'center' | 'right'>('right');
   const [skipCover, setSkipCover] = useState(false);
-  let numberLabels: PageNumberLabel[] = [], numberError = '';
-  if (decoration === 'number') {
+  const { numberLabels, numberError } = useMemo(() => {
+    if (decoration !== 'number') return { numberLabels: [] as PageNumberLabel[], numberError: '' };
     try {
-      numberLabels = pageNumberLabels({ order: document.pageOrder,
+      return { numberLabels: pageNumberLabels({ order: document.pageOrder,
         targetIds: parsePageRange(pageRange, document.pageOrder, page.id),
-        start: numberStart.trim() ? Number(numberStart) : NaN, template: numberTemplate, total: numberTotal, skipCover });
-    } catch (caught) { numberError = caught instanceof Error ? caught.message : String(caught); }
-  }
+        start: numberStart.trim() ? Number(numberStart) : NaN, template: numberTemplate, total: numberTotal, skipCover }), numberError: '' };
+    } catch (caught) { return { numberLabels: [], numberError: caught instanceof Error ? caught.message : String(caught) }; }
+  }, [decoration, document.pageOrder, page.id, pageRange, numberStart, numberTemplate, numberTotal, skipCover]);
   const decorationSection = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     if (mode !== 'pages' || !section || !decorationSection.current) return;
