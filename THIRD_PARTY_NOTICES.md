@@ -35,6 +35,8 @@ The font binaries are downloaded from fixed sources and staged with their licens
 
 Dependencies in `pnpm-lock.yaml` retain the license texts shipped in their npm packages. Packaging a JavaScript bundle does not waive these notices: esbuild legal comments and the upstream package licenses must be retained in the corresponding distribution. This native inventory is not a complete npm SBOM or installation attestation.
 
+The shared internationalization runtime uses i18next 26.7.1 and react-i18next 17.1.11 under the MIT license. Their original notice texts are retained as `third_party/notices/i18next-LICENSE.txt` and `third_party/notices/react-i18next-LICENSE.txt` and included in desktop runtime notices.
+
 ## Maintenance
 
 Verify committed notice bytes without a local native toolchain:

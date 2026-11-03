@@ -833,7 +833,7 @@ export function AiPanel(props: Props) {
             <label>{t("Target language")}<input
                 value={language}
                 onChange={e => setLanguage(e.target.value)}
-                placeholder="e.g. English, French, Spanish, Chinese"
+                placeholder="English, Français, Español, 中文"
                 disabled={props.disabled || busy}
               />
             </label>
@@ -859,7 +859,7 @@ export function AiPanel(props: Props) {
                 type="number"
                 value={targetCharLength}
                 onChange={e => setTargetCharLength(e.target.value ? parseInt(e.target.value, 10) : '')}
-                placeholder="e.g. 80"
+                placeholder="80"
                 disabled={props.disabled || busy}
               />
             </label>

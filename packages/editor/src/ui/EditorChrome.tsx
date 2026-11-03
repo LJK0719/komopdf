@@ -2,7 +2,7 @@ import { useId, useRef, useState, type ReactNode } from 'react';
 import { Menu } from '@base-ui/react/menu';
 import { Tooltip } from '@base-ui/react/tooltip';
 import { ArrowDownToLine, Bookmark, ChevronDown, ChevronLeft, ChevronRight, FilePlus2, FolderOpen, Languages, Maximize, MoveHorizontal, Minus, PanelLeft, PanelRightClose, Plus, Printer, Redo2, Save, Search, Sparkles, Type, Undo2, X, LayoutGrid, MessageSquare, PenLine, ScanText, ListChecks } from 'lucide-react';
-import { useI18n, translate as t, type UiLocale } from './i18n.js';
+import { useI18n, translate as t, getUiLocale, UI_LOCALES, localizedPath, type UiLocale } from './i18n.js';
 import { MIN_VIEW_ZOOM, MAX_VIEW_ZOOM, clampViewZoom, formatZoomPercent, parseZoomPercent, type ViewZoomMode } from './view-zoom.js';
 
 export type EditorTool = 'arrange' | 'edit' | 'pages' | 'comment' | 'forms' | 'sign' | 'ocr' | 'ai' | 'search' | 'export' | 'print' | 'fonts' | 'text-ai' | 'translate-document';
@@ -14,10 +14,24 @@ export const toolNames: Record<EditorTool, string> = {
 
 export function LanguageSelect() {
   const { locale, setLocale, t } = useI18n();
-  return <label className="language-select"><Languages aria-hidden="true" size={16} />
-    <select aria-label={t('Language')} value={locale} onChange={event => setLocale(event.target.value as UiLocale)}>
-      <option value="en">English</option><option value="zh-CN">简体中文</option>
+  const [error, setError] = useState(false);
+  const selectLanguage = async (next: UiLocale) => {
+    setError(false);
+    try {
+      await setLocale(next);
+      if (getUiLocale() !== next || '__TAURI_INTERNALS__' in window || !/^https?:$/.test(window.location.protocol)) return;
+      const current = localizedPath(window.location.pathname, 'en');
+      if (current === '/' || current === '/editor/') {
+        window.history.replaceState(window.history.state, '', localizedPath(`${window.location.pathname}${window.location.search}${window.location.hash}`, next));
+      }
+    } catch { setError(true); }
+  };
+  // Reuse the editor's focus-preserving marker so preference changes keep live text drafts.
+  return <label className="language-select ai-owned-focus"><Languages aria-hidden="true" size={16} />
+    <select aria-label={t('Language')} value={locale} onChange={event => void selectLanguage(event.target.value as UiLocale)}>
+      {UI_LOCALES.map(language => <option key={language.id} value={language.id}>{language.label}</option>)}
     </select>
+    {error && <span role="alert">{t('Could not change language. Try again.')}</span>}
   </label>;
 }
 
@@ -33,7 +47,7 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
   platform?: 'web' | 'windows' | 'macos'; hasSaveTarget?: boolean; downloaded?: boolean; onOpenFolder?(): void; onStart?(): void;
   tool: EditorTool | null; onTool(tool: EditorTool): void; onOpen(): void; onClose(): void; onSave(): void; onSaveAs?(): void; onUndo(): void; onRedo(): void; extra?: ReactNode;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const web = platform === 'web';
   const modifier = platform === 'macos' || (web && typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)) ? '⌘' : 'Ctrl';
   const saveLabel = web ? 'Download PDF' : hasSaveTarget ? 'Save' : 'Save a copy…';
@@ -41,8 +55,8 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
   return <header className="editor-topbar">
     <div className="topbar-start"><button className="brand-lockup" type="button" onClick={onStart} disabled={busy} aria-label={t('Start page')}>
       <span className="brand-mark" aria-hidden="true">k</span><strong>{productName}</strong></button>
-      <Menu.Root><Menu.Trigger className="file-menu-trigger">{t('File')}<ChevronDown size={14} /></Menu.Trigger>
-        <Menu.Portal><Menu.Positioner className="ui-menu-positioner" sideOffset={8}><Menu.Popup className="ui-menu">
+      <Menu.Root><Menu.Trigger className="file-menu-trigger ai-owned-focus">{t('File')}<ChevronDown size={14} /></Menu.Trigger>
+        <Menu.Portal><Menu.Positioner className="ui-menu-positioner" sideOffset={8}><Menu.Popup className="ui-menu ai-owned-focus">
           <Menu.Item className="ui-menu-item" onClick={onOpen} disabled={busy}><FolderOpen size={16} />{t('Open PDF…')}<kbd>{modifier} O</kbd></Menu.Item>
           {onOpenFolder && <Menu.Item className="ui-menu-item" onClick={onOpenFolder} disabled={busy}><FolderOpen size={16} />{t('Open folder…')}<kbd>{modifier} Shift O</kbd></Menu.Item>}
           {onStart && <Menu.Item className="ui-menu-item" onClick={onStart} disabled={busy}><FilePlus2 size={16} />{t('Recent files & recovery')}</Menu.Item>}
@@ -55,9 +69,9 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
           <Menu.Separator className="ui-separator" />
           <Menu.Item className="ui-menu-item" onClick={onClose} disabled={!name || busy}><X size={16} />{t(documentActionsDisabled ? 'Close preview' : 'Close document')}{!web && <kbd>{modifier} W</kbd>}</Menu.Item>
           {web && <><Menu.Separator className="ui-separator" />
-            <Menu.Item className="ui-menu-item" render={<a href="/download/" target="_blank" rel="noreferrer" />}>{t('Get the desktop app')} ↗</Menu.Item>
-            <Menu.Item className="ui-menu-item" render={<a href="/help/" target="_blank" rel="noreferrer" />}>{t('Help')} ↗</Menu.Item>
-            <Menu.Item className="ui-menu-item" render={<a href="/account/" target="_blank" rel="noreferrer" />}>{t('Account')} ↗</Menu.Item>
+            <Menu.Item className="ui-menu-item" render={<a href={localizedPath('/download/', locale)} target="_blank" rel="noreferrer" />}>{t('Get the desktop app')} ↗</Menu.Item>
+            <Menu.Item className="ui-menu-item" render={<a href={localizedPath('/help/', locale)} target="_blank" rel="noreferrer" />}>{t('Help')} ↗</Menu.Item>
+            <Menu.Item className="ui-menu-item" render={<a href={localizedPath('/account/', locale)} target="_blank" rel="noreferrer" />}>{t('Account')} ↗</Menu.Item>
           </>}
           <Menu.Separator className="ui-separator" /><div className="application-preferences"><LanguageSelect /></div>
         </Menu.Popup></Menu.Positioner></Menu.Portal>

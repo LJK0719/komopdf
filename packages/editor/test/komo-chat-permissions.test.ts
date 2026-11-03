@@ -1,12 +1,13 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { EngineAdapter } from '@pdf-editor/contracts';
 import type { EditorAiContext } from '../src/ui/EditorShell.js';
 import { KomoChatPanel } from '../src/ui/KomoChatPanel.js';
 import { CHAT_COPY_RESTRICTED } from '../src/ui/komo-chat-context.js';
 import { komoMessages } from '../src/ui/komo-messages.js';
-import { setUiLocale, type UiLocale } from '../src/ui/i18n.js';
+import { I18nProvider, type UiLocale } from '../src/ui/i18n.js';
+import { loadUiMessages } from '../src/ui/i18n-resources.js';
 
 function context(copy: boolean): EditorAiContext {
   return { document: { id: 'restricted', revision: 0, savedRevision: 0, pageOrder: ['p1'], sourceIds: ['source'],
@@ -16,12 +17,13 @@ function context(copy: boolean): EditorAiContext {
     onCommitted: async () => {}, openDocument: async () => null, saveDocument: async () => null };
 }
 
-afterEach(() => setUiLocale('en'));
 describe('komo copy permission UI', () => {
-  it.each(['en', 'zh-CN'] as UiLocale[])('explains the restriction in %s without presenting sharing or sending controls', locale => {
-    setUiLocale(locale);
+  it.each(['en', 'zh-CN'] as UiLocale[])('explains the restriction in %s without presenting sharing or sending controls', async locale => {
     const input = context(false);
-    const html = renderToStaticMarkup(createElement(KomoChatPanel, { context: input }));
+    const html = renderToStaticMarkup(createElement(I18nProvider, {
+      initialLocale: locale, messages: await loadUiMessages(locale),
+      children: createElement(KomoChatPanel, { context: input }),
+    }));
     const message = locale === 'en' ? CHAT_COPY_RESTRICTED : komoMessages[CHAT_COPY_RESTRICTED];
     expect(html).toContain(renderToStaticMarkup(createElement('p', { role: 'status' }, message)));
     expect(html).toContain('role="status"');

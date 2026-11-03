@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { SignIn, SignUp } from '@clerk/react';
 import Link from 'next/link';
 import { useI18n } from '@pdf-editor/editor/i18n';
+import { UI_LOCALES, localizedPath, localeFromPathname, normalizeUiLocale } from '@pdf-editor/editor/i18n-locales';
 import { AccountProvider, useKomoAccount } from './account-provider';
 import { SiteNav, SiteFooter } from './navigation';
 import './auth-screen.css';
@@ -37,7 +38,8 @@ function AuthContent({ signup }: { signup: boolean }) {
   useEffect(() => {
     const next = new URLSearchParams(window.location.search);
     setParams(next);
-    if (next.get('lang') === 'zh-CN' || next.get('lang') === 'en') setLocale(next.get('lang') as 'en' | 'zh-CN');
+    const lang = normalizeUiLocale(next.get('lang'));
+    if (lang && localeFromPathname(window.location.pathname) === 'en') void setLocale(lang);
   }, [setLocale]);
   useEffect(() => {
     if (ready && !signedIn && choosingAccount && params) setParams(withoutAccountChoice(params));
@@ -57,17 +59,21 @@ function AuthContent({ signup }: { signup: boolean }) {
         window.location.replace(result.redirectUrl);
       }).catch(error => setFailure(error instanceof Error ? error.message : 'Unable to sign in. Please try again.'));
     } else {
-      const destination = new URL(params.get('returnTo') || '/account/', window.location.origin);
-      window.location.replace(destination.origin === window.location.origin && !/^\/sign-(in|up)\//.test(destination.pathname) ? destination.href : '/account/');
+      let destination: URL;
+      const fallback = localizedPath('/account/', localeFromPathname(window.location.pathname));
+      try { destination = new URL(params.get('returnTo') || fallback, window.location.origin); }
+      catch { destination = new URL(fallback, window.location.origin); }
+      const authPath = UI_LOCALES.some(item => ['/sign-in/', '/sign-up/'].some(path => destination.pathname === localizedPath(path, item.id)));
+      window.location.replace(destination.origin === window.location.origin && !authPath ? destination.href : fallback);
     }
   }, [signedIn, params, choosingAccount, request]);
   const query = params?.toString();
   const suffix = query ? `?${query}` : '';
-  const complete = `/sign-in/${suffix}`;
+  const complete = `${localizedPath('/sign-in/', locale)}${suffix}`;
   return <main className="site-shell auth-page">
     <SiteNav />
     <div className="auth-layout">
-      <header className="auth-intro"><span className="site-kicker">{t('Your komopdf account')}</span><h1>{t(signup ? 'Create your account' : 'Sign in to komopdf')}</h1><p>{t(params?.get('desktop') ? 'Sign in here to continue in the desktop app.' : 'Use KOMO and manage your plan across web and desktop.')}</p><p className="auth-free-note">{t('PDF editing stays free.')} <Link className="site-text-link" href="/editor/">{t('Open editor')}</Link></p></header>
+      <header className="auth-intro"><span className="site-kicker">{t('Your komopdf account')}</span><h1>{t(signup ? 'Create your account' : 'Sign in to komopdf')}</h1><p>{t(params?.get('desktop') ? 'Sign in here to continue in the desktop app.' : 'Use KOMO and manage your plan across web and desktop.')}</p><p className="auth-free-note">{t('PDF editing stays free.')} <Link className="site-text-link" href={localizedPath('/', locale)}>{t('Open editor')}</Link></p></header>
       <section className="auth-card" aria-label={t(signup ? 'Create your account' : 'Sign in to komopdf')}>
         {failure || error ? <div className="auth-status"><h2>{t('Unable to sign in. Please try again.')}</h2><p role="alert">{t(failure || error)}</p>
           {!params?.get('desktop') ? <a className="site-button site-button-primary" href={complete}>{t('Sign in again')}</a> : null}
@@ -76,11 +82,11 @@ function AuthContent({ signup }: { signup: boolean }) {
             : signedIn && choosingAccount ? <div className="auth-status"><h2>{t('Switch account')}</h2>
               {account?.profile.email ? <p>{account.profile.email}</p> : null}
               <div style={{ display: 'grid', gap: 12 }}><button type="button" className="site-button site-button-primary" disabled={choosingOther} onClick={() => setParams(withoutAccountChoice(params))}>{t('Continue')}</button>
-                <button type="button" className="site-button site-button-outline" disabled={choosingOther} onClick={() => void chooseOtherAccount()}>{choosingOther ? t('Signing out…') : locale === 'zh-CN' ? '使用其他账户' : 'Use another account'}</button></div>
+                <button type="button" className="site-button site-button-outline" disabled={choosingOther} onClick={() => void chooseOtherAccount()}>{choosingOther ? t('Signing out…') : t('Use another account')}</button></div>
               {choiceError ? <p role="alert">{t(choiceError)}</p> : null}</div>
             : signedIn ? <div className="auth-status"><h2>{t('Signing you in…')}</h2><p role="status">{t(params.get('desktop') ? 'Returning to komopdf…' : 'Opening your account…')}</p></div>
-              : signup ? <SignUp routing="hash" appearance={appearance} signInUrl={`/sign-in/${suffix}`} forceRedirectUrl={complete} signInForceRedirectUrl={complete} />
-                : <SignIn routing="hash" appearance={appearance} signUpUrl={`/sign-up/${suffix}`} forceRedirectUrl={complete} signUpForceRedirectUrl={complete} />}
+              : signup ? <SignUp routing="hash" appearance={appearance} signInUrl={`${localizedPath('/sign-in/', locale)}${suffix}`} forceRedirectUrl={complete} signInForceRedirectUrl={complete} />
+                : <SignIn routing="hash" appearance={appearance} signUpUrl={`${localizedPath('/sign-up/', locale)}${suffix}`} forceRedirectUrl={complete} signUpForceRedirectUrl={complete} />}
       </section>
     </div>
     <SiteFooter />

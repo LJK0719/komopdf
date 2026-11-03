@@ -85,7 +85,10 @@ import './editor.css';
 
 const RENDER_SCALE = 1.25;
 
+export type EditorInitialTask = 'edit-text' | 'annotate' | 'pages' | 'export-image';
+
 type EditorShellProps = {
+  initialTask?: EditorInitialTask;
   engine: EngineAdapter;
   host: HostAdapter;
   productName?: string;
@@ -158,7 +161,7 @@ export function mergeSavedRevision(current: LoadedDocument, savedRevision: numbe
 
 type Activity = 'idle' | 'opening' | 'rendering' | 'saving' | 'editing';
 
-export function EditorShell({ engine, host, preferenceOwner, productName = 'komopdf', aiPanel, renderAiPanel,
+export function EditorShell({ engine, host, preferenceOwner, productName = 'komopdf', aiPanel, renderAiPanel, initialTask,
   source: externalSource, sources: externalSources, onSourcesConsumed, onSourceConsumed, onSaved, onResultsReady, onDocumentChange, closeDocumentRef, externalBusy = false, suspendOpening = false, allowReadOnlyNavigation = false, onActivityChange, headerActions,
   onOpenFolder, recentFiles, onOpenRecent, onForgetRecent, onRequestRecent, onActivateDocument, onClosePreview,
   workspacePanel, workspaceId, workspacePreview }: EditorShellProps) {
@@ -181,6 +184,15 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const [openingBatch, setOpeningBatch] = useState(false);
   const openFailure = useRef<string | null>(null);
   const [activeTool, setActiveTool] = useState<EditorTool | null>(null);
+  const initialTaskApplied = useRef(false);
+  useEffect(() => {
+    if (!initialTask || !document || initialTaskApplied.current) return;
+    initialTaskApplied.current = true;
+    if (initialTask === 'edit-text') { setTab('edit'); setPointer('edit'); }
+    else if (initialTask === 'pages') setTab('pages');
+    else if (initialTask === 'annotate') { setTab('comment'); setActiveTool('comment'); }
+    else setActiveTool('export');
+  }, [document?.info.id, initialTask]);
   const [textSelections, setTextSelections] = useState<Record<string, TextActionSelection>>({});
   const [textWindowOpen, setTextWindowOpen] = useState(false);
   const [documentTranslationOpen, setDocumentTranslationOpen] = useState(false);
@@ -1616,7 +1628,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
             {outlineError ? <span role="status">{t("Bookmarks could not be read")}</span> : outline.map((entry, index) =>
               <button type="button" key={`${index}-${entry.title}`} disabled={!entry.pageId || navigationBusy || previewActive}
                 style={{ paddingLeft: `${6 + Math.min(entry.level, 5) * 8}px` }}
-                aria-label={`Go to bookmark ${entry.title || t("Untitled")}`}
+                aria-label={t('Go to bookmark {title}', { title: entry.title || t('Untitled') })}
                 title={entry.title || t("Untitled")}
                 onClick={() => { if (entry.pageId) void switchPage(entry.pageId); }}>
                 {entry.title || t("Untitled")}
@@ -1806,7 +1818,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
             } }} engine={engine} disabled={isBusy} onBusyChange={setEditPending} onCommitted={handleCommitted} /></div>}
 
           <div hidden={activeTool !== 'fonts'}><FontPanel engine={engine} host={host} disabled={operationBusy} onBusyChange={setEditPending} /></div>
-          {document && <div hidden={activeTool !== 'export'}><ExportPanel disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} wordAvailable={Boolean(host.convertDocument)} onExport={exportDocument} {...(host.openSavedFile ? { onOpenFile: (handle, reveal) => host.openSavedFile!(handle, reveal) } : {})} /></div>}
+          {document && <div hidden={activeTool !== 'export'}><ExportPanel initialFormat={initialTask === 'export-image' ? 'jpeg' : 'pdf'} disabled={isBusy} encrypted={document.info.permissions.encrypted} signed={document.info.permissions.signed} wordAvailable={Boolean(host.convertDocument)} onExport={exportDocument} {...(host.openSavedFile ? { onOpenFile: (handle, reveal) => host.openSavedFile!(handle, reveal) } : {})} /></div>}
           {document && (host.capabilities.platform === 'web' || host.printDocument) &&
             <div hidden={activeTool !== 'print'}><PrintPanel disabled={isBusy} docId={document.info.id} pageIds={document.info.pageOrder} currentPageId={document.page.id}
               encrypted={document.info.permissions.encrypted} canPrint={document.info.permissions.print === true}

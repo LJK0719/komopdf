@@ -8,7 +8,7 @@ import { EditorShell, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient } from 
 const EditorAccountPanel = dynamic(() => import('./editor-account-panel'), { ssr: false });
 const EditorAccountIdentity = dynamic(() => import('./editor-account-panel').then(module => module.EditorAccountIdentity), { ssr: false });
 
-export default function EditorClient() {
+export default function EditorClient({ initialTask }: { initialTask?: import('@pdf-editor/editor').EditorInitialTask }) {
   const [preferenceOwner, setPreferenceOwner] = React.useState<string | null | undefined>(undefined);
   const [identityNeeded, setIdentityNeeded] = React.useState(false);
   const onDocumentChange = React.useCallback(({ document }: { document: unknown }) => { if (document) setIdentityNeeded(true); }, []);
@@ -44,7 +44,7 @@ export default function EditorClient() {
   if (!instances) return <EditorLoading />;
   return <>
     {identityNeeded && <EditorAccountIdentity onOwner={setPreferenceOwner} />}
-    <EditorShell preferenceOwner={preferenceOwner} engine={instances.engine} host={instances.host} onDocumentChange={onDocumentChange}
+    <EditorShell initialTask={initialTask} preferenceOwner={preferenceOwner} engine={instances.engine} host={instances.host} onDocumentChange={onDocumentChange}
       renderAiPanel={context => <EditorAccountPanel context={context} onOwner={setPreferenceOwner} />} />
   </>;
 }

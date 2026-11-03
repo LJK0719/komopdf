@@ -1,7 +1,7 @@
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import AccountPage from './page';
+import AccountPage from '../../components/site-pages/account';
 
 const account = vi.hoisted(() => ({ account: null, ready: true, signedIn: true,
   error: 'Account service is unavailable. Please try again.', profile: vi.fn(), logout: vi.fn(), request: vi.fn(), refresh: vi.fn() }));

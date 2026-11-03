@@ -11,6 +11,8 @@ import { AI_SERVICE_COPY_MESSAGES } from './ai-service-copy-messages.js';
 import { komoMaterialMessages } from './komo-material-messages.js';
 import { interactionReviewMessages } from './interaction-review-messages.js';
 export const messages: Record<string, string> = {
+  'Bold': '加粗', 'Crop page': '裁剪页面', 'Cut': '剪切', 'Discard changes': '放弃更改',
+  'Open file': '打开文件', 'Page range': '页码范围', 'Paste': '粘贴', 'Select all': '全选',
   'Open a PDF. Make it yours.': '打开 PDF，直接开始编辑。',
   'Drop your file here to start editing.': '将文件拖到这里，即可开始。',
   'Choose a document to start editing.': '选择文档，开始编辑。',

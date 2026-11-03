@@ -1,4 +1,4 @@
-export { EditorShell, type EditorAiContext } from './ui/EditorShell.js';
+export { EditorShell, type EditorAiContext, type EditorInitialTask } from './ui/EditorShell.js';
 export type { RecentFileEntry } from './ui/StartPage.js';
 export { AiPanel } from './ui/AiPanel.js';
 export { KomoChatPanel } from './ui/KomoChatPanel.js';

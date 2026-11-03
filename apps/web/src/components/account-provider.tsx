@@ -1,8 +1,12 @@
 'use client';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ClerkProvider, useAuth, useClerk } from '@clerk/react';
-import { enUS, zhCN } from '@clerk/localizations';
+import { enUS, zhCN, zhTW, jaJP, koKR, deDE, frFR, esES, ptBR, itIT, ruRU } from '@clerk/localizations';
 import { useI18n } from '@pdf-editor/editor/i18n';
+import { localizedPath, type UiLocale } from '@pdf-editor/editor/i18n-locales';
+
+export const CLERK_LOCALIZATIONS = { en: enUS, 'zh-CN': zhCN, 'zh-TW': zhTW, ja: jaJP, ko: koKR, de: deDE,
+  fr: frFR, es: esES, 'pt-BR': ptBR, it: itIT, ru: ruRU } satisfies Record<UiLocale, typeof enUS>;
 
 export type KomoAccount = { userId: string; plan: 'free' | 'plus'; freeCredits: number; usedCredits: number;
   remainingCredits: number; tokensPerCredit: number; subscriptionStatus: string | null;
@@ -35,7 +39,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   if (!key) return <Context.Provider value={{ userId: undefined, account: null, signedIn: false, ready: Boolean(error), error,
     refresh: async () => { setError(''); setConfigAttempt(attempt => attempt + 1); }, login: () => {}, profile: () => {}, logout: async () => {}, authenticatedFetch: fetch,
     request: async () => { throw new Error(error || 'Loading account service…'); } }}>{children}</Context.Provider>;
-  return <ClerkProvider publishableKey={key} localization={locale === 'zh-CN' ? zhCN : enUS}><ConnectedAccount>{children}</ConnectedAccount></ClerkProvider>;
+  return <ClerkProvider publishableKey={key} localization={CLERK_LOCALIZATIONS[locale]}><ConnectedAccount>{children}</ConnectedAccount></ClerkProvider>;
 }
 function ConnectedAccount({ children }: { children: ReactNode }) {
   const { isLoaded, isSignedIn, getToken, userId } = useAuth();
@@ -79,11 +83,11 @@ function ConnectedAccount({ children }: { children: ReactNode }) {
 }
 export function AccountStrip() {
   const { account, ready, signedIn, login, error } = useKomoAccount();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   return <div className="komo-account-strip">
     <span>{account ? account.plan === 'plus' ? 'KOMO Plus' : t('{count} credits left', { count: account.remainingCredits.toLocaleString(undefined, { maximumFractionDigits: 4 }) })
       : t(signedIn ? 'Loading credits…' : '1,000 free credits · PDF tools always free')}</span>
-    {signedIn ? <a href="/account/" target="_blank" rel="noreferrer">{t(account?.plan === 'plus' ? 'Account' : 'Plus · $4.99/mo')}</a>
+    {signedIn ? <a href={localizedPath('/account/', locale)} target="_blank" rel="noreferrer">{t(account?.plan === 'plus' ? 'Account' : 'Plus · $4.99/mo')}</a>
       : <button type="button" disabled={!ready || Boolean(error)} onClick={login}>{t('Sign in')}</button>}
     {error ? <p role="status">{t(error)}</p> : null}
   </div>;

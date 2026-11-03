@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 const stableRelease = JSON.parse(readFileSync(new URL('../../apps/web/public/releases/stable.json', import.meta.url), 'utf8')) as { artifacts: { name: string; url: string }[] };
+const zhSiteMessages = JSON.parse(readFileSync(new URL('../../packages/editor/src/ui/site-locales/zh-CN.json', import.meta.url), 'utf8')) as Record<string, string>;
 
 // Website-only checks. Account configuration is unavailable on purpose: public
 // plans and navigation must work without Clerk, a session or a payment service.
@@ -45,8 +46,10 @@ test('public pricing is readable without sign-in and preserves desktop return co
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('combobox', { name: 'Language', exact: true }).selectOption('zh-CN');
-  await expect(page.getByRole('heading', { name: '免费编辑 PDF，用 KOMO 做更多。' })).toBeVisible();
-  await expect(pricing.getByRole('link', { name: '登录并升级', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/zh-cn\/account\/\?/);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+  await expect(page.getByRole('heading', { name: zhSiteMessages['Free PDF tools. More with KOMO.']! })).toBeVisible();
+  await expect(pricing.getByRole('link', { name: zhSiteMessages['Sign in to upgrade']!, exact: true })).toBeVisible();
 });
 
 test('homepage is the editor and does not load account services before they are needed', async ({ page }) => {

@@ -6,6 +6,7 @@ const nextConfig = {
   distDir: 'dist',
   trailingSlash: true,
   experimental: {
+    globalNotFound: true,
     useTypeScriptCli: true,
   },
   images: {

@@ -534,7 +534,7 @@ export function OcrPanel({
               type="text"
               value={pageRangeInput}
               disabled={locked}
-              placeholder="e.g. 1-3, 5"
+              placeholder="1-3, 5"
               onChange={e => setPageRangeInput(e.target.value)}
             />
           </label>

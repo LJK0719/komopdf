@@ -206,33 +206,11 @@ server {
         add_header Cache-Control "no-cache";
     }
 
-    # Editor SPA fallback
-    location = /editor {
-        return 301 /editor/;
-    }
-    location /editor/ {
-        try_files $uri $uri/ /editor/index.html =404;
-        add_header Cache-Control "no-cache";
-    }
-
-    # Static pages: Home, Download, Help, Privacy
-    location = /download { return 301 /download/; }
-    location /download/ {
-        try_files $uri $uri/ /download/index.html =404;
-        add_header Cache-Control "no-cache";
-    }
-
-    location = /help { return 301 /help/; }
-    location /help/ {
-        try_files $uri $uri/ /help/index.html =404;
-        add_header Cache-Control "no-cache";
-    }
-
-    location = /privacy { return 301 /privacy/; }
-    location /privacy/ {
-        try_files $uri $uri/ /privacy/index.html =404;
-        add_header Cache-Control "no-cache";
-    }
+    # Static export routes: never turn an unknown child URL into a 200 SPA page.
+    location = /editor { return 301 /editor/$is_args$args; }
+    location = /download { return 301 /download/$is_args$args; }
+    location = /help { return 301 /help/$is_args$args; }
+    location = /privacy { return 301 /privacy/$is_args$args; }
 
     location = / {
         try_files /index.html =404;

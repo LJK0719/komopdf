@@ -7,6 +7,8 @@
     ".": "./src/index.ts",
     "./worker": "./src/worker/index.ts",
     "./i18n": "./src/ui/i18n.ts",
+    "./i18n-locales": "./src/ui/locales.ts",
+    "./i18n-resources": "./src/ui/i18n-resources.ts",
     "./web": "./src/host/web-host-adapter.ts",
     "./tokens.css": "./src/ui/tokens.css"
   },
@@ -23,8 +25,10 @@
     "@pdf-editor/commands": "workspace:*",
     "@pdf-editor/contracts": "workspace:*",
     "fflate": "0.8.3",
+    "i18next": "^26.7.1",
     "lexical": "0.52.0",
     "lucide-react": "1.47.0",
+    "react-i18next": "^17.1.11",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1"
   },

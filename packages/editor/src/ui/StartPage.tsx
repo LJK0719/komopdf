@@ -7,7 +7,7 @@ export function StartPage({ busy, isWeb, onOpen, onOpenFolder, recent = [], onOp
   busy: boolean; isWeb: boolean; onOpen(): void; onOpenFolder?(): void; recent?: RecentFileEntry[];
   onOpenRecent?(entry: RecentFileEntry): void; onForgetRecent?(id: string): void; children?: ReactNode; status?: string;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   return <div className="start-page">
     <section className="start-dropzone" aria-label={t('Open documents')} aria-busy={busy}>
       <div className="start-document-icon" aria-hidden="true"><FileText size={36} strokeWidth={1.3} /></div>
@@ -26,7 +26,7 @@ export function StartPage({ busy, isWeb, onOpen, onOpenFolder, recent = [], onOp
         <button type="button" className="recent-open" disabled={busy} onClick={() => onOpenRecent?.(entry)} title={entry.location || entry.name}>
           {entry.kind === 'folder' ? <FolderOpen size={19} aria-hidden="true" /> : <FileText size={19} aria-hidden="true" />}
           <span><strong>{entry.name}</strong><small>{entry.location || t(entry.kind === 'folder' ? 'Folder' : 'PDF document')}</small></span>
-          <time dateTime={new Date(entry.updatedAt).toISOString()}>{new Date(entry.updatedAt).toLocaleDateString()}</time>
+          <time dateTime={new Date(entry.updatedAt).toISOString()}>{new Date(entry.updatedAt).toLocaleDateString(locale)}</time>
         </button>
         {onForgetRecent && <button className="recent-remove icon-button" type="button" disabled={busy}
           onClick={() => onForgetRecent(entry.id)} aria-label={t('Remove {name} from recent files', { name: entry.name })} title={t('Remove from recent files')}><X size={15} /></button>}

@@ -10,6 +10,7 @@
   "scripts": {
     "build": "pnpm -r --if-present build",
     "prepare:web-assets": "node scripts/prepare-web-runtime.mjs",
+    "i18n:public": "tsx scripts/generate-public-locales.ts",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run",
     "test:browser": "node scripts/test-browser.mjs",

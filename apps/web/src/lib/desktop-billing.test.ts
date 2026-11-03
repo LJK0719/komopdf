@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { billingCallback, desktopBilling } from './desktop-billing';
+import { UI_LOCALES } from '@pdf-editor/editor/i18n-locales';
 const now = 1_000_000;
 const checkout = { url: 'https://checkout.stripe.com/c/pay/cs_fixture',
   returnUrl: 'http://127.0.0.1:49152/billing/11111111-1111-4111-8111-111111111111',
@@ -7,6 +8,9 @@ const checkout = { url: 'https://checkout.stripe.com/c/pay/cs_fixture',
 describe('desktop billing return context', () => {
   it('accepts a short-lived Stripe destination and loopback return', () => {
     expect(desktopBilling(checkout, now)).toEqual(checkout);
+  });
+  it.each(UI_LOCALES)('preserves the supported billing language $id', ({ id }) => {
+    expect(desktopBilling({ ...checkout, lang: id }, now)?.lang).toBe(id);
   });
   it.each([
     { url: 'https://example.invalid/checkout' }, { url: 'http://checkout.stripe.com/pay' },

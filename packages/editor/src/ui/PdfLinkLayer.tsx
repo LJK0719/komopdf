@@ -32,7 +32,8 @@ export function PdfLinkLayer({ annotations, page, render, pageOrder, disabled = 
   return (
     <div
       className="pdf-link-layer"
-      aria-label="PDF internal links"
+      role="group"
+      aria-label={t('Pages')}
       style={{
         position: 'absolute',
         inset: 0,
@@ -53,10 +54,10 @@ export function PdfLinkLayer({ annotations, page, render, pageOrder, disabled = 
           <ContextMenu.Trigger render={<button type="button" disabled={disabled} />}
             role="link"
             className="pdf-link-annotation"
-            aria-label={`Go to page ${targetPageNumber}`}
+            aria-label={t('Go to page {page}', { page: targetPageNumber })}
             data-target-page-id={link.targetPageId}
             data-target-page-number={targetPageNumber}
-            title={`Go to page ${targetPageNumber}`}
+            title={t('Go to page {page}', { page: targetPageNumber })}
             style={{
               left,
               top,

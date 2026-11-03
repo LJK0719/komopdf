@@ -3,7 +3,7 @@ import { ArrowUp, Square, Trash2 } from 'lucide-react';
 import { AiWorkflow, DocumentAiAuthorization, resolveCitation } from '@pdf-editor/ai-client';
 import type { EditorAiContext } from './EditorShell.js';
 import { AiMarkdown } from './AiMarkdown.js';
-import { useI18n } from './i18n.js';
+import { useI18n, localizedPath } from './i18n.js';
 import { CHAT_COPY_RESTRICTED, ChatContextError, prepareChatContext, SCAN_RECOMMENDATION, type ChatScope, type ChatVisualMode } from './komo-chat-context.js';
 import { CHAT_CONTEXT_EXPIRED, attachChatHandoff, canRetryContext, createChatSession, createKomoChatStore, freezeChatRequestContext, synchronizeChatOwner, chatFailure, chatHistory, type KomoChatStore, type ChatSession, type ChatRequestContext, type ChatExchange, type ChatCitation } from './komo-chat-state.js';
 import { isMaterialCurrent, materialDocument, prepareMaterials, resolveMaterialCitation } from './komo-materials.js';
@@ -52,7 +52,7 @@ export function KomoChatPanel(props: Props) {
 }
 
 function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason, onComplete, session, updateSession }: Props & { session: ChatSession; updateSession: UpdateSession }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const latest = useRef(context); latest.current = context;
   const controller = useRef<AbortController | null>(null);
   const [authorization] = useState(() => new DocumentAiAuthorization(context.document?.id ?? 'empty'));
@@ -265,7 +265,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
                   <div className="komo-chat-actions">
                     {exchange.failure?.retryable !== false && retryable ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, scope, visualMode, exchange.requestContext)}>{t('Retry question')}</button> : null}
                     {!retryable ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, exchange.requestContext?.scope ?? scope, exchange.requestContext?.visualMode ?? visualMode, undefined, exchange.requestContext)}>{t('Retry with current version')}</button> : null}
-                    {exchange.failure?.action === 'account' ? <a href="/account/" target="_blank" rel="noreferrer">{t('Account')}</a> : null}
+                    {exchange.failure?.action === 'account' ? <a href={localizedPath('/account/', locale)} target="_blank" rel="noreferrer">{t('Account')}</a> : null}
                     <button type="button" onClick={() => editQuestion(exchange.prompt)}>{t('Edit question')}</button>
                     {exchange.failure?.action === 'page' ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, 'page')}>{t('Ask about current page')}</button> : null}
                     {exchange.failure?.action === 'image' ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, 'page', 'always')}>{t('Ask with page image')}</button> : null}

@@ -1,5 +1,7 @@
+import { normalizeUiLocale, type UiLocale } from '@pdf-editor/editor/i18n-locales';
+
 export const DESKTOP_BILLING_KEY = 'komopdf.desktop.billing';
-export type DesktopBilling = { url: string; returnUrl: string; state: string; sessionId: string | null; expires: number; lang: 'en' | 'zh-CN' };
+export type DesktopBilling = { url: string; returnUrl: string; state: string; sessionId: string | null; expires: number; lang: UiLocale };
 export function desktopBilling(value: unknown, now = Date.now()): DesktopBilling | null {
   if (!value || typeof value !== 'object') return null;
   const data = value as Record<string, unknown>;
@@ -15,7 +17,7 @@ export function desktopBilling(value: unknown, now = Date.now()): DesktopBilling
       || !callback.port || !/^\/billing\/[a-f0-9-]{36}$/.test(callback.pathname)
       || callback.search || callback.hash || callback.username || callback.password) return null;
     return { url: stripe.href, returnUrl: callback.href, state: data.state, sessionId: data.sessionId as string | null,
-      expires: data.expires, lang: data.lang === 'zh-CN' ? 'zh-CN' : 'en' };
+      expires: data.expires, lang: normalizeUiLocale(typeof data.lang === 'string' ? data.lang : undefined) ?? 'en' };
   } catch { return null; }
 }
 export function billingCallback(data: DesktopBilling, query: URLSearchParams): string | null {

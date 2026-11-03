@@ -252,15 +252,15 @@ export function TextEditPanel({ document, page, selectedIds, searchSelection, in
   };
 
   if (!block) {
-    return <section className="text-edit-panel" aria-label="Manual text editing">
+    return <section className="text-edit-panel" aria-label={t('Manual text editing')}>
       <span className="eyebrow">{t("Edit text")}</span>
       <p>{t("Select one text object to edit its original text.")}</p>
     </section>;
   }
 
-  return <section className="text-edit-panel" aria-label="Manual text editing">
+  return <section className="text-edit-panel" aria-label={t('Manual text editing')}>
     {inlineHost && render && page && selectedObject && inlineTextId === selectedObject.id && canReplace && createPortal(
-      <div className="inline-text-editor" role="group" aria-label="Edit text on page"
+      <div className="inline-text-editor" role="group" aria-label={t('Edit text on page')}
         style={{ left: selectedObject.bounds.x * render.width / page.widthPt,
           top: selectedObject.bounds.y * render.height / page.heightPt,
           width: Math.max(190, selectedObject.bounds.width * render.width / page.widthPt) }}

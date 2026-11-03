@@ -1,0 +1,20 @@
+{
+  "{count} pages_one": "{count} page",
+  "{count} pages_other": "{count} pages",
+  "{count} pages selected_one": "{count} page selected",
+  "{count} pages selected_other": "{count} pages selected",
+  "{count} objects_one": "{count} object",
+  "{count} objects_other": "{count} objects",
+  "{count} objects selected_one": "{count} object selected",
+  "{count} objects selected_other": "{count} objects selected",
+  "{count} matches_one": "{count} match",
+  "{count} matches_other": "{count} matches",
+  "{count} text blocks_one": "{count} text block",
+  "{count} text blocks_other": "{count} text blocks",
+  "{format} · {count} pages_one": "{format} · {count} page",
+  "{format} · {count} pages_other": "{format} · {count} pages",
+  "Delete {count} pages from this PDF_one": "Delete {count} page from this PDF",
+  "Delete {count} pages from this PDF_other": "Delete {count} pages from this PDF",
+  "Import {count} pages_one": "Import {count} page",
+  "Import {count} pages_other": "Import {count} pages"
+}

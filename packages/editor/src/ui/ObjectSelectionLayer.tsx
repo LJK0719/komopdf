@@ -163,8 +163,8 @@ function computeRotateMatrix(
 }
 
 const names = { text: 'Text', image: 'Image', path: 'Path', form: 'Form', group: 'Group', shading: 'Gradient' };
-const ObjectHitbox = memo(function ObjectHitbox({ object, selected, hovered, disabled, zIndex, dx, dy, onSelect }: {
-  object: EditableObject; selected: boolean; hovered: boolean; disabled: boolean; zIndex: number | undefined;
+const ObjectHitbox = memo(function ObjectHitbox({ object, label, selected, hovered, disabled, zIndex, dx, dy, onSelect }: {
+  object: EditableObject; label: string; selected: boolean; hovered: boolean; disabled: boolean; zIndex: number | undefined;
   dx: number; dy: number; onSelect: Props['onSelect'];
 }) {
   return <button type="button" disabled={disabled} data-object-id={object.id} data-object-type={object.type}
@@ -172,7 +172,7 @@ const ObjectHitbox = memo(function ObjectHitbox({ object, selected, hovered, dis
     style={{ zIndex, left: object.bounds.x, top: object.bounds.y, width: object.bounds.width, height: object.bounds.height,
       ...(dx || dy ? { transform: `translate(${dx}px, ${dy}px)` } : {}) }}
     onClick={event => { event.stopPropagation(); if (!disabled && event.detail === 0) onSelect(object.id, event.ctrlKey || event.metaKey || event.shiftKey); }}
-    aria-pressed={selected} aria-label={`Select ${names[object.type]} object`} />;
+    aria-pressed={selected} aria-label={label} />;
 });
 
 export function ObjectSelectionLayer({
@@ -188,7 +188,7 @@ export function ObjectSelectionLayer({
   onTransform,
   onResizeText,
 }: Props) {
-  useI18n();
+  const { locale } = useI18n();
   const scaleX = render.width / page.widthPt;
   const scaleY = render.height / page.heightPt;
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -236,10 +236,10 @@ export function ObjectSelectionLayer({
   const moveY = preview?.type === 'move' ? preview.dy / scaleY : 0;
   const hitboxes = useMemo(() => objects.map(object => {
     const moving = idsFor(object).some(id => movingSet.has(id));
-    return <ObjectHitbox key={object.id} object={object} selected={idsFor(object).some(id => selectedSet.has(id))}
+    return <ObjectHitbox key={object.id} object={object} label={t('Select {type} object', { type: t(names[object.type]) })} selected={idsFor(object).some(id => selectedSet.has(id))}
       hovered={!disabled && hoveredId === object.id} disabled={disabled} zIndex={stacking.get(object.id)}
       dx={moving ? moveX : 0} dy={moving ? moveY : 0} onSelect={selectHitbox} />;
-  }), [objects, selectedSet, movingSet, hoveredId, disabled, stacking, moveX, moveY, selectHitbox]);
+  }), [objects, selectedSet, movingSet, hoveredId, disabled, stacking, moveX, moveY, selectHitbox, locale]);
   const hitAt = (clientX: number, clientY: number) => {
     const rect = layerRef.current!.getBoundingClientRect();
     return pickObject(objects, (clientX - rect.left) / scaleX, (clientY - rect.top) / scaleY, 3 / Math.max(scaleX, scaleY));

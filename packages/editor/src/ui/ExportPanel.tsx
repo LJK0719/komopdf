@@ -1,4 +1,4 @@
-import { translate as t, useI18n } from './i18n.js';
+import { translate as t, useI18n, localizedPath } from './i18n.js';
 import { useEffect, useRef, useState } from 'react';
 import type { ConversionFormat, ConversionProgress, SaveRequest, SaveOutcome } from '@pdf-editor/contracts';
 import './panel-refresh.css';
@@ -8,13 +8,14 @@ export type ExportSettings = ({ format: 'pdf' } & Pick<SaveRequest, 'protection'
 
 export type ExportOutcome = Omit<SaveOutcome, 'status'> & { status: SaveOutcome['status'] | 'prepared'; warnings: string[]; format: string; pageCount: number };
 
-export function ExportPanel({ disabled, encrypted, signed, wordAvailable, onExport, onOpenFile }: {
+export function ExportPanel({ disabled, encrypted, signed, wordAvailable, onExport, onOpenFile, initialFormat = 'pdf' }: {
   disabled: boolean; encrypted: boolean; signed: boolean; wordAvailable: boolean;
+  initialFormat?: 'pdf' | ConversionFormat;
   onExport(options: ExportSettings, signal: AbortSignal, progress: (value: ConversionProgress) => void): Promise<string[] | ExportOutcome>;
   onOpenFile?(handle: string, reveal: boolean): Promise<void>;
 }) {
-  useI18n();
-  const [format, setFormat] = useState<'pdf' | ConversionFormat>('pdf');
+  const { locale } = useI18n();
+  const [format, setFormat] = useState<'pdf' | ConversionFormat>(initialFormat);
   const [pages, setPages] = useState('all');
   const [dpi, setDpi] = useState(144);
   const [quality, setQuality] = useState(85);
@@ -113,7 +114,7 @@ export function ExportPanel({ disabled, encrypted, signed, wordAvailable, onExpo
       </>}
       {!wordAvailable ? <details><summary>{t('Need Word conversion?')}</summary>
         <p>{t('Save a PDF copy first, then open that copy in the desktop app. Your current edits do not transfer automatically.')}</p>
-        <a className="panel-result-link" href="/download/" target="_blank" rel="noreferrer">{t('Download desktop app')}</a>
+        <a className="panel-result-link" href={localizedPath('/download/', locale)} target="_blank" rel="noreferrer">{t('Download desktop app')}</a>
       </details> : null}
       {completed && <div className="export-result layout-result" role="status">
         <strong>{t(completed.status === 'cancelled' ? 'Export cancelled' : completed.status === 'download-started' ? 'Download started' : completed.status === 'written' ? 'Export complete' : 'Export prepared')}</strong>
