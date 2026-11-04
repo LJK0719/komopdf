@@ -2,24 +2,24 @@
   "schemaVersion": 1,
   "product": "komopdf",
   "channel": "stable",
-  "version": "0.1.19",
-  "publishedAt": "2026-11-03T16:23:06Z",
-  "releaseUrl": "https://github.com/LJK0719/komopdf-releases/releases/tag/v0.1.19",
+  "version": "0.1.20",
+  "publishedAt": "2026-11-04T10:14:54.008Z",
+  "releaseUrl": "https://github.com/LJK0719/komopdf-releases/releases/tag/v0.1.20",
   "artifacts": [
     {
       "target": "windows-x64",
-      "name": "komopdf-0.1.19-windows-x64-setup.exe",
-      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.19/komopdf-0.1.19-windows-x64-setup.exe",
-      "sha256": "dcf220891fd4a5246fc9754920dc947628654983235e6ef9e06a0e6c8fe18c5a",
-      "bytes": 592436577,
+      "name": "komopdf-0.1.20-windows-x64-setup.exe",
+      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.20/komopdf-0.1.20-windows-x64-setup.exe",
+      "sha256": "f1a85d9d1e0d03f8d722e957e0ae0c882ac512c11d31047c63096130bb7cd9c5",
+      "bytes": 592452194,
       "minimumOs": "Windows 10 22H2 or later, 64-bit"
     },
     {
       "target": "macos-arm64",
-      "name": "komopdf-0.1.19-macos-arm64.dmg",
-      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.19/komopdf-0.1.19-macos-arm64.dmg",
-      "sha256": "27427b188d0dec6383e08c96d67d4c0e98295cf75ab9f115eaa89fb8828f84fb",
-      "bytes": 410826898,
+      "name": "komopdf-0.1.20-macos-arm64.dmg",
+      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.20/komopdf-0.1.20-macos-arm64.dmg",
+      "sha256": "e43e04513461b2816793c30da22afd98c324bd16e46107c6dc346345dbf1f76d",
+      "bytes": 414032978,
       "minimumOs": "macOS 13.0 or later, Apple Silicon"
     }
   ]
