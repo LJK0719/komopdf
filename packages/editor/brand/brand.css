@@ -1,0 +1,6 @@
+.komopdf-logo, .komopdf-icon { display: inline-block; flex: none; background-position: center; background-repeat: no-repeat; background-size: contain; }
+.komopdf-logo { width: 143px; height: 32px; background-image: url('./logo-full.svg'); }
+.komopdf-icon { width: 32px; height: 32px; background-image: url('./icon.svg'); }
+@media (max-width: 1100px) {
+  .brand-lockup .komopdf-logo { width: 32px; background-image: url('./icon.svg'); }
+}

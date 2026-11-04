@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "Impossibile interrompere l’attività. Riprova.",
   "Go to bookmark {title}": "Vai al segnalibro «{title}»",
   "Select {type} object": "Seleziona oggetto: {type}",
-  "Manual text editing": "Modifica testo"
+  "Manual text editing": "Modifica testo",
+  "Home page": "Home",
+  "Download app": "Scarica l’app"
 }

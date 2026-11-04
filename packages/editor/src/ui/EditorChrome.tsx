@@ -54,7 +54,7 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
   const blocked = !name || busy || documentActionsDisabled;
   return <header className="editor-topbar">
     <div className="topbar-start"><button className="brand-lockup" type="button" onClick={onStart} disabled={busy} aria-label={t('Start page')}>
-      <span className="brand-mark" aria-hidden="true">k</span><strong>{productName}</strong></button>
+      {productName === 'komopdf' ? <span className="komopdf-logo" aria-hidden="true" /> : <strong>{productName}</strong>}</button>
       <Menu.Root><Menu.Trigger className="file-menu-trigger ai-owned-focus">{t('File')}<ChevronDown size={14} /></Menu.Trigger>
         <Menu.Portal><Menu.Positioner className="ui-menu-positioner" sideOffset={8}><Menu.Popup className="ui-menu ai-owned-focus">
           <Menu.Item className="ui-menu-item" onClick={onOpen} disabled={busy}><FolderOpen size={16} />{t('Open PDF…')}<kbd>{modifier} O</kbd></Menu.Item>
@@ -73,7 +73,7 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
             <Menu.Item className="ui-menu-item" render={<a href={localizedPath('/help/', locale)} target="_blank" rel="noreferrer" />}>{t('Help')} ↗</Menu.Item>
             <Menu.Item className="ui-menu-item" render={<a href={localizedPath('/account/', locale)} target="_blank" rel="noreferrer" />}>{t('Account')} ↗</Menu.Item>
           </>}
-          <Menu.Separator className="ui-separator" /><div className="application-preferences"><LanguageSelect /></div>
+          {!web && <><Menu.Separator className="ui-separator" /><div className="application-preferences"><LanguageSelect /></div></>}
         </Menu.Popup></Menu.Positioner></Menu.Portal>
       </Menu.Root>
       <button className="button open-document-button" type="button" aria-label={t('Open')} title={t('Open PDF…')} onClick={onOpen} disabled={busy}><FolderOpen size={17} /><span>{t('Open')}</span></button>
@@ -91,6 +91,7 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
       </button>}
       {showAi && <button className={`button assistant-button ${tool === 'ai' ? 'is-active' : ''}`} aria-label={t('Ask komo')} aria-pressed={tool === 'ai'} type="button" onClick={() => onTool('ai')}><Sparkles size={16} /><span translate="no">komo</span></button>}
       {extra}
+      {web && <LanguageSelect />}
     </div>
   </header>;
 }

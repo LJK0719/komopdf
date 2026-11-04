@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "無法停止工作，請再試一次。",
   "Go to bookmark {title}": "前往書籤 {title}",
   "Select {type} object": "選取{type}物件",
-  "Manual text editing": "編輯文字"
+  "Manual text editing": "編輯文字",
+  "Home page": "首頁",
+  "Download app": "下載 App"
 }

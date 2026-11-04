@@ -195,7 +195,10 @@ describe('Brand entrances', () => {
     expect(source).toContain("productName = 'komopdf'");
     expect(source).toContain('productName={productName}');
     const chrome = readFileSync(resolve(__dirname, '../src/ui/EditorChrome.tsx'), 'utf-8');
-    expect(chrome).toContain('<span className="brand-mark" aria-hidden="true">k</span>');
+    expect(chrome).toContain('<span className="komopdf-logo" aria-hidden="true" />');
+    const brand = readFileSync(resolve(__dirname, '../brand/brand.css'), 'utf-8');
+    expect(brand).toContain("url('./logo-full.svg')");
+    expect(brand).toContain("url('./icon.svg')");
   });
 
   it('lists all recoverable documents with explicit actions', () => {

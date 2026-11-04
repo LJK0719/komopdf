@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { UI_LOCALES } from '@pdf-editor/editor/i18n-locales';
-import { SiteRoot, siteViewport } from '@/components/site-root';
+import { SiteRoot, siteViewport, siteMetadata } from '@/components/site-root';
+export const metadata = siteMetadata;
 import { routeLocale } from '@/lib/site-seo';
 export const viewport = siteViewport;
 export const dynamicParams = false;

@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "Não foi possível interromper a tarefa. Tente novamente.",
   "Go to bookmark {title}": "Ir para o marcador {title}",
   "Select {type} object": "Selecionar objeto: {type}",
-  "Manual text editing": "Editar texto"
+  "Manual text editing": "Editar texto",
+  "Home page": "Início",
+  "Download app": "Baixar app"
 }

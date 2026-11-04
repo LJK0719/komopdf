@@ -17,7 +17,7 @@ test('mobile website menu keeps download, help and account reachable with keyboa
   const menu = page.locator('.site-mobile-menu');
   const toggle = menu.locator('summary');
   await toggle.click();
-  for (const label of ['Download', 'Help', 'Account & pricing', 'Open editor']) {
+  for (const label of ['Home page', 'Download', 'Help', 'Account', 'Open editor']) {
     await expect(menu.getByRole('link', { name: label, exact: true })).toBeVisible();
   }
   await page.keyboard.press('Escape');
@@ -69,6 +69,44 @@ test('homepage is the editor and does not load account services before they are 
   await page.getByRole('button', { name: 'Open PDF', exact: true }).click();
   expect((await chooser).isMultiple()).toBe(true);
   await expect(page).toHaveURL(/\/$/);
+});
+
+test('homepage exposes localized navigation, brand and a working KOMO toggle', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  const language = page.locator('.editor-topbar .language-select select');
+  await expect(language.locator('option')).toHaveCount(11);
+  await expect(page.locator('.brand-lockup .komopdf-logo')).toBeVisible();
+  await expect(page.locator('link[rel="icon"][type="image/svg+xml"]')).toHaveAttribute('href', '/icon.svg');
+  for (const [label, href] of [['Pricing', '/pricing/'], ['Download app', '/download/'], ['Account', '/account/'], ['Sign in', '/sign-in/']]) {
+    const link = page.locator('.editor-web-links').getByRole('link', { name: label, exact: true });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute('href', href!);
+    await expect(link).toHaveAttribute('target', '_blank');
+  }
+  const button = page.getByRole('button', { name: 'Ask komo', exact: true });
+  for (const opened of [true, false, true, false]) {
+    await button.click();
+    await expect(button).toHaveAttribute('aria-pressed', String(opened));
+    if (opened) await expect(page.locator('.inspector-panel')).toBeVisible();
+    else await expect(page.locator('.inspector-panel')).toBeHidden();
+  }
+  await language.selectOption('de');
+  await expect(page).toHaveURL(/\/de\/$/);
+  await expect(page.locator('.editor-web-links a[href="/de/pricing/"]')).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const menu = page.locator('.editor-web-menu');
+  await menu.locator('summary').click();
+  await expect(menu.locator('a[href="/de/download/"]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(menu).not.toHaveAttribute('open');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: 'tmp/browser/home-mobile-de.png' });
+  await page.goto('/de/help/');
+  await page.locator('.site-mobile-menu > summary').click();
+  await page.locator('.site-mobile-links').getByRole('link', { name: 'Startseite', exact: true }).click();
+  await expect(page).toHaveURL(/\/de\/$/);
+  await expect(language).toHaveValue('de');
 });
 
 test('downloads use released artifacts and explain manual web-to-desktop handoff', async ({ page }) => {

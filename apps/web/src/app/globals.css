@@ -1,4 +1,5 @@
 @import '@pdf-editor/editor/tokens.css';
+@import '@pdf-editor/editor/brand.css';
 
 @tailwind base;
 @tailwind components;
@@ -22,7 +23,7 @@ button, input, textarea, select { font: inherit; }
 .site-shell { width: min(100%, 1360px); margin: 0 auto; padding: 0 clamp(20px, 5vw, 72px); color: var(--komo-ink, #20362c); }
 .site-nav { position: relative; z-index: 10; min-height: 84px; display: flex; align-items: center; gap: 30px; border-bottom: 1px solid var(--komo-line, #dfe5e0); }
 .site-brand { display: inline-flex; flex-shrink: 0; align-items: center; gap: 9px; font-size: 23px; font-weight: 700; letter-spacing: -1px; }
-.site-brand > span { display: grid; place-items: center; width: 31px; height: 35px; background: var(--komo-accent, #217b5e); color: var(--komo-surface, #fff); border-radius: 7px 7px 7px 2px; font: italic bold 27px Georgia, serif; }
+.site-brand .komopdf-logo { width: 161px; height: 36px; }
 .site-nav-links, .site-nav-actions { display: flex; align-items: center; gap: 24px; font-size: 14px; }
 .site-nav-links { margin-left: auto; }
 .site-nav-links > a { padding-block: 12px; color: var(--komo-muted, #65736c); }
@@ -201,8 +202,6 @@ button, input, textarea, select { font: inherit; }
 .tool-workspace-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--komo-line, #dfe5e0); background: white; }
 .tool-workspace-content { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .tool-workspace-content > .editor-shell { flex: 1; min-height: 0; height: auto; }
-.tool-workspace-header .language-select { display: flex; align-items: center; gap: 8px; }
-.tool-workspace-header select { max-width: 160px; padding: 5px; }
 .tool-steps { padding-inline-start: 24px; }
 .tool-steps li { padding-inline-start: 8px; margin-block: 24px; }
 .tool-steps h3 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
@@ -214,5 +213,18 @@ button, input, textarea, select { font: inherit; }
 .tool-faq p { margin-bottom: 0; }
 @media (min-width: 961px) { .site-nav { gap: 16px; } .site-nav-links { gap: 16px; } .site-nav-actions { gap: 4px; } }
 @media (max-width: 1160px) { .site-nav-links { display: none; } .site-nav-actions { margin-left: auto; } .site-mobile-menu { display: block; } }
-@media (max-width: 760px) { .site-nav { gap: 8px; } .site-brand { gap: 7px; font-size: 20px; } .site-brand > span { width: 28px; } .site-language-menu { display: none; } .site-language-select { width: 78px; max-width: 78px; } }
+@media (max-width: 760px) { .site-nav { gap: 8px; } .site-brand .komopdf-logo { width: 125px; height: 28px; } .site-language-menu { display: none; } .site-language-select { width: 78px; max-width: 78px; } }
+.editor-web-actions, .editor-web-links { display: flex; align-items: center; gap: 4px; }
+.editor-web-links > a { padding: 8px; border-radius: 6px; color: var(--komo-muted); font-size: 13px; white-space: nowrap; }
+.editor-web-links > a:hover { background: var(--komo-accent-soft); color: var(--komo-accent); }
+.editor-web-links > .editor-sign-in { color: var(--komo-accent); border: 1px solid var(--komo-line); }
+.editor-web-menu { display: none; position: relative; }
+.editor-web-menu > summary { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; list-style: none; cursor: pointer; }
+.editor-web-menu > summary::-webkit-details-marker { display: none; }
+.editor-web-menu > summary:hover, .editor-web-menu[open] > summary { background: var(--komo-accent-soft); }
+.editor-web-menu-links { position: absolute; z-index: 100; top: calc(100% + 8px); right: 0; display: grid; min-width: 200px; max-width: calc(100vw - 24px); padding: 6px; border: 1px solid var(--komo-line); border-radius: 8px; background: var(--komo-surface); box-shadow: var(--komo-shadow); font-size: 13px; }
+.editor-web-menu-links > a { padding: 12px; border-radius: 4px; }
+.editor-web-menu-links > a:hover { background: var(--komo-accent-soft); }
+@media (max-width: 1439px) { .editor-shell:not(.is-start-page) .editor-web-links { display: none; } .editor-shell:not(.is-start-page) .editor-web-menu { display: block; } }
+@media (max-width: 1279px) { .editor-web-links { display: none; } .editor-web-menu { display: block; } }
 @media (prefers-reduced-motion: reduce) { .site-shell *, .auth-page *, .account-page * { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }

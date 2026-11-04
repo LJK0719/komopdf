@@ -76,6 +76,29 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/editor/');
 });
 
+test('KOMO toggles without losing the document or chat draft', async ({ page }) => {
+  await openPdf(page, false, 1);
+  const button = page.getByRole('button', { name: 'Ask komo', exact: true });
+  const panel = page.locator('.inspector-panel');
+  const shell = await page.locator('.editor-shell').elementHandle();
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+  const message = page.getByRole('textbox', { name: 'Message', exact: true });
+  await message.fill('Keep this unfinished question.');
+  const draft = await message.elementHandle();
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'false');
+  await expect(panel).toBeHidden();
+  await button.click();
+  await expect(panel).toBeVisible();
+  await expect(message).toHaveValue('Keep this unfinished question.');
+  expect(await draft!.evaluate(element => element.isConnected)).toBe(true);
+  expect(await shell!.evaluate(element => element.isConnected)).toBe(true);
+  await expect(page.locator('.page-chip')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Close panel', exact: true }).click();
+  await expect(button).toHaveAttribute('aria-pressed', 'false');
+});
+
 test('web komo asks permission, keeps follow-up context, clears and does not persist chat', async ({ page }) => {
   const requests: AiRequest[] = [];
   await page.route('**/api/v1/ai/requests', async route => {

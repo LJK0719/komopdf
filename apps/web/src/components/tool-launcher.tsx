@@ -7,7 +7,6 @@ import { useI18n } from '@pdf-editor/editor/i18n';
 import type { ToolTask } from '@/lib/tool-content';
 
 const Workspace = dynamic(() => import('./editor-wrapper').then(module => module.EditorWrapper), { ssr: false });
-const WorkspaceLanguage = dynamic(() => import('@pdf-editor/editor').then(module => module.LanguageSelect), { ssr: false });
 const OpenTool = createContext<(() => void) | null>(null);
 
 export function ToolPageSession({ task, children }: { task: ToolTask; children: ReactNode }) {
@@ -26,7 +25,6 @@ function WorkspaceHeader() {
   // A document navigation reuses the editor's beforeunload protection, including pending drafts.
   return <header className="tool-workspace-header">
     <a className="site-text-link" href={typeof window === 'undefined' ? '' : window.location.href} onClick={event => { event.preventDefault(); window.location.reload(); }}><ArrowLeft size={16} aria-hidden="true" />{t('Back to the guide')}</a>
-    <WorkspaceLanguage />
   </header>;
 }
 

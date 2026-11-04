@@ -165,12 +165,11 @@ test('an edited PDF survives all eleven language switches and downloads in every
       ...JSON.parse(await readFile(new URL(`../../packages/editor/src/ui/site-locales/${locale.id}.json`, import.meta.url), 'utf8')),
     } as Record<string, string>;
     const t = (source: string) => messages[source] ?? source;
-    await page.getByRole('button', { name: previous('File'), exact: true }).click();
     await page.getByRole('combobox', { name: previous('Language'), exact: true }).selectOption(locale.id);
     await expect(page.locator('html')).toHaveAttribute('lang', locale.id);
     await expect(page.getByRole('combobox', { name: t('Language'), exact: true })).toHaveValue(locale.id);
-    await page.keyboard.press('Escape');
     expect(new URL(page.url()).pathname).toBe(localizedPath('/', locale.id));
+    expect(await page.locator('.editor-topbar').evaluate(element => element.scrollWidth <= element.clientWidth), locale.id).toBe(true);
     expect(await shell!.evaluate(element => element.isConnected)).toBe(true);
     expect(page.workers()).toEqual(workers);
     expect(documentNavigations).toBe(0);
@@ -260,15 +259,14 @@ test('annotation workspace top and editor language controls preserve drafts with
   const workers = page.workers();
   let navigations = 0;
   page.on('request', request => { if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigations++; });
-  const topLanguage = page.locator('.tool-workspace-header select');
+  const topLanguage = page.locator('.editor-topbar .language-select select');
+  await expect(page.locator('.tool-workspace .language-select')).toHaveCount(1);
   await expect(topLanguage.locator('option')).toHaveCount(11);
   await topLanguage.selectOption('ja');
   await expect(topLanguage).toHaveValue('ja');
   await expect(page.locator('.tool-workspace-content')).toHaveAttribute('lang', 'ja');
-  await page.locator('.file-menu-trigger').click();
-  await page.locator('.ui-menu select').selectOption('fr');
+  await topLanguage.selectOption('fr');
   await expect(topLanguage).toHaveValue('fr');
-  await page.keyboard.press('Escape');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect(page).toHaveURL(/\/tools\/annotate-pdf\/$/);
   await expect(page.locator('h1')).toHaveText(heading!);
@@ -278,6 +276,9 @@ test('annotation workspace top and editor language controls preserve drafts with
   expect(await draftNode!.evaluate(element => element.isConnected)).toBe(true);
   expect(await draftNode!.evaluate(element => element instanceof HTMLTextAreaElement ? element.value : element.textContent)).toBe('Keep my unfinished draft');
   await expect(zoom).toHaveValue('135%');
+  const logoBounds = await page.locator('.brand-lockup').boundingBox();
+  const fileBounds = await page.locator('.file-menu-trigger').boundingBox();
+  expect(logoBounds!.x + logoBounds!.width).toBeLessThanOrEqual(fileBounds!.x);
   expect(page.workers()).toEqual(workers);
   expect(navigations).toBe(0);
   await page.screenshot({ path: 'tmp/browser/tool-workspace-language.png' });

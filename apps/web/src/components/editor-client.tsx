@@ -3,6 +3,7 @@
 import * as React from 'react';
 import dynamic from 'next/dynamic';
 import { EditorLoading } from './editor-loading';
+import { EditorWebActions } from './editor-web-actions';
 import { EditorShell, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient } from '@pdf-editor/editor';
 
 const EditorAccountPanel = dynamic(() => import('./editor-account-panel'), { ssr: false });
@@ -45,6 +46,7 @@ export default function EditorClient({ initialTask }: { initialTask?: import('@p
   return <>
     {identityNeeded && <EditorAccountIdentity onOwner={setPreferenceOwner} />}
     <EditorShell initialTask={initialTask} preferenceOwner={preferenceOwner} engine={instances.engine} host={instances.host} onDocumentChange={onDocumentChange}
+      headerActions={<EditorWebActions />}
       renderAiPanel={context => <EditorAccountPanel context={context} onOwner={setPreferenceOwner} />} />
   </>;
 }

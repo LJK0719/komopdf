@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "작업을 중지하지 못했습니다. 다시 시도해 주세요.",
   "Go to bookmark {title}": "‘{title}’ 책갈피로 이동",
   "Select {type} object": "{type} 개체 선택",
-  "Manual text editing": "텍스트 편집"
+  "Manual text editing": "텍스트 편집",
+  "Home page": "홈",
+  "Download app": "앱 다운로드"
 }

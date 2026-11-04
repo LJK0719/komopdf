@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "Impossible d’arrêter la tâche. Veuillez réessayer.",
   "Go to bookmark {title}": "Aller au signet « {title} »",
   "Select {type} object": "Sélectionner l’objet « {type} »",
-  "Manual text editing": "Modifier le texte"
+  "Manual text editing": "Modifier le texte",
+  "Home page": "Accueil",
+  "Download app": "Télécharger l’app"
 }

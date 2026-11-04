@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "タスクを停止できませんでした。もう一度お試しください。",
   "Go to bookmark {title}": "ブックマーク「{title}」に移動",
   "Select {type} object": "{type}オブジェクトを選択",
-  "Manual text editing": "テキストを編集"
+  "Manual text editing": "テキストを編集",
+  "Home page": "ホーム",
+  "Download app": "アプリをダウンロード"
 }

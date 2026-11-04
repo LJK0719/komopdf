@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="komopdf">
+  <!-- Hand-built folded K: spine, upper fold, lower fold. -->
+  <path fill="#184e3d" d="M7.24 1.88H13.24V11.24L5.64 20.2V21L13.24 25.88V30.12H4.68V4.44A2.56 2.56 0 0 1 7.24 1.88Z"/>
+  <path fill="#217b5e" d="M5.64 20.2L13.24 11.24L26.04 5.24Q27 4.8 27 5.92V12.12Q27 12.76 26.36 13L5.64 20.2Z"/>
+  <path fill="#217b5e" d="M5.64 21L17 17.56L26.36 22.12Q27.32 22.6 27.32 23.64V29.16Q27.32 30.12 26.36 30.12H19.88Z"/>
+</svg>

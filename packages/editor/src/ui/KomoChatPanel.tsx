@@ -213,7 +213,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
   };
 
   return <section className="komo-chat" aria-label="komo">
-    <header className="komo-chat-heading"><span className="komo-chat-avatar" aria-hidden="true">k</span>
+    <header className="komo-chat-heading"><span className="komo-chat-avatar komopdf-icon" aria-hidden="true" />
       <h2 translate="no">komo</h2><span className="komo-chat-tag">{t('PDF Q&A')}</span>
       <button type="button" className="icon-button" aria-label={t('Clear conversation')} title={t('Clear conversation')}
         disabled={busy || !exchanges.length} onClick={clear}><Trash2 size={16} aria-hidden="true" /></button>

@@ -17,7 +17,7 @@ export const SITE_SOURCE_MESSAGES: readonly string[] = [...new Set([
   ...[...TOOLS, ANNOTATION_TOOL].flatMap(tool => [tool.title, tool.description, tool.intro, tool.cta,
     ...tool.steps.flatMap(step => [step.title, step.text]), ...tool.limits,
     ...tool.faq.flatMap(item => [item.question, item.answer])]),
-  'Tools', 'Pricing', 'Language', 'Main navigation', 'Footer navigation', 'Navigation menu', 'Open editor',
+  'Home page', 'Download app', 'Tools', 'Pricing', 'Language', 'Main navigation', 'Footer navigation', 'Navigation menu', 'Open editor',
   'Your komopdf account', 'Use KOMO and manage your plan across web and desktop.', 'Use another account',
   'Free PDF tools. More with KOMO.', 'Choose your KOMO plan', 'PDF editing stays free.',
   'Free plan', 'For everyday PDF work', '/ forever', 'All PDF editing tools', 'No account for PDF editing',

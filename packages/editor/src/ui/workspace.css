@@ -1,4 +1,5 @@
 @import './tokens.css';
+@import '../../brand/brand.css';
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { width: 100%; min-width: 320px; height: 100%; margin: 0; }
@@ -20,10 +21,10 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--komo-accent); 
 .editor-shell { display: grid; grid-template-rows: 52px auto auto minmax(0, 1fr) 36px; grid-template-areas: 'topbar' 'tabs' 'ribbon' 'workspace' 'status'; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; background: var(--panel); }
 .editor-topbar { grid-area: topbar; display: flex; align-items: center; gap: 14px; min-width: 0; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--paper); }
 .topbar-start, .topbar-actions, .brand-lockup { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.topbar-start { flex-shrink: 0; }
 .topbar-actions { margin-left: auto; flex-shrink: 0; }
-.brand-lockup { gap: 8px; padding: 0; margin-right: 12px; border: 0; background: transparent; }
+.brand-lockup { flex-shrink: 0; gap: 8px; padding: 0; margin-right: 12px; border: 0; background: transparent; }
 .brand-lockup strong { font-size: 17px; letter-spacing: -.6px; font-weight: 700; }
-.brand-mark { display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 31px; border-radius: 7px 7px 7px 2px; background: var(--dark); color: white; font: italic 700 24px Georgia, serif; }
 .document-status { min-width: 0; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .save-state { color: var(--muted); font-size: 12px; }
 .save-state.unsaved { color: var(--komo-warning); }
@@ -179,6 +180,9 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--komo-accent); 
   .editor-shell { grid-template-rows: 48px auto auto minmax(0, 1fr) 64px; }
   .editor-topbar { padding: 0 8px; gap: 4px; }
   .topbar-start, .topbar-actions { gap: 3px; }
+  .editor-topbar .language-select > svg { display: none; }
+  .editor-topbar .language-select select { width: 64px; font-size: 12px; }
+  .editor-topbar .file-menu-trigger { padding-inline: 6px; gap: 3px; }
   .topbar-start > .toolbar-divider, .topbar-start > .icon-button, .document-status, .open-document-button span, .save-document-button span, .assistant-button span { display: none; }
   .save-document-button, .assistant-button, .open-document-button { width: 34px; padding: 7px; }
   .editor-document-tabs { padding-inline: 4px; }

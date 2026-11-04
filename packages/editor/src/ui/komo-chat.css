@@ -10,7 +10,7 @@
 .komo-chat-heading h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.4px; }
 .komo-chat-heading .icon-button { margin-left: auto; min-height: 32px; padding: 7px; }
 .komo-chat-tag { color: var(--muted); font-size: 12px; }
-.komo-chat-avatar { display: grid; place-items: center; flex: none; width: 28px; height: 30px; border-radius: 8px 8px 8px 3px; background: var(--accent); color: white; font: italic 700 23px Georgia, serif; }
+.komo-chat-avatar { width: 28px; height: 28px; }
 .komo-chat-material { display: grid; gap: 1px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
 .komo-chat-material > span { color: var(--muted); font-size: 12px; }
 .komo-chat-material strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }

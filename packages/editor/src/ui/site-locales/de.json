@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "Die Aufgabe konnte nicht angehalten werden. Versuchen Sie es erneut.",
   "Go to bookmark {title}": "Zum Lesezeichen „{title}“",
   "Select {type} object": "Objekt auswählen: {type}",
-  "Manual text editing": "Text bearbeiten"
+  "Manual text editing": "Text bearbeiten",
+  "Home page": "Startseite",
+  "Download app": "App herunterladen"
 }

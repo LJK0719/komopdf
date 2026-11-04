@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "Не удалось остановить задачу. Повторите попытку.",
   "Go to bookmark {title}": "Перейти к закладке «{title}»",
   "Select {type} object": "Выбрать объект «{type}»",
-  "Manual text editing": "Редактировать текст"
+  "Manual text editing": "Редактировать текст",
+  "Home page": "Главная",
+  "Download app": "Скачать приложение"
 }

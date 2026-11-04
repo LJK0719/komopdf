@@ -1139,7 +1139,13 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     if (previewActive && tool !== 'ai') return;
     if (tool === 'edit') { chooseTab('edit'); return; }
     if (tool === 'text-ai') { captureTextSelection(); requestTextAction('translate'); return; }
-    if (tool === 'ai') { if (hasAi) { setAiContextDocumentId(documentRef.current?.info.id ?? null); setActiveTool('ai'); } return; }
+    if (tool === 'ai') {
+      if (hasAi) {
+        if (activeTool === 'ai') setActiveTool(null);
+        else { setAiContextDocumentId(documentRef.current?.info.id ?? null); setActiveTool('ai'); }
+      }
+      return;
+    }
     if (tool === 'translate-document') { setTextWindowOpen(false); setDocumentTranslationOpen(true); return; }
     if (isDraftDirty) { void finishDrafts().then(ok => { if (ok) setActiveTool(tool); }); return; }
     setPagePlacement(null); setActiveTool(tool);

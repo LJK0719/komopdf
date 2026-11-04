@@ -7,7 +7,7 @@ import { Languages, ArrowUpRight, Menu, X } from 'lucide-react';
 import { useI18n } from '@pdf-editor/editor/i18n';
 import { UI_LOCALES, localizedPath, type UiLocale } from '@pdf-editor/editor/i18n-locales';
 
-const links = [['/tools/', 'Tools'], ['/download/', 'Download'], ['/help/', 'Help'], ['/pricing/', 'Pricing'], ['/account/', 'Account & pricing']] as const;
+const links = [['/', 'Home page'], ['/tools/', 'Tools'], ['/download/', 'Download'], ['/help/', 'Help'], ['/pricing/', 'Pricing'], ['/account/', 'Account']] as const;
 
 export function languageSwitchHref(path: string, locale: UiLocale, search: string, hash: string): string {
   const params = new URLSearchParams(search);
@@ -29,7 +29,7 @@ export function SiteNav() {
     window.location.assign(languageSwitchHref(path, next, window.location.search, window.location.hash));
   };
   return <nav className="site-nav" aria-label={t('Main navigation')}>
-    <Link prefetch={false} href={localizedPath('/', locale)} className="site-brand" aria-label="komopdf" onClick={closeMenu}><span aria-hidden="true">k</span>komopdf</Link>
+    <Link prefetch={false} href={localizedPath('/', locale)} className="site-brand" aria-label="komopdf" onClick={closeMenu}><span className="komopdf-logo" aria-hidden="true" /></Link>
     <div className="site-nav-links">
       {links.map(([href, label]) => <Link prefetch={false} key={href} href={localizedPath(href, locale)} aria-current={isCurrent(href) ? 'page' : undefined}>{t(label)}</Link>)}
     </div>

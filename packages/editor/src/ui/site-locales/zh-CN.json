@@ -129,5 +129,7 @@
   "Could not stop the task. Please try again.": "未能停止任务，请重试。",
   "Go to bookmark {title}": "转到书签 {title}",
   "Select {type} object": "选择{type}对象",
-  "Manual text editing": "编辑文字"
+  "Manual text editing": "编辑文字",
+  "Home page": "首页",
+  "Download app": "下载 App"
 }
