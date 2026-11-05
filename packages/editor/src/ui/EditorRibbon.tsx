@@ -1,8 +1,7 @@
 import type { ReactNode } from 'react';
 import { Menu } from '@base-ui/react/menu';
-import { TEXT_ACTIONS, type TextAction } from '@pdf-editor/contracts';
-import { TEXT_ACTION_LABELS } from './text-actions.js';
-import { Languages } from 'lucide-react';
+import type { TextAction } from '@pdf-editor/contracts';
+import { Languages, Sparkles } from 'lucide-react';
 import { Hand, MousePointer2, Type, ImagePlus, FilePlus2, Copy, Trash2, RotateCcw, RotateCw, Search,
   Printer, Download, ScanText, PenLine, MessageSquare, LayoutGrid, BookOpen, File, Play, Maximize, MoveHorizontal,
   Square, StickyNote, Files, PanelLeft, Crop, Hash, Stamp, PanelTop, ListChecks, Ellipsis } from 'lucide-react';
@@ -129,15 +128,17 @@ export function EditorRibbon({ tab, onTab, pointer, onPointer, onTool, onAction,
             onClick={() => onPointer(mode)} title={t(label)}><Icon size={17} /><span>{t(label)}</span></button>)}
       </div>}
       {tab === 'edit' && selection === 'text' && <div className="ribbon-text-properties">{children}</div>}
-      {onTextAction && <Menu.Root onOpenChange={open => { if (open) onCaptureSelection?.(); }}>
-        <Menu.Trigger className="ribbon-button ai-owned-focus ribbon-ai-tools" disabled={!hasDocument || busy} onPointerDownCapture={onCaptureSelection}><Languages size={20} /><span>{t('AI tools')}</span></Menu.Trigger>
-        <Menu.Portal><Menu.Positioner className="ui-menu-positioner" sideOffset={6}><Menu.Popup className="ui-menu ai-owned-focus">
-          {TEXT_ACTIONS.map(action => <Menu.Item className="ui-menu-item" key={action} onClick={() => onTextAction(action)}>{t(TEXT_ACTION_LABELS[action])}</Menu.Item>)}
-          <Menu.Item className="ui-menu-item" onClick={() => onTextAction('ask')}>{t('Ask KOMO about selection')}</Menu.Item>
-          <Menu.Separator className="ui-menu-separator" />
-          <Menu.Item className="ui-menu-item" onClick={() => onTool('translate-document')}>{t('Translate entire PDF…')}</Menu.Item>
-        </Menu.Popup></Menu.Positioner></Menu.Portal>
-      </Menu.Root>}
+      {onTextAction && <>
+        <button type="button" className="ribbon-button ai-owned-focus ribbon-ai-tools" disabled={!hasDocument || busy} onPointerDownCapture={onCaptureSelection}
+          onClick={event => { if (event.detail === 0) onCaptureSelection?.(); onTextAction('assist'); }}><Sparkles size={20} /><span>{t('Use AI')}</span></button>
+        <Menu.Root onOpenChange={open => { if (open) onCaptureSelection?.(); }}>
+          <Menu.Trigger className="ribbon-button ai-owned-focus" disabled={!hasDocument || busy} onPointerDownCapture={onCaptureSelection}><Languages size={20} /><span>{t('Translate')}</span></Menu.Trigger>
+          <Menu.Portal><Menu.Positioner className="ui-menu-positioner" sideOffset={6}><Menu.Popup className="ui-menu ai-owned-focus">
+            <Menu.Item className="ui-menu-item" onClick={() => onTextAction('translate')}>{t('Translate selected text')}</Menu.Item>
+            <Menu.Item className="ui-menu-item" onClick={() => onTool('translate-document')}>{t('Translate PDF')}</Menu.Item>
+          </Menu.Popup></Menu.Positioner></Menu.Portal>
+        </Menu.Root>
+      </>}
       <div className="ribbon-actions">
         {items.map(({ label, Icon, run, disabled, pressed }, index) => <button type="button" key={label}
           className={'ribbon-button ribbon-priority-' + priority(index)} disabled={disabled} aria-pressed={pressed} onClick={run}><Icon size={20} strokeWidth={1.7} /><span>{t(label)}</span></button>)}

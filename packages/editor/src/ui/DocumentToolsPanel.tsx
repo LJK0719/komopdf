@@ -405,10 +405,8 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
               <span className="document-tools-readonly">{t(annotation.subtype === 'link' ? 'Link (read-only)' : 'Unsupported (read-only)')}</span>
             ) : null}
             {canDeleteAnnotation && <div className="annotation-list-actions"><button type="button" disabled={locked || !document.permissions.annotate}
-              aria-label={t('Delete {type} annotation', { type: t(annotationTypeLabels[annotation.subtype]) })} onClick={() => {
-                if (window.confirm(t("Delete this annotation? You can undo this change.")))
-                  void run(() => deleteAnnotation(annotation));
-              }}>{t("Delete")}</button></div>}
+              aria-label={t('Delete {type} annotation', { type: t(annotationTypeLabels[annotation.subtype]) })}
+              onClick={() => void run(() => deleteAnnotation(annotation))}>{t("Delete")}</button></div>}
           </li>)}
         </ul> : null}
         {!document.permissions.annotate ? <p role="alert">{t("This document does not permit annotations.")}</p> : null}

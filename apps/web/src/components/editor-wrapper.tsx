@@ -3,10 +3,11 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import { I18nProvider, useI18n } from '@pdf-editor/editor/i18n';
-import { loadUiMessages, type UiMessages } from '@pdf-editor/editor/i18n-resources';
+import type { UiMessages } from '@pdf-editor/editor/i18n-resources';
+import { loadEditorClient, preloadEditor } from './editor-preload';
 import { EditorLoading } from './editor-loading';
 
-const EditorClient = dynamic(() => import('./editor-client'), { ssr: false, loading: EditorLoading });
+const EditorClient = dynamic(() => loadEditorClient(), { ssr: false, loading: EditorLoading });
 
 export function EditorWrapper({ initialTask, embedded = false, children }: {
   initialTask?: import('@pdf-editor/editor').EditorInitialTask;
@@ -19,10 +20,11 @@ export function EditorWrapper({ initialTask, embedded = false, children }: {
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let active = true;
-    loadUiMessages(initialLocale).then(value => { if (active) setMessages(value); }).catch(() => { if (active) setFailed(true); });
+    preloadEditor(initialLocale).then(value => { if (active) setMessages(value); }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; };
   }, [initialLocale]);
-  if (failed) return <p role="alert">{t('Something went wrong. Please try again.')}</p>;
+  if (failed) return <div className="editor-load-error" role="alert"><p>{t('Unable to load the editor.')}</p>
+    <button type="button" className="site-button site-button-primary" onClick={() => window.location.reload()}>{t('Try again')}</button></div>;
   if (!messages) return <EditorLoading />;
   return <I18nProvider initialLocale={initialLocale} messages={messages} documentLanguage={!embedded}>
     <WorkspaceContent embedded={embedded} initialTask={initialTask}>{children}</WorkspaceContent>

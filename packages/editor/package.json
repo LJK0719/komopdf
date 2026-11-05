@@ -10,6 +10,7 @@
     "./i18n-locales": "./src/ui/locales.ts",
     "./i18n-resources": "./src/ui/i18n-resources.ts",
     "./web": "./src/host/web-host-adapter.ts",
+    "./browser": "./src/browser.ts",
     "./tokens.css": "./src/ui/tokens.css",
     "./brand.css": "./brand/brand.css"
   },

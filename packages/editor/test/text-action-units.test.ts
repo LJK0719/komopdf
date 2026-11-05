@@ -51,6 +51,6 @@ describe('semantic AI text units', () => {
     expect(replace).toHaveLength(1);
     expect(replace[0]).toMatchObject({ text: 'Translated', range: [1, 4] });
     expect(engine.previewText).not.toHaveBeenCalled();
-    expect(engine.previewTransaction).toHaveBeenCalledOnce();
+    expect(engine.previewTransaction).not.toHaveBeenCalled();
   });
 });

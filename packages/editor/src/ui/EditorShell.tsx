@@ -124,6 +124,12 @@ type EditorShellProps = {
 };
 
 export type EditorAiContext = {
+  aiServices?: HostAdapter['aiServices'];
+  pageId?: string;
+  prepareReading?(): Promise<KolmoDocumentInput | null>;
+  saveServiceFile?(file: KolmoFile, jobId: string): Promise<void>;
+  openExternal?(url: string): Promise<void>;
+  translateDocument?(): void;
   documents?: { id: string; name: string; info?: DocumentInfo; identity?: string }[];
   handoff?: AiHandoff | null;
   onHandoffConsumed?(id: string): void;
@@ -197,7 +203,6 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const [textSelections, setTextSelections] = useState<Record<string, TextActionSelection>>({});
   const [textWindowOpen, setTextWindowOpen] = useState(false);
   const [documentTranslationOpen, setDocumentTranslationOpen] = useState(false);
-  const [textHelp, setTextHelp] = useState<'selection' | 'scan' | null>(null);
   const [aiHandoff, setAiHandoff] = useState<AiHandoff | null>(null);
   const [aiContextDocumentId, setAiContextDocumentId] = useState<string | null>(null);
   const capturedTextSelection = useRef<TextActionSelection | null>(null);
@@ -294,20 +299,6 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     if (commentDraft.current && !await commentDraft.current.finish()) return false;
     return true;
   };
-  const [materialPrompt, setMaterialPrompt] = useState<{ names: readonly string[]; resolve(choice: 'save' | 'cancel'): void } | null>(null);
-  const materialResolver = useRef<((choice: 'save' | 'cancel') => void) | null>(null);
-  const confirmMaterialUpdate = (names: readonly string[], signal: AbortSignal) => new Promise<'save' | 'cancel'>(resolve => {
-    materialResolver.current?.('cancel');
-    if (signal.aborted) { resolve('cancel'); return; }
-    const cancel = () => answer('cancel');
-    const answer = (choice: 'save' | 'cancel') => {
-      signal.removeEventListener('abort', cancel);
-      materialResolver.current = null; setMaterialPrompt(null); resolve(choice);
-    };
-    materialResolver.current = answer;
-    signal.addEventListener('abort', cancel, { once: true });
-    setMaterialPrompt({ names, resolve: answer });
-  });
   const [savePrompt, setSavePrompt] = useState<SavePrompt | null>(null);
   const saveResolver = useRef<((choice: SaveChoice) => void) | null>(null);
   const askSaveChanges = (name: string, downloaded = false) => new Promise<SaveChoice>(resolve => {
@@ -325,7 +316,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const idleRecovery = useRef(new Map<string, () => void>());
   useEffect(() => () => {
     openSequence.current++; pageSwitchSequence.current++;
-    passwordResolver.current?.(null); saveResolver.current?.('cancel'); materialResolver.current?.('cancel');
+    passwordResolver.current?.(null); saveResolver.current?.('cancel');
     for (const cancel of idleRecovery.current.values()) cancel();
     idleRecovery.current.clear();
   }, []);
@@ -667,26 +658,6 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     return saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, saveAs, recordDownload);
   };
 
-  const prepareDocument: NonNullable<EditorAiContext['prepareDocument']> = async (docId, signal) => {
-    signal.throwIfAborted();
-    const current = sessions.current.current.documents.get(docId)?.loaded;
-    if (!current) throw new Error('This reference PDF is closed. Open it again to continue.');
-    const session = sessions.current.current.documents.get(docId)!;
-    if (current.info.revision === current.info.savedRevision || session.downloadedRevision === current.info.revision) {
-      return { status: 'ready', document: current.info, saveStatus: 'not-needed' };
-    }
-    const outcome: { status: 'written' | 'download-started' | 'cancelled' | 'failed' } = { status: 'cancelled' };
-    await saveCurrentDocument(current, engine, host, updateSavedRevision, setError, setNotice, setActivity, false, recordDownload,
-      status => { outcome.status = status; });
-    signal.throwIfAborted();
-    const saveStatus = outcome.status;
-    if (saveStatus === 'failed') throw new Error('Unable to save this PDF. Try saving again.');
-    if (saveStatus === 'cancelled') return { status: 'cancelled' };
-    const document = sessions.current.current.documents.get(docId)?.loaded.info;
-    if (!document) throw new Error('This reference PDF is closed. Open it again to continue.');
-    return { status: 'ready', document, saveStatus };
-  };
-
   const exportDocument = async (options: ExportSettings, signal: AbortSignal,
     progress: (value: import('@pdf-editor/contracts').ConversionProgress) => void): Promise<ExportOutcome> => {
     if (isDraftDirty && !await finishDrafts()) throw new Error('Apply or discard the text draft before exporting');
@@ -705,7 +676,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
           extension: 'pdf', mimeType: 'application/pdf', warnings: [], pageIndices: current.info.pageOrder.map((_, index) => index) }, name)
           : await host.saveDocument(result, name);
         if (outcome?.status === 'cancelled') { setNotice('Export cancelled'); return { status: 'cancelled', warnings: [], format: 'PDF', pageCount: 0 }; }
-        setNotice(outcome?.status === 'download-started' ? 'Export download started; active document unchanged' : 'Exported PDF copy; active document unchanged');
+        setNotice(outcome?.status === 'download-started' ? 'Download started' : 'Export complete');
         return { ...outcome, status: outcome?.status ?? 'written', name: outcome?.name ?? name, warnings: [], format: 'PDF', pageCount: current.info.pageOrder.length };
       }
       if (!current.info.permissions.copy) throw new EngineError('UNSUPPORTED_CAPABILITY', 'This PDF does not allow copying its content');
@@ -722,7 +693,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
         signal.throwIfAborted();
         const outcome = await host.saveExport(result, `${current.name.replace(/\.pdf$/i, '')}.${result.extension}`);
         if (outcome?.status === 'cancelled') { setNotice('Export cancelled'); return { status: 'cancelled', warnings: [], format: request.format.toUpperCase(), pageCount: 0 }; }
-        setNotice(outcome?.status === 'download-started' ? 'Export download started; active document unchanged' : 'Exported local copy; active document unchanged');
+        setNotice(outcome?.status === 'download-started' ? 'Download started' : 'Export complete');
         return { ...outcome, status: outcome?.status ?? 'written', name: outcome?.name ?? current.name.replace(/\.pdf$/i, '') + '.' + result.extension,
           format: request.format.toUpperCase(), pageCount: result.pageIndices.length,
           warnings: result.warnings.map(warning => warning.message + (warning.pageIndices.length ? ' (' + warning.pageIndices.map(index => index + 1).join(', ') + ')' : '')) };
@@ -1022,7 +993,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   }, [editable?.page, selectedIds]);
   const selectedText = useMemo(() => editable ? selectedTextObject(editable.page, selectedIds)?.textBlock : undefined,
     [editable?.page, selectedIds]);
-  const modalOpen = Boolean(savePrompt || passwordPrompt || materialPrompt);
+  const modalOpen = Boolean(savePrompt || passwordPrompt);
   const operationBusy = openingBatch || activity !== 'idle' || editPending || externalBusy || modalOpen;
   const isBusy = operationBusy || isDraftDirty;
   const navigationBusy = activity !== 'idle' || editPending || modalOpen || isDraftDirty || (externalBusy && !allowReadOnlyNavigation);
@@ -1143,7 +1114,8 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     if (!host.aiServices) return;
     if (operationBusy) { setNotice('Finish the current editor operation before using AI tools.'); return; }
     if (!selection.targets.length) {
-      void ensureEditable().then(ready => { if (ready) setTextHelp(ready.page.objects.some(object => object.textBlock?.runs.some(run => run.text.trim())) ? 'selection' : 'scan'); });
+      if (action === 'assist' || action === 'ask') chooseTool('ai');
+      else setDocumentTranslationOpen(true);
       return;
     }
     if (action === 'ask') { discussMaterial(selectionMaterial(selection)); return; }
@@ -1156,7 +1128,12 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     const current = documentRef.current;
     const selection = saved && current && saved.documentId === current.info.id && saved.revision === current.info.revision ? saved : captureTextSelection();
     if (selection) openTextAction(selection, action);
-    else if (current) void ensureEditable(current).then(ready => { if (ready) setTextHelp(ready.page.objects.some(object => object.textBlock?.runs.some(run => run.text.trim())) ? 'selection' : 'scan'); });
+    else if (action === 'assist' || action === 'ask') chooseTool('ai');
+    else if (current) void ensureEditable(current).then(ready => {
+      if (!ready) return;
+      if (ready.page.objects.some(object => object.textBlock?.runs.some(run => run.text.trim()))) setNotice('Select text to translate.');
+      else setDocumentTranslationOpen(true);
+    });
   };
   const openComment = async (selection: CommentSelection) => {
     if (operationBusy || !await finishDrafts()) return;
@@ -1170,14 +1147,14 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     setAnnotationDrawing(null); setTextWindowOpen(false);
     setCommentSelection({ documentId, pageId, id });
   };
-  const prepareTranslation = async (): Promise<KolmoDocumentInput | null> => {
-    if (operationBusy || !await finishDrafts()) return null;
-    const loaded = documentRef.current;
+  const prepareTranslation = async (docId = documentRef.current?.info.id): Promise<KolmoDocumentInput | null> => {
+    if (operationBusy || !await finishDrafts() || !docId) return null;
+    const loaded = sessions.current.current.documents.get(docId)?.loaded;
     if (!loaded || !loaded.info.permissions.copy) return null;
     setActivity('saving');
     try {
       const snapshot = await engine.save({ docId: loaded.info.id, protection: 'remove' });
-      if (documentRef.current?.info.id !== loaded.info.id || documentRef.current.info.revision !== loaded.info.revision) throw new Error('The document changed. Confirm the current version before uploading.');
+      if (sessions.current.current.documents.get(docId)?.loaded.info.revision !== loaded.info.revision) throw new Error('The PDF changed. Please try again.');
       return { name: loaded.name, pageCount: loaded.info.pageOrder.length, documentId: loaded.info.id, revision: loaded.info.revision, snapshot,
         ...(workspaceId ? { workspaceId } : {}) };
     } finally { setActivity('idle'); }
@@ -1630,24 +1607,11 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   return (
     <Tooltip.Provider delay={350}>
     <main className={'editor-shell ' + (tabs.length || workspacePreview ? 'editor-shell-with-tabs ' : '') + (presenting ? 'is-presenting ' : '') + (previewActive ? 'is-workspace-preview ' : '') + (!document && !previewActive ? 'is-start-page' : '')}>
-      {materialPrompt && <AppDialog open onOpenChange={open => { if (!open) materialPrompt.resolve('cancel'); }} title={t('File changes detected. Save?')}>
-        <p className="password-filename">{materialPrompt.names.join(', ')}</p>
-        <p className="dialog-description">{t('Save your PDF changes and continue with the latest materials.')}</p>
-        <div className="dialog-actions"><span className="status-spacer" />
-          <button className="button button-quiet" onClick={() => materialPrompt.resolve('cancel')}>{t('Cancel')}</button>
-          <button className="button button-primary" autoFocus onClick={() => materialPrompt.resolve('save')}>{t('Save')}</button>
-        </div>
-      </AppDialog>}
       {savePrompt && <SaveChangesDialog prompt={savePrompt} />}
       {passwordPrompt && <PasswordDialog prompt={passwordPrompt} />}
       <ImportPagesDialog {...pageTools.importDialogProps} />
       <AppDialog open={startOpen} onOpenChange={setStartOpen} title={t('Open documents')}>{startPage}</AppDialog>
-      <AppDialog open={textHelp !== null} onOpenChange={open => { if (!open) setTextHelp(null); }} title={t(textHelp === 'scan' ? 'Translate scanned PDF' : 'Select text')} className="ai-owned-focus">
-        <p>{t(textHelp === 'scan' ? 'This page has no selectable text. Use KOLMOPDF to translate the scanned PDF while preserving its layout.' : 'Select text on the page, then choose an AI tool from the right-click menu or toolbar.')}</p>
-        {textHelp === 'scan' && <div className="kolmo-links"><button type="button" className="button button-primary" onClick={() => { setTextHelp(null); chooseTool('translate-document'); }}>{t('Translate entire PDF…')}</button>
-          <a className="button" href="https://www.kolmopdf.com" target="_blank" rel="noopener noreferrer">{t('Use KOLMOPDF website')}</a></div>}
-      </AppDialog>
-      {host.aiServices && <AiFloatingWindow title={t('Translate entire PDF')} hidden={!documentTranslationOpen} onClose={() => setDocumentTranslationOpen(false)}>
+      {host.aiServices && <AiFloatingWindow title={t('Translate PDF')} hidden={!documentTranslationOpen} onClose={() => setDocumentTranslationOpen(false)}>
         <KolmoTranslationPanel active={documentTranslationOpen} document={document?.info ?? null} name={document?.name ?? null}
           services={host.aiServices} host={host} disabled={operationBusy} prepareDocument={prepareTranslation} onOpen={openTranslation} onResultsReady={onResultsReady} />
       </AiFloatingWindow>}
@@ -1900,6 +1864,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
 
           <div hidden={activeTool !== 'search'}>
           <PdfSearchPanel document={document?.info ?? null} engine={engine} disabled={isBusy} active={activeTool === 'search'} resumeSearch={resumeSearch}
+            showDesktopLink={host.capabilities.platform === 'web'} onReadWithAi={hasAi ? () => chooseTool('ai') : undefined}
             onRequestOcr={host.capabilities.ocr && document?.info.permissions.modify ? () => {
               void finishDrafts().then(ok => { const current = documentRef.current; if (ok && current) {
                 setSearchOcr({ id: crypto.randomUUID(), documentId: current.info.id }); setActiveTool('ocr');
@@ -1939,10 +1904,15 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
                 const identity = session.saveIdentity ?? session.identity;
                 return { id: session.loaded.info.id, name: session.loaded.name, info: session.loaded.info, ...(identity ? { identity } : {}) };
               }),
+              aiServices: host.aiServices, ...(aiDocument ? { pageId: aiDocument.page.id } : {}),
+              prepareReading: () => prepareTranslation(aiDocument?.info.id), openExternal: url => host.openExternal(url),
+              translateDocument: () => setDocumentTranslationOpen(true),
+              saveServiceFile: async (file, jobId) => { await host.saveExport?.({ ...file, jobId,
+                extension: file.name.split('.').at(-1) ?? 'md', warnings: [], pageIndices: [] }, file.name); },
               document: aiDocument?.info ?? null, page: loadedDocument(aiDocument)?.page ?? null, name: aiDocument?.name ?? null,
               selectedIds: aiSession?.selectedIds ?? selectedIds, engine, disabled: operationBusy, draftDirty: isDraftDirty, finishDrafts, onCommitted: handleCommitted,
               handoff: aiHandoff, onHandoffConsumed: id => setAiHandoff(previous => previous?.id === id ? null : previous),
-              getDocumentInfo: id => sessions.current.current.documents.get(id)?.loaded.info ?? null, locateMaterial, confirmMaterialUpdate, prepareDocument,
+              getDocumentInfo: id => sessions.current.current.documents.get(id)?.loaded.info ?? null, locateMaterial,
               openDocument: async source => { const info = await openDocument(source); if (info) setAiContextDocumentId(info.id); return info; }, saveDocument: () => saveDocument(false, aiDocument?.info.id),
               navigationDisabled: navigationBusy || previewActive,
               navigatePage: async pageId => { if (aiDocument) await locateMaterial({ id: 'navigation', kind: 'selection', documentId: aiDocument.info.id, revision: aiDocument.info.revision,

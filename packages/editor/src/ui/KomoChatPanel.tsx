@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, Square, Trash2 } from 'lucide-react';
+import { ArrowUp, Download, Link2, Square, Trash2 } from 'lucide-react';
 import { AiWorkflow, DocumentAiAuthorization, resolveCitation } from '@pdf-editor/ai-client';
+import type { KolmoJob } from '@pdf-editor/contracts';
 import type { EditorAiContext } from './EditorShell.js';
 import { AiMarkdown } from './AiMarkdown.js';
+import { AppDialog } from './AppDialog.js';
+import { KolmoConnectionForm } from './KolmoConnectionForm.js';
+import { readWithKolmo } from './kolmo-reading.js';
 import { useI18n, localizedPath } from './i18n.js';
 import { CHAT_COPY_RESTRICTED, ChatContextError, prepareChatContext, SCAN_RECOMMENDATION, type ChatScope, type ChatVisualMode } from './komo-chat-context.js';
 import { CHAT_CONTEXT_EXPIRED, attachChatHandoff, canRetryContext, createChatSession, createKomoChatStore, freezeChatRequestContext, synchronizeChatOwner, chatFailure, chatHistory, type KomoChatStore, type ChatSession, type ChatRequestContext, type ChatExchange, type ChatCitation } from './komo-chat-state.js';
@@ -13,11 +17,8 @@ import './komo-chat.css';
 
 type Props = { context: EditorAiContext; endpoint?: string; fetch?: typeof fetch; disabledReason?: string; onComplete?(): void;
   store?: KomoChatStore; sessionOwner?: string | null };
-const scopeLabels = { document: 'Whole document', page: 'Current page', selection: 'Selected text objects' };
-const visualLabels = { auto: 'Automatic images', always: 'Include page images', text: 'Text only' };
 type UpdateSession = (update: (session: ChatSession) => ChatSession) => void;
 
-/** The caller may retain this local store across account-provider loading remounts. */
 export function KomoChatPanel(props: Props) {
   const localStore = useRef<KomoChatStore | null>(null);
   if (!localStore.current) localStore.current = createKomoChatStore();
@@ -55,129 +56,128 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
   const { t, locale } = useI18n();
   const latest = useRef(context); latest.current = context;
   const controller = useRef<AbortController | null>(null);
+  const readingController = useRef<AbortController | null>(null);
   const [authorization] = useState(() => new DocumentAiAuthorization(context.document?.id ?? 'empty'));
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [servicesOpen, setServicesOpen] = useState(false);
+  const [readingBusy, setReadingBusy] = useState(false);
+  const [readingJob, setReadingJob] = useState<KolmoJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [newAnswer, setNewAnswer] = useState(false);
-  const { exchanges, instruction, scope, visualMode, consent, scanned, materials, suggestedQuestions } = session;
+  const { exchanges, instruction, scope, visualMode, scanned, materials, suggestedQuestions } = session;
+  const reading = session.reading?.revision === context.document?.revision ? session.reading : undefined;
   const getDocument = (id: string) => materialDocument(latest.current, id);
   const retryIsCurrent = (saved: ChatRequestContext | undefined) => canRetryContext(saved, latest.current.document, getDocument);
-  useEffect(() => { if (context.handoff) input.current?.focus(); }, [context.handoff?.id]);
   const patch = (value: Partial<ChatSession>) => updateSession(previous => ({ ...previous, ...value }));
   const transcript = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
   const input = useRef<HTMLTextAreaElement>(null);
-  const consentInput = useRef<HTMLInputElement>(null);
   const canCopy = context.document?.permissions.copy === true;
-  const canSend = canCopy && !!context.document && !context.disabled && !busy;
+  const canSend = canCopy && !!context.document && !context.disabled && !busy && !readingBusy;
   const materialName = context.name || t('Current PDF');
-
-  useEffect(() => () => { controller.current?.abort(); authorization.revoke(); }, [authorization]);
-  useEffect(() => {
-    if (!canCopy) { authorization.revoke(); controller.current?.abort(); }
-  }, [canCopy, authorization]);
+  useEffect(() => { if (context.handoff) input.current?.focus(); }, [context.handoff?.id]);
+  useEffect(() => () => { controller.current?.abort(); readingController.current?.abort(); authorization.revoke(); }, [authorization]);
+  useEffect(() => { if (!canCopy) { authorization.revoke(); controller.current?.abort(); readingController.current?.abort(); } }, [canCopy, authorization]);
   useEffect(() => {
     const list = transcript.current;
     if (!list) return;
-    if (followLatest.current) {
-      const answer = list.querySelector<HTMLElement>('.komo-chat-exchange:last-child .komo-chat-assistant');
-      if (exchanges.at(-1)?.status === 'complete' && answer) {
-        list.scrollTop += answer.getBoundingClientRect().top - list.getBoundingClientRect().top - 4;
-      } else list.scrollTop = list.scrollHeight;
-    } else if (exchanges.at(-1)?.status === 'complete') setNewAnswer(true);
+    if (followLatest.current) list.scrollTop = list.scrollHeight;
+    else if (exchanges.at(-1)?.status === 'complete') setNewAnswer(true);
   }, [exchanges]);
-  useEffect(() => {
-    if (settingsOpen && notice === 'Review and allow sharing before sending your question.') consentInput.current?.focus();
-  }, [settingsOpen, notice]);
-
-  const update = (id: string, value: Partial<ChatExchange>) => {
-    updateSession(previous => ({ ...previous, exchanges: previous.exchanges.map(item => item.id === id ? { ...item, ...value } : item) }));
+  const update = (id: string, value: Partial<ChatExchange>) => updateSession(previous => ({
+    ...previous, exchanges: previous.exchanges.map(item => item.id === id ? { ...item, ...value } : item),
+  }));
+  const readDocument = async () => {
+    if (readingBusy || busy) return;
+    const abort = new AbortController(); readingController.current = abort;
+    setReadingBusy(true); setReadingJob(null); setNotice('');
+    try {
+      const result = await readWithKolmo(latest.current, abort.signal, setReadingJob);
+      if (!result) { setServicesOpen(true); return; }
+      patch({ reading: result }); setServicesOpen(false);
+    } catch (caught) { if (!abort.signal.aborted) setNotice(caught instanceof Error ? caught.message : 'Unable to read this PDF. Please try again.'); }
+    finally { readingController.current = null; setReadingBusy(false); }
   };
-  const send = async (question = instruction, nextScope = scope, nextVisualMode = visualMode, retry?: ChatRequestContext, refresh?: ChatRequestContext) => {
+  const downloadReading = () => {
+    if (!reading) return;
+    void context.saveServiceFile?.({ kind: 'bytes', name: reading.filename, mimeType: 'text/markdown;charset=utf-8',
+      bytes: new TextEncoder().encode(reading.text).buffer }, reading.jobId).catch(() => setNotice('Unable to download this file.'));
+  };
+  const send = async (question = instruction, nextScope = scope, nextVisualMode = visualMode, retry?: ChatRequestContext, continuation?: ChatExchange) => {
     const prompt = question.trim();
     if (!canSend || !prompt || controller.current || !context.document) return;
-    if (!consent) { setSettingsOpen(true); setNotice('Review and allow sharing before sending your question.'); return; }
-    if (retry && !retryIsCurrent(retry)) { setNotice(CHAT_CONTEXT_EXPIRED); return; }
+    if (nextScope === 'document' && /\b(this|current) page\b|当前页|本页/iu.test(prompt)) nextScope = 'page';
     const targetId = context.document.id;
     const abort = new AbortController(); controller.current = abort;
     setBusy(true); setNotice('');
-    let nextMaterials = refresh ? [...materials, ...(refresh.materials ?? []).filter(material => !materials.some(item => item.id === material.id))] : materials;
+    let nextMaterials = materials;
     try {
-      if (context.draftDirty && await context.finishDrafts?.() !== true) throw new ChatContextError('Finish or discard pending paragraph changes before sending.');
+      if (context.draftDirty && await context.finishDrafts?.() !== true) throw new ChatContextError('Unable to finish the current text edit.');
       abort.signal.throwIfAborted();
       if (!retry) {
-        const prepared = await prepareMaterials(nextMaterials, { ...latest.current, getDocumentInfo: getDocument }, abort.signal);
+        const prepared = await prepareMaterials(materials, { ...latest.current, getDocumentInfo: getDocument }, abort.signal);
         if (!prepared) { controller.current = null; setBusy(false); return; }
         nextMaterials = prepared;
-        updateSession(previous => ({ ...previous, materials: [
-          ...previous.materials.map(material => prepared.find(item => item.id === material.id) ?? material),
-          ...prepared.filter(material => !previous.materials.some(item => item.id === material.id)),
-        ] }));
+        patch({ materials: prepared });
       }
-      if (latest.current.document?.id !== targetId) throw new ChatContextError(CHAT_CONTEXT_EXPIRED);
     } catch (caught) {
-      if (!abort.signal.aborted) setNotice(caught instanceof Error ? caught.message : 'Unable to finish pending PDF changes.');
+      if (!abort.signal.aborted) setNotice(caught instanceof Error ? caught.message : 'Unable to finish the current text edit.');
       controller.current = null; setBusy(false); return;
     }
-    const document = getDocument(targetId)!;
+    const document = getDocument(targetId);
     if (!document || document.permissions.copy !== true) { controller.current = null; setBusy(false); setNotice(CHAT_COPY_RESTRICTED); return; }
-    let saved = retry ?? freezeChatRequestContext({
+    const history = chatHistory(exchanges, document.revision, getDocument);
+    if (continuation?.answer) history.push({ role: 'user', text: continuation.prompt }, { role: 'assistant', text: continuation.answer });
+    let saved = retry && retryIsCurrent(retry) ? retry : freezeChatRequestContext({
       documentId: document.id, revision: document.revision, scope: nextScope,
-      pageId: refresh?.pageId ?? context.page?.id ?? null, selectedIds: [...(refresh?.selectedIds ?? context.selectedIds)], visualMode: nextVisualMode, materials: nextMaterials,
-      history: chatHistory(exchanges, document.revision, getDocument),
+      pageId: context.pageId ?? context.page?.id ?? document.pageOrder[0] ?? null,
+      selectedIds: [...context.selectedIds], visualMode: nextVisualMode, materials: nextMaterials, history,
     });
-    if (!retryIsCurrent(saved) || saved.materials?.some(material => !isMaterialCurrent(material, latest.current))) {
-      setNotice(CHAT_CONTEXT_EXPIRED); controller.current = null; setBusy(false); return;
-    }
     const id = crypto.randomUUID();
-    setSettingsOpen(false);
     updateSession(previous => ({ ...previous, ...(question === instruction ? { instruction: '' } : {}),
-      materials: retry ? previous.materials : previous.materials.filter(material => !saved.materials?.some(item => item.id === material.id)),
-      exchanges: [...previous.exchanges, { id, prompt, requestContext: saved, status: 'pending', progress: 'Reading the selected context…' }] }));
+      exchanges: [...previous.exchanges, { id, prompt, requestContext: saved, status: 'pending', progress: 'Reading document…' }] }));
     followLatest.current = true; setNewAnswer(false); input.current?.focus();
     try {
       let prepared = saved.prepared;
       if (!prepared) {
-        const page = saved.scope === 'document' ? null : saved.pageId === context.page?.id && document.revision === context.document?.revision ? context.page
+        const page = saved.scope === 'document' ? context.page : saved.pageId === context.page?.id && document.revision === context.document?.revision ? context.page
           : saved.pageId ? await context.engine.describePage(document.id, saved.pageId) : null;
         abort.signal.throwIfAborted();
-        if (saved.scope === 'selection' && !saved.selectedIds.every(id => page?.objects.some(object => object.id === id))) throw new ChatContextError(CHAT_CONTEXT_EXPIRED);
-        prepared = await prepareChatContext({ engine: context.engine, document, page, selectedIds: saved.selectedIds,
-          scope: saved.scope, visualMode: saved.visualMode, instruction: prompt,
-          history: saved.history ?? [], signal: abort.signal,
+        prepared = await prepareChatContext({ engine: context.engine, document, page, currentPageId: saved.pageId ?? document.pageOrder[0]!, selectedIds: saved.selectedIds,
+          scope: saved.scope, visualMode: saved.visualMode, instruction: prompt, history: saved.history ?? [], signal: abort.signal,
           materials: saved.materials ?? [], materialContext: { ...context, getDocumentInfo: getDocument }, name: materialName,
-          endpoint, ...(fetch ? { fetch } : {}), onProgress: progress => update(id, { progress }),
+          ...(reading ? { reading } : {}), ...(session.sourceContext ? { sourceContext: session.sourceContext } : {}),
+          readDocument: () => readWithKolmo(latest.current, abort.signal, () => update(id, { progress: 'Reading document…' })),
+          endpoint, ...(fetch ? { fetch } : {}), onProgress: () => update(id, { progress: 'Reading document…' }),
         });
-        saved = freezeChatRequestContext({ ...saved, prepared });
+        patch({ ...(prepared.sourceContext ? { sourceContext: prepared.sourceContext } : {}), ...(prepared.reading ? { reading: prepared.reading } : {}) });
+        saved = freezeChatRequestContext({ ...saved, prepared: { ...prepared, sourceContext: undefined, reading: undefined } });
         update(id, { requestContext: saved });
       }
       abort.signal.throwIfAborted();
       if (latest.current.document?.permissions.copy !== true) throw new ChatContextError(CHAT_COPY_RESTRICTED);
       if (!retryIsCurrent(saved) || saved.materials?.some(material => !isMaterialCurrent(material, latest.current))) throw new ChatContextError(CHAT_CONTEXT_EXPIRED);
-      const sources = prepared.sourceIds;
-      authorization.enable(sources);
-      patch({ scanned: prepared.scanned });
+      authorization.enable(prepared.sourceIds); patch({ scanned: prepared.scanned });
       update(id, { progress: 'komo is preparing an answer…', pages: prepared.pageNumbers, images: prepared.imagePageNumbers });
       const workflow = new AiWorkflow({ endpoint, authorization, ...(fetch ? { fetch } : {}),
         getCurrentDocument: () => latest.current.document ?? { id: '', revision: -1 },
-        nextTransactionId: () => crypto.randomUUID(), apply: async () => { throw new Error('Web komo is read-only'); },
+        nextTransactionId: () => crypto.randomUUID(), apply: async () => { throw new Error('Reading does not modify the PDF'); },
       });
-      const outcome = await workflow.run({ request: prepared.request, snapshot: prepared.snapshot, sourceIds: sources, signal: abort.signal });
+      let partial = '';
+      const outcome = await workflow.run({ request: prepared.request, snapshot: prepared.snapshot, sourceIds: prepared.sourceIds, signal: abort.signal,
+        onDelta: text => { partial += text; update(id, { answer: partial.replace(/\[(?:e|r)\d+\]/g, '') }); } });
       abort.signal.throwIfAborted();
-      const currentDocument = latest.current.document;
       const result = outcome.response.result;
-      if (result.kind !== 'answer' && result.kind !== 'clarification') throw new Error('Unexpected answer type');
+      if (result.kind !== 'answer' && result.kind !== 'clarification') throw new Error('Unable to finish this answer.');
       const citations: ChatCitation[] = [];
-      if (result.kind === 'answer' && currentDocument) for (const citation of result.citations) {
+      if (result.kind === 'answer' && latest.current.document) for (const citation of result.citations) {
         const reference = resolveMaterialCitation(prepared.request, citation, latest.current);
         if (reference) { citations.push(reference); continue; }
-        const resolved = resolveCitation(prepared.snapshot, citation, currentDocument);
+        const resolved = resolveCitation(prepared.snapshot, citation, latest.current.document);
         if (resolved.status !== 'resolved' || !resolved.currentLocation) continue;
         const location = resolved.currentLocation;
         citations.push({ documentId: document.id, revision: document.revision, name: materialName, kind: 'source',
-          pageId: location.pageId, pageNumber: location.pageNumber, blockId: location.blockId,
-          range: { start: location.range[0], end: location.range[1] } });
+          pageId: location.pageId, pageNumber: location.pageNumber, blockId: location.blockId, range: { start: location.range[0], end: location.range[1] } });
       }
       if (retryIsCurrent(saved)) for (const pageNumber of prepared.imagePageNumbers) {
         if (!citations.some(citation => citation.documentId === document.id && citation.pageNumber === pageNumber)) citations.push({ documentId: document.id,
@@ -188,7 +188,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
       if (abort.signal.aborted) update(id, { status: 'cancelled' });
       else {
         if (caught instanceof ChatContextError) patch({ scanned: caught.scanned });
-        update(id, { status: 'failed', failure: !retryIsCurrent(saved) ? { message: CHAT_CONTEXT_EXPIRED, retryable: false } : chatFailure(caught) });
+        update(id, { status: 'failed', failure: chatFailure(caught) });
       }
     } finally { controller.current = null; setBusy(false); onComplete?.(); }
   };
@@ -213,97 +213,66 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
   };
 
   return <section className="komo-chat" aria-label="komo">
-    <header className="komo-chat-heading"><span className="komo-chat-avatar komopdf-icon" aria-hidden="true" />
-      <h2 translate="no">komo</h2><span className="komo-chat-tag">{t('PDF Q&A')}</span>
+    <header className="komo-chat-heading"><span className="komo-chat-avatar komopdf-icon" aria-hidden="true" /><h2 translate="no">komo</h2>
+      {context.aiServices && <button type="button" className="icon-button" aria-label={t('Connect KolmoPDF')} title="KolmoPDF" onClick={() => setServicesOpen(true)}><Link2 size={16} aria-hidden="true" /></button>}
       <button type="button" className="icon-button" aria-label={t('Clear conversation')} title={t('Clear conversation')}
         disabled={busy || !exchanges.length} onClick={clear}><Trash2 size={16} aria-hidden="true" /></button>
     </header>
+    {context.aiServices && <AppDialog open={servicesOpen} onOpenChange={setServicesOpen} title="KolmoPDF" className="ai-owned-focus kolmo-service-dialog">
+      <KolmoConnectionForm services={context.aiServices} active={servicesOpen} disabled={readingBusy} {...(context.openExternal ? { openExternal: context.openExternal } : {})} />
+      {context.document && <><p>{t('Read the full PDF and keep asking questions in komo.')}</p>
+        <p className="task-help">{t('Estimated cost: {points} credits', { points: context.document.pageOrder.length * 2 })}</p>
+        <div className="ai-run-row"><button type="button" className="button button-primary" disabled={readingBusy || busy || !canCopy} onClick={() => void readDocument()}>{t(readingBusy ? 'Reading document…' : 'Read full PDF')}</button>
+          {context.translateDocument && <button type="button" className="button" onClick={() => { setServicesOpen(false); context.translateDocument?.(); }}>{t('Translate PDF')}</button>}</div></>}
+    </AppDialog>}
     {!context.document ? <p role="status">{t('Open a PDF before asking komo.')}</p> : !canCopy ? <p role="status">{t(CHAT_COPY_RESTRICTED)}</p> : <>
-      <div className="komo-chat-material"><span>{t('Current material')}</span><strong title={materialName}>{materialName}</strong>
-        <span>{t(scopeLabels[scope])}{scope !== 'document' && context.page ? ` · ${t('Page {page}', { page: context.document.pageOrder.indexOf(context.page.id) + 1 })}` : ''}</span></div>
+      <div className="komo-chat-material"><strong title={materialName}>{materialName}</strong><span>{t(reading ? 'Full document ready' : scope === 'selection' ? 'Selected text' : 'Current PDF')}</span>
+        {reading && <button type="button" className="text-button" aria-label={t('Download Markdown')} title={t('Download Markdown')} onClick={downloadReading}><Download size={15} aria-hidden="true" /></button>}</div>
       <div className="komo-chat-transcript" ref={transcript} role="log" aria-live="polite" aria-relevant="additions text" tabIndex={0} aria-label={t('Conversation')} onScroll={() => {
-        const list = transcript.current!;
-        followLatest.current = list.scrollHeight - list.scrollTop - list.clientHeight < 32;
+        const list = transcript.current!; followLatest.current = list.scrollHeight - list.scrollTop - list.clientHeight < 32;
         if (followLatest.current) setNewAnswer(false);
       }}>
-        {!exchanges.length && <div className="komo-chat-empty"><h3>{t('Ask about this PDF')}</h3>
-          <p>{t('Summarize, clarify a passage, or ask a follow-up. Web komo answers questions; it does not edit your PDF.')}</p>
+        {!exchanges.length && <div className="komo-chat-empty"><h3>{t('Ask about this PDF')}</h3><p>{t('Ask a question, explore an idea, or get a summary.')}</p>
           <div className="komo-chat-suggestions">{['Summarize this document', 'What are the key takeaways?'].map(prompt =>
-            <button type="button" key={prompt} disabled={busy} onClick={() => editQuestion(t(prompt))}>{t(prompt)}</button>)}</div>
-        </div>}
-        {exchanges.map(exchange => {
-          const stale = !!exchange.requestContext && !retryIsCurrent(exchange.requestContext);
-          const retryable = retryIsCurrent(exchange.requestContext);
-          return <div className="komo-chat-exchange" key={exchange.id}>
-            <article className="komo-chat-message komo-chat-user"><strong>{t('You')}</strong><p>{exchange.prompt}</p></article>
-            <article className="komo-chat-message komo-chat-assistant" aria-busy={exchange.status === 'pending'}>
-              <strong translate="no">komo</strong>
-              {stale ? <p className="komo-chat-stale">{t('Earlier document version · source links are no longer available.')}</p> : null}
-              {exchange.status === 'complete' ? <>
-                <AiMarkdown text={exchange.answer!} />
-                <div className="komo-chat-citations">{exchange.citations?.map((citation, index) => {
-                  const derived = citation.kind === 'generated' || citation.kind === 'analysis';
-                  const label = derived ? t(citation.kind === 'analysis' ? 'Full-document analysis' : citation.role === 'attached' ? 'Attached text' : 'Generated text')
-                    : t(citation.blockId ? 'Source · page {page}' : 'Image · page {page}', { page: citation.pageNumber ?? '' });
-                  return citation.pageId ? <button type="button" key={index} disabled={!!context.navigationDisabled || !citationCurrent(citation)}
-                    title={t('Locate source')} onClick={() => locate(citation)}>{citation.name ? `${citation.name} · ` : ''}{label}{derived ? ` · ${citation.pageNumber}` : ''}</button>
-                    : <span key={index}>{citation.name ? `${citation.name} · ` : ''}{label}</span>;
-                })}</div>
-                <details className="komo-chat-coverage"><summary>{t('Context used')}</summary>
-                  <p>{t(exchange.requestContext ? scopeLabels[exchange.requestContext.scope] : 'Context pages')} · {exchange.pages?.join(', ')}{exchange.images?.length ? ` · ${t('Visual pages')}: ${exchange.images.join(', ')}` : ''}</p>
-                  {exchange.requestContext?.prepared?.coverage.map((source, index) => <p className="komo-material-coverage" key={`${source.documentId}:${index}`}>
-                    {source.name} · {t(source.kind === 'analysis' ? 'Text analysis · {count} pages scanned' : source.kind === 'full' ? 'Full text' : 'Relevant excerpts', { count: source.pagesScanned })}
-                    {source.pages.length ? ` · ${t('Pages')}: ${source.pages.join(', ')}` : ''}</p>)}
-                  {exchange.requestContext?.materials?.map(material => <details key={material.id} className="komo-material-card"><summary>{material.name} · {t('References are read-only')}</summary>
-                    <div className="komo-material-card-body"><h4>{t(material.kind === 'text' ? 'Attached text' : 'PDF original')}</h4><pre>{material.text}</pre>
-                      {material.generatedText ? <><h4>{t('Generated text')}</h4><pre>{material.generatedText}</pre></> : null}</div></details>)}
-                </details>
-              </> : exchange.status === 'pending' ? <p className="komo-chat-progress" role="status">{t(exchange.progress!)}</p>
-                : <><p className={exchange.status === 'failed' ? 'komo-chat-error' : ''} role={exchange.status === 'failed' ? 'alert' : 'status'}>
-                  {t(exchange.failure?.message ?? 'Stopped. You can edit your question and send it again.')}</p>
-                  {!retryable ? <p className="komo-chat-stale">{t(CHAT_CONTEXT_EXPIRED)}</p> : null}
-                  <div className="komo-chat-actions">
-                    {exchange.failure?.retryable !== false && retryable ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, scope, visualMode, exchange.requestContext)}>{t('Retry question')}</button> : null}
-                    {!retryable ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, exchange.requestContext?.scope ?? scope, exchange.requestContext?.visualMode ?? visualMode, undefined, exchange.requestContext)}>{t('Retry with current version')}</button> : null}
-                    {exchange.failure?.action === 'account' ? <a href={localizedPath('/account/', locale)} target="_blank" rel="noreferrer">{t('Account')}</a> : null}
-                    <button type="button" onClick={() => editQuestion(exchange.prompt)}>{t('Edit question')}</button>
-                    {exchange.failure?.action === 'page' ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, 'page')}>{t('Ask about current page')}</button> : null}
-                    {exchange.failure?.action === 'image' ? <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, 'page', 'always')}>{t('Ask with page image')}</button> : null}
-                    {exchange.failure?.action === 'clear' ? <button type="button" disabled={busy} onClick={() => { clear(); editQuestion(exchange.prompt); }}>{t('Clear conversation')}</button> : null}
-                  </div>
-                </>}
-            </article>
-          </div>;
-        })}
-        {scanned ? <details className="komo-chat-scan"><summary><span translate="no">KOLMOPDF → Markdown</span> · {t('Why convert?')}</summary><p>{t(SCAN_RECOMMENDATION)}</p></details> : null}
+            <button type="button" key={prompt} disabled={!canSend} onClick={() => void send(t(prompt))}>{t(prompt)}</button>)}</div></div>}
+        {exchanges.map(exchange => <div className="komo-chat-exchange" key={exchange.id}>
+          <article className="komo-chat-message komo-chat-user"><strong>{t('You')}</strong><p>{exchange.prompt}</p></article>
+          <article className="komo-chat-message komo-chat-assistant" aria-busy={exchange.status === 'pending'}><strong translate="no">komo</strong>
+            {exchange.answer && <AiMarkdown text={exchange.answer} />}
+            {exchange.status === 'complete' && <div className="komo-chat-citations">{exchange.citations?.map((citation, index) => {
+              const label = citation.kind === 'generated' || citation.kind === 'analysis' ? t('Reference') : t('Page {page}', { page: citation.pageNumber ?? '' });
+              return citation.pageId ? <button type="button" key={index} disabled={!!context.navigationDisabled || !citationCurrent(citation)} title={t('Locate source')} onClick={() => locate(citation)}>
+                {citation.name && citation.name !== materialName ? `${citation.name} · ` : ''}{label}</button>
+                : <span key={index}>{citation.name || label}</span>;
+            })}</div>}
+            {exchange.status === 'pending' ? <p className="komo-chat-progress" role="status">{t(exchange.progress || 'komo is preparing an answer…')}</p>
+              : exchange.status !== 'complete' && <>
+                <p className={exchange.status === 'failed' ? 'komo-chat-error' : ''} role={exchange.status === 'failed' ? 'alert' : 'status'}>{t(exchange.answer ? 'Answer paused' : exchange.failure?.message ?? 'Stopped')}</p>
+                <div className="komo-chat-actions">
+                  {exchange.answer && <button type="button" disabled={!canSend} onClick={() => void send(t('Continue the answer'), scope, visualMode, undefined, exchange)}>{t('Continue')}</button>}
+                  {exchange.failure?.retryable !== false && <button type="button" disabled={!canSend} onClick={() => void send(exchange.prompt, scope, visualMode,
+                    retryIsCurrent(exchange.requestContext) ? exchange.requestContext : undefined)}>{t('Try again')}</button>}
+                  {exchange.failure?.action === 'account' && <a href={localizedPath('/account/', locale)} target="_blank" rel="noreferrer">{t('Account')}</a>}
+                  <button type="button" onClick={() => editQuestion(exchange.prompt)}>{t('Edit question')}</button>
+                </div>
+              </>}
+          </article>
+        </div>)}
+        {scanned && !reading && context.aiServices?.parseDocument && <div className="komo-chat-scan"><p>{t(SCAN_RECOMMENDATION)}</p>
+          <button type="button" className="button" disabled={busy || readingBusy} onClick={() => void readDocument()}>{t('Read full PDF')}</button></div>}
       </div>
-      {newAnswer ? <button type="button" className="komo-new-answer" onClick={() => {
+      {readingBusy && <div className="komo-reading-progress" role="status"><span>{t('Reading document…')}</span>
+        {typeof readingJob?.progress === 'number' && <progress max="100" value={readingJob.progress} />}
+        <button type="button" className="text-button" onClick={() => { readingController.current?.abort(); if (readingJob) void context.aiServices?.cancelKolmoJob(readingJob.id); }}>{t('Stop')}</button></div>}
+      {newAnswer && <button type="button" className="komo-new-answer" onClick={() => {
         followLatest.current = true; setNewAnswer(false); if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight;
-      }}>{t('New answer · scroll to latest')}</button> : null}
+      }}>{t('New answer · scroll to latest')}</button>}
       <KomoMaterials context={context} materials={materials} onAdd={material => updateSession(previous => ({ ...previous,
         materials: [...previous.materials.filter(item => item.id !== material.id), material] }))}
-        onRemove={id => updateSession(previous => ({ ...previous, materials: previous.materials.filter(material => material.id !== id) }))} />
-      {suggestedQuestions.length ? <div className="komo-material-suggestions">{suggestedQuestions.map(question => <button type="button" key={question}
-        onClick={() => editQuestion(question)}>{question}</button>)}</div> : null}
-      <details className="komo-chat-settings" open={settingsOpen} onToggle={event => setSettingsOpen(event.currentTarget.open)}>
-        <summary>{t('Context & sharing')}{!consent ? ` · ${t('Permission needed')}` : ''}</summary>
-        <div>
-          <label>{t('Context')}<select value={scope} disabled={busy} onChange={event => patch({ scope: event.target.value as ChatScope })}>
-            <option value="document">{t('Whole document')}</option><option value="page">{t('Current page')}</option>
-            <option value="selection" disabled={!context.selectedIds.length}>{t('Selected text objects')}</option>
-          </select></label>
-          <label>{t('Page images')}<select value={visualMode} disabled={busy || scope === 'selection'} onChange={event => patch({ visualMode: event.target.value as ChatVisualMode })}>
-            {Object.entries(visualLabels).map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
-          </select></label>
-          <p>{t('Include page images for charts, diagrams and scans, even when the page also has text. Up to two pages per question.')}</p>
-          <label className="komo-chat-consent"><input ref={consentInput} type="checkbox" checked={consent} disabled={busy} onChange={event => {
-            patch({ consent: event.target.checked }); setNotice(''); if (!event.target.checked) authorization.revoke();
-          }} /><span>{t('Allow sending the chosen PDF text, page images and recent conversation to komo when I press Send. The original PDF stays on this device.')}</span></label>
-          <p>{t('Conversations stay with each open PDF in this tab. Only recent answers from its current version are shared.')}</p>
-        </div>
-      </details>
-      {notice ? <p className="komo-chat-notice" role="status">{t(notice)}</p> : null}
-      {context.disabled ? <p className="komo-chat-notice" role="status">{t(disabledReason || 'komo is unavailable right now. Check your account above or wait for the current action to finish.')}</p> : null}
+        onRemove={id => patch({ materials: materials.filter(material => material.id !== id) })} />
+      {suggestedQuestions.length > 0 && <div className="komo-material-suggestions">{suggestedQuestions.map(question => <button type="button" key={question} disabled={!canSend} onClick={() => void send(question)}>{question}</button>)}</div>}
+      {notice && <p className="komo-chat-notice" role="status">{t(notice)}</p>}
+      {context.disabled && <p className="komo-chat-notice" role="status">{t(disabledReason || 'Please wait…')}</p>}
       <form className="komo-chat-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
         <label className="sr-only" htmlFor="komo-question">{t('Message')}</label>
         <textarea ref={input} id="komo-question" name="question" autoComplete="off" rows={2} maxLength={16000} value={instruction}

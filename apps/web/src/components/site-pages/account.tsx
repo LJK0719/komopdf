@@ -81,7 +81,7 @@ function AccountContent() {
         <section className="account-summary" aria-label={t('Your account')}><div><strong>{account.profile.name || account.profile.email}</strong><p>{account.profile.email}</p></div>
           <div className="account-actions"><button className="site-button site-button-outline" disabled={busy} onClick={profile}>{t('Profile settings')}</button><button className="site-button site-button-outline" disabled={busy} onClick={() => void signOut()}>{t('Sign out')}</button></div></section>
         <section className="account-plan-summary"><div><span className="site-kicker">{t('Your current plan')}</span><h2>{plus ? 'KOMO Plus' : t('Free plan')}</h2>
-          <p>{plus ? t('Unlimited conversations') : t('{count} credits remaining', { count: account.remainingCredits.toLocaleString(locale, { maximumFractionDigits: 4 }) })}</p><p className="account-fine-print">{t('PDF editing stays free.')}</p></div>
+          <p>{plus ? t('Unlimited conversations') : t('{count} credits remaining', { count: account.remainingCredits.toLocaleString(locale, { maximumFractionDigits: 4 }) })}</p></div>
           <button className="site-button site-button-primary" disabled={busy || !account.billingAvailable} onClick={() => void billing(manage ? 'portal' : 'checkout')}>{t(billingLabel)}</button>
         </section>
         {!account.billingAvailable ? <p className="account-fine-print">{t('Subscriptions are currently unavailable. Please try again later.')}</p> : null}
@@ -95,7 +95,7 @@ function AccountContent() {
           {!account ? <button type="button" className="site-button site-button-outline" disabled={busy} onClick={() => void signOut()}>{t('Sign out')}</button> : null}</> : null}
       </div> : null}</section> : null}
     <section className="account-pricing" id="plans" aria-labelledby="plans-title">
-      <div className="account-section-heading"><h2 id="plans-title">{t('Choose your KOMO plan')}</h2><p>{t('PDF editing stays free.')}</p></div>
+      <div className="account-section-heading"><h2 id="plans-title">{t('Choose your KOMO plan')}</h2></div>
       <div className="account-pricing-grid">
         <article className="account-price-card"><span className="site-kicker">{t('Free plan')}</span><h3>{t('For everyday PDF work')}</h3><p className="account-price"><strong>$0</strong><span>{t('/ forever')}</span></p>
           <ul>{['All PDF editing tools', 'No account for PDF editing', '1,000 welcome credits', 'KOMO conversations with credits'].map(label => <li key={label}><Check size={16} aria-hidden="true" />{t(label)}</li>)}</ul>
@@ -111,7 +111,7 @@ function AccountContent() {
           {!signedIn ? <Link className="site-text-link account-create-link" href={signInUrl}>{t('Already have an account? Sign in')}</Link> : null}
         </article>
       </div>
-      <p className="account-plan-note">{t('KolmoPDF parsing and layout-preserving translation use your separate KolmoPDF account balance, not KOMO credits or Plus.')}</p>
+      <p className="account-plan-note">{t('KolmoPDF services use your connected account balance.')}</p>
     </section>
     <SiteFooter />
   </main>;

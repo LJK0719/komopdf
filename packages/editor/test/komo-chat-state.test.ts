@@ -21,7 +21,8 @@ describe('komo conversation state and display', () => {
     expect(chatHistory(session.exchanges, 1)).toHaveLength(2);
     expect(session.exchanges[0]?.answer).toBe('Old answer');
     expect(session.instruction).toBe('Unsent draft');
-    expect(createChatSession()).toMatchObject({ exchanges: [], instruction: '', consent: false });
+    expect(createChatSession()).toMatchObject({ exchanges: [], instruction: '' });
+    expect(createChatSession()).not.toHaveProperty('consent');
   });
   it('validates the saved request scope without substituting the newly active page or selection', () => {
     const document = { id: 'd', revision: 1, pageOrder: ['p1', 'p2'] };

@@ -73,7 +73,7 @@ function AuthContent({ signup }: { signup: boolean }) {
   return <main className="site-shell auth-page">
     <SiteNav />
     <div className="auth-layout">
-      <header className="auth-intro"><span className="site-kicker">{t('Your komopdf account')}</span><h1>{t(signup ? 'Create your account' : 'Sign in to komopdf')}</h1><p>{t(params?.get('desktop') ? 'Sign in here to continue in the desktop app.' : 'Use KOMO and manage your plan across web and desktop.')}</p><p className="auth-free-note">{t('PDF editing stays free.')} <Link className="site-text-link" href={localizedPath('/', locale)}>{t('Open editor')}</Link></p></header>
+      <header className="auth-intro"><span className="site-kicker">{t('Your komopdf account')}</span><h1>{t(signup ? 'Create your account' : 'Sign in to komopdf')}</h1><p>{t(params?.get('desktop') ? 'Sign in here to continue in the desktop app.' : 'Use KOMO and manage your plan across web and desktop.')}</p><p className="auth-free-note"><Link className="site-text-link" href={localizedPath('/', locale)}>{t('Open editor')}</Link></p></header>
       <section className="auth-card" aria-label={t(signup ? 'Create your account' : 'Sign in to komopdf')}>
         {failure || error ? <div className="auth-status"><h2>{t('Unable to sign in. Please try again.')}</h2><p role="alert">{t(failure || error)}</p>
           {!params?.get('desktop') ? <a className="site-button site-button-primary" href={complete}>{t('Sign in again')}</a> : null}

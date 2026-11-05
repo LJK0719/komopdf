@@ -1,5 +1,6 @@
 import { AiClientError } from '@pdf-editor/ai-client';
-import { ChatContextError, type ChatScope, type ChatTurn, type ChatVisualMode, type PreparedChatContext } from './komo-chat-context.js';
+import { ChatContextError, type ChatScope, type ChatTurn, type ChatVisualMode, type ChatSourceContext, type PreparedChatContext } from './komo-chat-context.js';
+import type { DocumentReading } from './kolmo-reading.js';
 import { freezeMaterials, mergeHandoffMaterials, MaterialContextError } from './komo-materials.js';
 import type { AiHandoff, AiMaterial } from './text-actions.js';
 
@@ -23,11 +24,12 @@ export function canRetryContext(saved: ChatRequestContext | undefined, document:
   });
 }
 export type ChatSession = {
-  exchanges: ChatExchange[]; instruction: string; consent: boolean; scope: ChatScope;
+  exchanges: ChatExchange[]; instruction: string; scope: ChatScope;
   visualMode: ChatVisualMode; scanned: boolean; materials: AiMaterial[]; suggestedQuestions: string[];
+  reading?: DocumentReading; sourceContext?: ChatSourceContext;
 };
 export function createChatSession(): ChatSession {
-  return { exchanges: [], instruction: '', consent: false, scope: 'document', visualMode: 'auto', scanned: false, materials: [], suggestedQuestions: [] };
+  return { exchanges: [], instruction: '', scope: 'document', visualMode: 'auto', scanned: false, materials: [], suggestedQuestions: [] };
 }
 export type KomoChatStore = { sessions: Record<string, ChatSession>; owner?: string | null; generation: number; consumed: Set<string> };
 export function createKomoChatStore(): KomoChatStore { return { sessions: {}, generation: 0, consumed: new Set() }; }
@@ -39,7 +41,7 @@ export function synchronizeChatOwner(store: KomoChatStore, owner: string | null 
   if (previous != null && previous !== owner) {
     store.sessions = {}; store.generation += 1;
   } else if (owner && previous !== owner) {
-    store.sessions = Object.fromEntries(Object.entries(store.sessions).map(([id, session]) => [id, { ...session, exchanges: [], consent: false }]));
+    store.sessions = Object.fromEntries(Object.entries(store.sessions).map(([id, session]) => [id, { ...session, exchanges: [] }]));
   }
   return true;
 }
@@ -87,7 +89,7 @@ export function chatFailure(error: unknown): ChatFailure {
     if (error.status === 429 || /^(IP_RATE_LIMIT|RATE_LIMIT|IP_CONCURRENCY_LIMIT):/.test(error.message)) return { message: 'komo is receiving too many requests. Wait a moment, then retry this question.' };
     if (error.status === 413 || /^(INVALID_REQUEST|PAYLOAD_TOO_LARGE):/.test(error.message)) return { message: 'This request is too large or its context is unsupported. Choose the current page and try again.', action: 'page' };
     if (error.status === 504 || /^REQUEST_TIMEOUT:/.test(error.message)) return { message: 'komo took too long to respond. Retry this question or choose a smaller scope.' };
-    if (error.code === 'INVALID_SSE' || error.code === 'TRUNCATED_SSE' || error.code === 'MISSING_RESULT' || /^INVALID_MODEL_OUTPUT:/.test(error.message)) return { message: 'The answer was interrupted or could not be verified. Retry this question; it was not added to the conversation context.' };
+    if (error.code === 'INVALID_SSE' || error.code === 'TRUNCATED_SSE' || error.code === 'MISSING_RESULT' || /^INVALID_MODEL_OUTPUT:/.test(error.message)) return { message: 'The connection was interrupted. Continue the answer or try again.' };
   }
   return { message: 'komo is temporarily unavailable. Your question is kept here; try again later.' };
 }

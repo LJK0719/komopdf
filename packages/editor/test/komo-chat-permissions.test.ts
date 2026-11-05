@@ -5,7 +5,7 @@ import type { EngineAdapter } from '@pdf-editor/contracts';
 import type { EditorAiContext } from '../src/ui/EditorShell.js';
 import { KomoChatPanel } from '../src/ui/KomoChatPanel.js';
 import { CHAT_COPY_RESTRICTED } from '../src/ui/komo-chat-context.js';
-import { komoMessages } from '../src/ui/komo-messages.js';
+import { messages } from '../src/ui/messages.js';
 import { I18nProvider, type UiLocale } from '../src/ui/i18n.js';
 import { loadUiMessages } from '../src/ui/i18n-resources.js';
 
@@ -24,7 +24,7 @@ describe('komo copy permission UI', () => {
       initialLocale: locale, messages: await loadUiMessages(locale),
       children: createElement(KomoChatPanel, { context: input }),
     }));
-    const message = locale === 'en' ? CHAT_COPY_RESTRICTED : komoMessages[CHAT_COPY_RESTRICTED];
+    const message = locale === 'en' ? CHAT_COPY_RESTRICTED : messages[CHAT_COPY_RESTRICTED];
     expect(html).toContain(renderToStaticMarkup(createElement('p', { role: 'status' }, message)));
     expect(html).toContain('role="status"');
     expect(html).not.toContain('type="checkbox"');
@@ -36,11 +36,10 @@ describe('komo copy permission UI', () => {
 
   it('keeps Q&A available for an encrypted document when copying is allowed', () => {
     const html = renderToStaticMarkup(createElement(KomoChatPanel, { context: context(true) }));
-    expect(html).toContain('type="checkbox"');
+    expect(html).not.toContain('type="checkbox"');
     expect(html).toContain('id="komo-question"');
     expect(html).not.toContain('copy-enabled version');
-    expect(html).not.toContain('<details class="komo-chat-settings" open');
-    expect(html).not.toMatch(/type="checkbox"[^>]*checked=""/);
+    expect(html).not.toContain('komo-chat-settings');
   });
   it('allows drafting while the account is unavailable without enabling paid sending', () => {
     const fetch = vi.fn();

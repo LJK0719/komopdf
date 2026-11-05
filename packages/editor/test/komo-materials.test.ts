@@ -69,7 +69,7 @@ describe('KOMO material prefill and draft isolation', () => {
     const fetch = vi.fn();
     const html = renderToStaticMarkup(createElement(KomoChatPanel, { context: { ...context, disabled: true }, store, fetch,
       disabledReason: 'Not enough credits. Open Account to continue.' }));
-    expect(html).toContain('Saved draft'); expect(html).toContain('PDF original'); expect(html).toContain('Generated text');
+    expect(html).toContain('Saved draft'); expect(html).toContain('Original text'); expect(html).toContain('AI result');
     expect(html).toContain('Reference original'); expect(html).toContain('参考译文'); expect(html).toContain('Remove material');
     expect(html).not.toMatch(/id="komo-question"[^>]*disabled=""/); expect(html).toMatch(/type="submit"[^>]*disabled=""/);
     expect(fetch).not.toHaveBeenCalled(); expect(context.openDocument).not.toHaveBeenCalled();
@@ -154,7 +154,7 @@ describe('multi-file reference snapshots, versions and retries', () => {
   });
 });
 
-describe('updated material save and continue', () => {
+describe('automatic material refresh', () => {
   function changed() {
     const state = fixture();
     state.documents.set(state.reference.id, { ...state.reference, revision: 3 });
@@ -163,12 +163,12 @@ describe('updated material save and continue', () => {
       document: state.documents.get(docId)!, saveStatus: 'written' as const }));
     return state;
   }
-  it('saves the changed reference, remaps its selection and continues without changing the task target', async () => {
+  it('refreshes a changed reference in memory without confirmation or a save step', async () => {
     const { context, material, extract } = changed();
     extract.mockImplementation(async ({ docId, pageIds }) => [block(docId, pageIds[0]!, 'Added: Reference original')]);
     const prepared = await prepareMaterials([material], context, signal());
-    expect(context.confirmMaterialUpdate).toHaveBeenCalledExactlyOnceWith(['Reference.pdf'], expect.any(AbortSignal));
-    expect(context.prepareDocument).toHaveBeenCalledExactlyOnceWith('ref', expect.any(AbortSignal));
+    expect(context.confirmMaterialUpdate).not.toHaveBeenCalled();
+    expect(context.prepareDocument).not.toHaveBeenCalled();
     expect(prepared?.[0]).toMatchObject({ id: material.id, revision: 3, generatedText: '参考译文', generatedFromRevision: 2,
       locations: [{ pageId: 'ref-page', blockId: 'ref-page-block', range: [7, 25], text: 'Reference original' }] });
     expect(context.document?.id).toBe('main'); expect(material.revision).toBe(2);
@@ -180,26 +180,18 @@ describe('updated material save and continue', () => {
       { revision: 2, kind: 'generated', text: '参考译文' },
     ]);
   });
-  it.each(['download-started', 'written'] as const)('continues after %s without changing savedRevision itself', async saveStatus => {
+  it('uses current editor content without writing the source PDF or opening a file picker', async () => {
     const { context, material, documents } = changed();
-    context.prepareDocument = vi.fn(async id => ({ status: 'ready', document: documents.get(id)!, saveStatus }));
-    expect(await prepareMaterials([material], context, signal())).toHaveLength(1);
-    expect(documents.get('ref')?.savedRevision).toBe(2);
-  });
-  it('keeps materials untouched and does not read or save when confirmation is cancelled', async () => {
-    const { context, material, extract } = changed();
     context.confirmMaterialUpdate = vi.fn(async () => 'cancel');
-    expect(await prepareMaterials([material], context, signal())).toBeNull();
-    expect(context.prepareDocument).not.toHaveBeenCalled(); expect(extract).not.toHaveBeenCalled(); expect(material.revision).toBe(2);
+    context.prepareDocument = vi.fn(async () => { throw new Error('Must not save a file just to ask a question'); });
+    expect(await prepareMaterials([material], context, signal())).toHaveLength(1);
+    expect(context.confirmMaterialUpdate).not.toHaveBeenCalled(); expect(context.prepareDocument).not.toHaveBeenCalled();
+    expect(documents.get('ref')?.savedRevision).toBe(2); expect(material.revision).toBe(2);
   });
-  it('does not continue when the file picker is cancelled or saving fails', async () => {
-    const { context, material, extract } = changed();
-    context.prepareDocument = vi.fn(async () => ({ status: 'cancelled' }));
-    expect(await prepareMaterials([material], context, signal())).toBeNull();
-    expect(extract).not.toHaveBeenCalled();
-    context.prepareDocument = vi.fn(async () => { throw new Error('Save failed'); });
-    await expect(prepareMaterials([material], context, signal())).rejects.toThrow('Save failed');
-    expect(material.revision).toBe(2);
+  it('stops a cancelled preparation without modifying the existing material', async () => {
+    const { context, material } = changed();
+    await expect(prepareMaterials([material], context, AbortSignal.abort())).rejects.toThrow();
+    expect(context.prepareDocument).not.toHaveBeenCalled(); expect(material.revision).toBe(2);
   });
   it('rereads the full reference rather than only changing its revision', async () => {
     const { context, material, extract } = changed();

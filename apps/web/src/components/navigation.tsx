@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import { Languages, ArrowUpRight, Menu, X } from 'lucide-react';
 import { useI18n } from '@pdf-editor/editor/i18n';
 import { UI_LOCALES, localizedPath, type UiLocale } from '@pdf-editor/editor/i18n-locales';
+import { preloadEditor } from './editor-preload';
 
 const links = [['/', 'Home page'], ['/tools/', 'Tools'], ['/download/', 'Download'], ['/help/', 'Help'], ['/pricing/', 'Pricing'], ['/account/', 'Account']] as const;
 
@@ -24,14 +25,15 @@ export function SiteNav() {
   const languages = path === '/tools/annotate-pdf/' ? UI_LOCALES.filter(item => ['en', 'de', 'fr'].includes(item.id)) : UI_LOCALES;
   const menu = useRef<HTMLDetailsElement>(null);
   const closeMenu = () => { if (menu.current) menu.current.open = false; };
+  const warmEditor = () => { void preloadEditor(locale).catch(() => undefined); };
   const isCurrent = (href: string) => path === href;
-  const switchLanguage = (next: UiLocale) => {
-    window.location.assign(languageSwitchHref(path, next, window.location.search, window.location.hash));
-  };
+  const switchLanguage = (next: UiLocale) => window.location.assign(languageSwitchHref(path, next, window.location.search, window.location.hash));
   return <nav className="site-nav" aria-label={t('Main navigation')}>
-    <Link prefetch={false} href={localizedPath('/', locale)} className="site-brand" aria-label="komopdf" onClick={closeMenu}><span className="komopdf-logo" aria-hidden="true" /></Link>
+    <a href={localizedPath('/', locale)} className="site-brand" aria-label="komopdf" onPointerEnter={warmEditor} onFocus={warmEditor} onClick={closeMenu}><span className="komopdf-logo" aria-hidden="true" /></a>
     <div className="site-nav-links">
-      {links.map(([href, label]) => <Link prefetch={false} key={href} href={localizedPath(href, locale)} aria-current={isCurrent(href) ? 'page' : undefined}>{t(label)}</Link>)}
+      {links.map(([href, label]) => href === '/'
+        ? <a key={href} href={localizedPath(href, locale)} aria-current={isCurrent(href) ? 'page' : undefined} onPointerEnter={warmEditor} onFocus={warmEditor}>{t(label)}</a>
+        : <Link prefetch={false} key={href} href={localizedPath(href, locale)} aria-current={isCurrent(href) ? 'page' : undefined}>{t(label)}</Link>)}
     </div>
     <div className="site-nav-actions">
       <details className="site-language-menu"><summary aria-label={t('Language')}><Languages size={16} aria-hidden="true" /><span>{UI_LOCALES.find(item => item.id === locale)?.label}</span></summary>
@@ -41,16 +43,16 @@ export function SiteNav() {
       <select className="site-language-select" aria-label={t('Language')} value={locale} onChange={event => switchLanguage(event.target.value as UiLocale)}>
         {languages.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
       </select>
-      <Link prefetch={false} href={localizedPath('/', locale)} className="site-button site-button-primary site-nav-editor">{t('Open editor')}<ArrowUpRight size={16} aria-hidden="true" /></Link>
+      <a href={localizedPath('/', locale)} className="site-button site-button-primary site-nav-editor" onPointerEnter={warmEditor} onFocus={warmEditor}>{t('Open editor')}<ArrowUpRight size={16} aria-hidden="true" /></a>
       <details className="site-mobile-menu" ref={menu} onKeyDown={event => {
-        if (event.key === 'Escape' && menu.current?.open) {
-          closeMenu(); menu.current?.querySelector('summary')?.focus(); event.preventDefault();
-        }
+        if (event.key === 'Escape' && menu.current?.open) { closeMenu(); menu.current?.querySelector('summary')?.focus(); event.preventDefault(); }
       }}>
         <summary aria-label={t('Navigation menu')}><Menu className="menu-open-icon" size={21} aria-hidden="true" /><X className="menu-close-icon" size={21} aria-hidden="true" /></summary>
         <div className="site-mobile-links">
-          {links.map(([href, label]) => <Link prefetch={false} key={href} href={localizedPath(href, locale)} aria-current={isCurrent(href) ? 'page' : undefined} onClick={closeMenu}>{t(label)}</Link>)}
-          <Link prefetch={false} href={localizedPath('/', locale)} className="site-button site-button-primary" onClick={closeMenu}>{t('Open editor')}<ArrowUpRight size={16} aria-hidden="true" /></Link>
+          {links.map(([href, label]) => href === '/'
+            ? <a key={href} href={localizedPath(href, locale)} aria-current={isCurrent(href) ? 'page' : undefined} onPointerEnter={warmEditor} onFocus={warmEditor} onClick={closeMenu}>{t(label)}</a>
+            : <Link prefetch={false} key={href} href={localizedPath(href, locale)} aria-current={isCurrent(href) ? 'page' : undefined} onClick={closeMenu}>{t(label)}</Link>)}
+          <a href={localizedPath('/', locale)} className="site-button site-button-primary" onPointerEnter={warmEditor} onFocus={warmEditor} onClick={closeMenu}>{t('Open editor')}<ArrowUpRight size={16} aria-hidden="true" /></a>
         </div>
       </details>
     </div>
@@ -59,8 +61,11 @@ export function SiteNav() {
 
 export function SiteFooter() {
   const { t, locale } = useI18n();
+  const warmEditor = () => { void preloadEditor(locale).catch(() => undefined); };
   return <footer className="site-footer"><span>© 2026 komopdf</span><nav aria-label={t('Footer navigation')}>
-    {links.map(([href, label]) => <Link prefetch={false} key={href} href={localizedPath(href, locale)}>{t(label)}</Link>)}
+    {links.map(([href, label]) => href === '/'
+      ? <a key={href} href={localizedPath(href, locale)} onPointerEnter={warmEditor} onFocus={warmEditor}>{t(label)}</a>
+      : <Link prefetch={false} key={href} href={localizedPath(href, locale)}>{t(label)}</Link>)}
     <Link prefetch={false} href={localizedPath('/privacy/', locale)}>{t('Privacy')}</Link>
     <a href="https://github.com/LJK0719/komopdf" target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={13} aria-hidden="true" /></a>
   </nav></footer>;

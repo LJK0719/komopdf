@@ -9,7 +9,7 @@ export async function PricingPage({ locale }: { locale: UiLocale }) {
   const { t } = await getSiteI18n(locale);
   return <main className="site-shell account-page"><SiteNav />
     <header className="site-page-heading"><span className="site-kicker">{t('Pricing')}</span><h1>{t('Free PDF tools. More with KOMO.')}</h1><p>{t('Edit PDFs for free, without an account. Sign in for KOMO, or choose Plus for unlimited conversations.')}</p></header>
-    <section className="account-pricing" aria-labelledby="plans-title"><div className="account-section-heading"><h2 id="plans-title">{t('Choose your KOMO plan')}</h2><p>{t('PDF editing stays free.')}</p></div>
+    <section className="account-pricing" aria-labelledby="plans-title"><div className="account-section-heading"><h2 id="plans-title">{t('Choose your KOMO plan')}</h2></div>
       <div className="account-pricing-grid">
         <article className="account-price-card"><span className="site-kicker">{t('Free plan')}</span><h3>{t('For everyday PDF work')}</h3><p className="account-price"><strong>$0</strong><span>{t('/ forever')}</span></p>
           <ul>{['All PDF editing tools', 'No account for PDF editing', '1,000 welcome credits', 'KOMO conversations with credits'].map(label => <li key={label}><Check size={16} aria-hidden="true" />{t(label)}</li>)}</ul>
@@ -23,9 +23,7 @@ export async function PricingPage({ locale }: { locale: UiLocale }) {
           <Link prefetch={false} className="site-button site-button-primary" href={localizedPath('/sign-in/', locale) + '?returnTo=' + encodeURIComponent(localizedPath('/account/', locale))}>{t('Sign in to upgrade')}<ArrowRight size={16} aria-hidden="true" /></Link>
         </article>
       </div>
-      <p className="account-plan-note">{t('One credit equals 10,000 input and output tokens. Welcome credits are granted once, not every month.')}</p>
-      <p className="account-plan-note">{t('Normal request-size and concurrency limits still apply to KOMO Plus.')}</p>
-      <p className="account-plan-note">{t('KolmoPDF parsing and layout-preserving translation use your separate KolmoPDF account balance, not KOMO credits or Plus.')}</p>
+      <p className="account-plan-note">{t('KolmoPDF services use your connected account balance.')}</p>
     </section><SiteFooter />
   </main>;
 }

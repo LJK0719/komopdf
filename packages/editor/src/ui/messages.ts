@@ -10,6 +10,7 @@ import { aiToolMessages } from './ai-tool-messages.js';
 import { AI_SERVICE_COPY_MESSAGES } from './ai-service-copy-messages.js';
 import { komoMaterialMessages } from './komo-material-messages.js';
 import { interactionReviewMessages } from './interaction-review-messages.js';
+import { customerExperienceMessages } from './customer-experience-messages.js';
 export const messages: Record<string, string> = {
   'Bold': '加粗', 'Crop page': '裁剪页面', 'Cut': '剪切', 'Discard changes': '放弃更改',
   'Open file': '打开文件', 'Page range': '页码范围', 'Paste': '粘贴', 'Select all': '全选',
@@ -486,5 +487,5 @@ export const messages: Record<string, string> = {
   'pages.rotate': '旋转页面', 'pages.delete': '删除页面', 'pages.reorder': '调整页序', 'pages.insert': '插入页面',
   'objects.transform': '调整位置', 'objects.align': '对齐对象', 'objects.distribute': '分布对象',
   'annotations.add': '添加批注', 'form.fill': '填写表单',
-
+  ...customerExperienceMessages,
 };

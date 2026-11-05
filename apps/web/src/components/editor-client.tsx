@@ -4,7 +4,7 @@ import * as React from 'react';
 import dynamic from 'next/dynamic';
 import { EditorLoading } from './editor-loading';
 import { EditorWebActions } from './editor-web-actions';
-import { EditorShell, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient } from '@pdf-editor/editor';
+import { EditorShell, WasmEngineAdapter, WebHostAdapter, WorkerRpcClient } from '@pdf-editor/editor/browser';
 
 const EditorAccountPanel = dynamic(() => import('./editor-account-panel'), { ssr: false });
 const EditorAccountIdentity = dynamic(() => import('./editor-account-panel').then(module => module.EditorAccountIdentity), { ssr: false });

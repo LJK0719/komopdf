@@ -1,0 +1,16 @@
+--- a/core/fpdftext/cpdf_textpage.cpp
++++ b/core/fpdftext/cpdf_textpage.cpp
+@@ -1076,10 +1076,12 @@
+
+     CFX_FloatRect char_box(rect);
+     char_box.Translate(k * step, 0);
++    // ActualText geometry includes the containing Form transform.
++    char_box = obj.form_matrix_.TransformRect(char_box);
+     temp_text_buf_.AppendChar(wChar);
+     temp_char_list_.push_back(
+         CharInfo(CharType::kPiece, CPDF_Font::kInvalidCharCode, wChar,
+-                 pTextObj->GetPos(), char_box, matrix, pTextObj));
++                 obj.form_matrix_.Transform(pTextObj->GetPos()), char_box, matrix, pTextObj));
+   }
+ }
+

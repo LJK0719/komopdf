@@ -8,10 +8,10 @@
 .ribbon-button > svg { width: 17px; height: 17px; flex: none; }
 .ribbon-button:hover:not(:disabled), .ribbon-button[aria-pressed=true] { background: var(--acid); border-color: var(--line); color: var(--accent); }
 .ribbon-pointer-tools { display: flex; flex: none; align-items: center; gap: 2px; padding-right: 10px; border-right: 1px solid var(--line); }
-.ribbon-actions { display: flex; gap: 3px; min-width: 0; }
+.ribbon-actions { display: flex; flex: none; gap: 3px; min-width: 0; }
 .ribbon-page-view { display: flex; align-items: center; gap: 4px; padding-right: 8px; border-right: 1px solid var(--line); }
 .ribbon-priority-overflow, .ribbon-overflow-medium, .ribbon-overflow-wide, .ribbon-more-medium, .ribbon-more-small { display: none; }
-.ribbon-text-properties { flex: 0 1 auto; min-width: 0; max-height: 40px; overflow-x: auto; scrollbar-width: thin; }
+.ribbon-text-properties { flex: 1 1 auto; min-width: 0; max-height: 40px; overflow-x: auto; scrollbar-width: thin; }
 .text-properties { display: flex; align-items: center; gap: 4px 6px; padding: 0; flex-wrap: nowrap; min-width: 0; }
 .text-properties > * { flex-shrink: 0; }
 .text-properties label { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 12px; color: var(--muted); }

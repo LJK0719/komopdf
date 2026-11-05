@@ -1,1 +1,11 @@
-{}
+{
+  "Try again": "Try again",
+  "Unable to load the editor.": "Unable to load the editor.",
+  "KolmoPDF services use your connected account balance.": "KolmoPDF services use your connected account balance.",
+  "Choose Edit, then select text or an image on the page. The tools above the document follow your selection.": "Choose Edit, then select text or an image on the page. The tools above the document follow your selection.",
+  "Choose Download PDF to save your work in the browser. On desktop, use Save. Choose Export for more file formats.": "Choose Download PDF to save your work in the browser. On desktop, use Save. Choose Export for more file formats.",
+  "Select text and choose Use AI to ask a question or describe a change. Open komo to discuss your PDF. Connect KolmoPDF in the editor to read or translate an entire document.": "Select text and choose Use AI to ask a question or describe a change. Open komo to discuss your PDF. Connect KolmoPDF in the editor to read or translate an entire document.",
+  "Download your PDF, then open it in the desktop app.": "Download your PDF, then open it in the desktop app.",
+  "Language preferences, service connections, document recovery and translation history are saved on this device.": "Language preferences, service connections, document recovery and translation history are saved on this device.",
+  "PDFs you choose to parse or translate are processed by KolmoPDF under its privacy policy.": "PDFs you choose to parse or translate are processed by KolmoPDF under its privacy policy."
+}

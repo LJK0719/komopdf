@@ -51,8 +51,9 @@ describe('read-only multi-document evidence protocol', () => {
   it('checks answer citations and quotes against both source namespaces', () => {
     const answer = { kind: 'answer', text: 'Comparison', citations: [{ evidenceId: 'e1' }, { evidenceId: 'r1', quote: 'original' }] };
     expect(validate(answer)).toEqual(answer);
-    expect(() => validate({ ...answer, citations: [{ evidenceId: 'r1', quote: 'not in source' }] })).toThrow('Citation quote');
-    expect(() => validate({ ...answer, citations: [{ evidenceId: 'unknown' }] })).toThrow('outside the request');
+    expect(validate({ ...answer, citations: [{ evidenceId: 'r1', quote: 'not in source' }] }))
+      .toEqual({ ...answer, citations: [{ evidenceId: 'r1' }] });
+    expect(validate({ ...answer, citations: [{ evidenceId: 'unknown' }] })).toEqual({ ...answer, citations: [] });
   });
   it('never allows reference ids in text proposals or command targets', () => {
     expect(() => validate({ kind: 'textProposal', replacements: [{ targetEvidenceId: 'r1', text: 'write' }] }, request, 'textProposal')).toThrow();

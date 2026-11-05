@@ -1,5 +1,5 @@
 import { aiResultSchema, type AiRequest, type AiResult, type ProposedCommand } from '@pdf-editor/contracts';
-import { identityReply, isIdentityQuestion } from './komo-identity.js';
+import { readingAnswer } from './reading-answer.js';
 
 export class OutputValidationError extends Error {
   constructor(message: string) {
@@ -116,10 +116,17 @@ export function parseAndValidateResult(
 ): AiResult {
   assert(Buffer.byteLength(rawText, 'utf8') <= visibleResultBytes, 'Model visible result exceeds size limit');
   let parsed: unknown;
+  const content = rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try {
-    parsed = JSON.parse(rawText);
+    parsed = JSON.parse(content);
   } catch {
-    throw new OutputValidationError('Model did not return complete JSON');
+    if (expectedKind === 'answer' && content && !/^[{\[]/.test(content)) parsed = content;
+    else throw new OutputValidationError('Model did not return complete JSON');
+  }
+  if (expectedKind === 'answer') {
+    const answer = readingAnswer(parsed, request);
+    assert(answer, 'Model did not return an answer');
+    return answer;
   }
   const checked = aiResultSchema.safeParse(parsed);
   if (!checked.success) throw new OutputValidationError('Model result does not match feature output contract');
@@ -129,20 +136,6 @@ export function parseAndValidateResult(
 
   const evidenceById = new Map(request.context.evidence.map(evidence => [evidence.id, evidence.text]));
   switch (result.kind) {
-    case 'answer': {
-      const readableEvidence = new Map([
-        ...evidenceById,
-        ...(request.context.referenceEvidence ?? []).map(evidence => [evidence.id, evidence.text] as const),
-      ]);
-      for (const citation of result.citations) validateCitation(readableEvidence, citation);
-      if (request.feature === 'document.ask' && result.citations.length === 0) {
-        if (isIdentityQuestion(request.instruction)) return identityReply(request);
-        return { kind: 'clarification', question: /\p{Script=Han}/u.test(request.instruction)
-          ? '这次回答未能找到可核对的原文依据。请选定相关页面或文字，补充具体问题后再试；我不会把缺少依据的内容当作文档结论。'
-          : 'I could not verify this answer against the supplied text. Select the relevant page or passage and make the question more specific; I will not present unsupported content as a document conclusion.' };
-      }
-      break;
-    }
     case 'textProposal': {
       const seen = new Set<string>();
       for (const replacement of result.replacements) {

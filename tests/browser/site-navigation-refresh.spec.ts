@@ -109,7 +109,7 @@ test('homepage exposes localized navigation, brand and a working KOMO toggle', a
   await expect(language).toHaveValue('de');
 });
 
-test('downloads use released artifacts and explain manual web-to-desktop handoff', async ({ page }) => {
+test('downloads show one released artifact per platform without build details', async ({ page }) => {
   await page.goto('/download/');
   const downloads = page.locator('.download-grid a[download]');
   await expect(downloads).toHaveCount(stableRelease.artifacts.length);
@@ -117,7 +117,8 @@ test('downloads use released artifacts and explain manual web-to-desktop handoff
     await expect(page.locator(`.download-grid a[download="${artifact.name}"]`)).toHaveAttribute('href', artifact.url);
   }
   await expect(page.getByRole('button', { name: 'Coming soon' })).toHaveCount(0);
-  await expect(page.getByText('Download a copy of your PDF in the web editor, then open that file in the desktop app. Open documents do not transfer automatically.')).toBeVisible();
+  await expect(page.getByText('File details', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.download-grid')).not.toContainText(/SHA-256|\b\d+(?:\.\d+)?\s*(?:MiB|MB)\b/);
 });
 
 test('invalid billing handoff offers public plans without opening checkout', async ({ page }) => {

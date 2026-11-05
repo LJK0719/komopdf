@@ -1,9 +1,9 @@
-import { useI18n } from './i18n.js';
+import { useI18n, localizedPath } from './i18n.js';
+import { Download, ScanText, Sparkles } from 'lucide-react';
 import { memo, useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
 import type { CommitResult, DocumentInfo, EngineAdapter, PageModel } from '@pdf-editor/contracts';
 import { nextSearchIndex, type SearchOptions } from './search-matching.js';
 import { searchPage, prepareSearchReplacement, type PdfSearchMatch as Match } from './page-search.js';
-import { AppDialog } from './AppDialog.js';
 import { unrecognizedImageRegions } from './ocr-regions.js';
 import { isRenderCancelled, renderWork } from './render-work.js';
 import './panel-refresh.css';
@@ -14,7 +14,7 @@ type SearchState = {
   matches: Match[]; status: 'searching' | 'complete' | 'stopped' | 'failed'; scannedPages: number;
 };
 type Props = { document: DocumentInfo | null; engine: EngineAdapter; disabled: boolean;
-  active?: boolean; onRequestOcr?: (() => void) | undefined; resumeSearch?: number;
+  active?: boolean; onRequestOcr?: (() => void) | undefined; onReadWithAi?: (() => void) | undefined; showDesktopLink?: boolean; resumeSearch?: number;
   onLocate(match: Match): void;
   onCommitted?(result: CommitResult): Promise<void>; onBusyChange?(busy: boolean): void };
 
@@ -52,8 +52,8 @@ export async function searchPdfDocument(
   return found;
 }
 
-export function PdfSearchPanel({ document, engine, disabled, active = true, onRequestOcr, resumeSearch = 0, onLocate, onCommitted, onBusyChange }: Props) {
-  const { t } = useI18n();
+export function PdfSearchPanel({ document, engine, disabled, active = true, onRequestOcr, onReadWithAi, showDesktopLink = true, resumeSearch = 0, onLocate, onCommitted, onBusyChange }: Props) {
+  const { t, locale } = useI18n();
   const [query, setQuery] = useState('');
   const [matchCase, setMatchCase] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
@@ -63,8 +63,6 @@ export function PdfSearchPanel({ document, engine, disabled, active = true, onRe
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [scanPages, setScanPages] = useState<number[]>([]);
-  const [askOcr, setAskOcr] = useState(false);
-  const promptedDocument = useRef('');
   useEffect(() => {
     if (!active || !document) return;
     const controller = new AbortController();
@@ -75,13 +73,7 @@ export function PdfSearchPanel({ document, engine, disabled, active = true, onRe
         const page = await renderWork(engine, () => engine.describePage(document.id, pageId),
           { signal: controller.signal, priority: 'thumbnail' });
         if (controller.signal.aborted) return;
-        if (unrecognizedImageRegions(page).length) pages.push(index + 1);
-      }
-      if (!controller.signal.aborted) {
-        setScanPages(pages);
-        if (pages.length && promptedDocument.current !== document.id) {
-          promptedDocument.current = document.id; setAskOcr(true);
-        }
+        if (unrecognizedImageRegions(page).length) { pages.push(index + 1); setScanPages([...pages]); }
       }
     })().catch(caught => { if (!isRenderCancelled(caught)) console.warn('Unable to inspect searchable text', caught); });
     return () => controller.abort();
@@ -90,7 +82,6 @@ export function PdfSearchPanel({ document, engine, disabled, active = true, onRe
   const queryInput = useRef<HTMLInputElement>(null);
   const selectedButton = useRef<HTMLButtonElement>(null);
   const statusId = useId();
-  const wordHelpId = useId();
   const operation = useRef<AbortController | null>(null);
   const progressFrame = useRef(0);
   const pendingProgress = useRef<SearchState | null>(null);
@@ -215,17 +206,12 @@ export function PdfSearchPanel({ document, engine, disabled, active = true, onRe
   const countLabel = t('{current} of {count}', { current: selectedIndex + 1, count });
   return <section className="text-edit-panel task-panel pdf-search-panel" aria-label={t('Find in document')}>
     <header className="task-panel-header"><h2>{t('Find in document')}</h2></header>
-    <AppDialog open={active && askOcr} onOpenChange={setAskOcr} title={t('Recognize text for search?')}>
-      <p>{t('This document contains scanned pages. Recognize text throughout the document to make it searchable?')}</p>
-      {!onRequestOcr && <p>{t(document && !document.permissions.modify ? 'This document does not allow adding a searchable text layer.' : 'Open this PDF in the desktop app to recognize scanned text.')}</p>}
-      <footer><button type="button" onClick={() => setAskOcr(false)}>{t('Not now')}</button>
-        {onRequestOcr && <button type="button" className="button button-primary" disabled={disabled} onClick={() => { setAskOcr(false); onRequestOcr(); }}>{t('Recognize entire document')}</button>}</footer>
-    </AppDialog>
     <div className="task-panel-body">
-      {!!scanPages.length && <div className="panel-refresh-note" role="status">
-        <p>{t('Text in images on {count} pages has not been recognized.', { count: scanPages.length })}</p>
-        {onRequestOcr ? <button type="button" disabled={disabled} onClick={() => setAskOcr(true)}>{t('Recognize entire document')}</button>
-          : <p>{t(document && !document.permissions.modify ? 'This document does not allow adding a searchable text layer.' : 'Open this PDF in the desktop app to recognize scanned text.')}</p>}
+      {!!scanPages.length && <div className="scan-action-card">
+        <div className="scan-action-heading"><ScanText size={21} aria-hidden="true" /><div><strong>{t('Scanned pages')}</strong><p>{t('Recognize text to search this PDF.')}</p></div></div>
+        <div className="scan-action-buttons">{onRequestOcr ? <button type="button" className="button button-primary" disabled={disabled} onClick={onRequestOcr}><ScanText size={16} aria-hidden="true" />{t('Recognize entire document')}</button>
+          : showDesktopLink && <a className="button button-primary" href={localizedPath('/download/', locale)} target="_blank" rel="noreferrer"><Download size={16} aria-hidden="true" />{t('Get the desktop app')}</a>}
+          {onReadWithAi && <button type="button" className="button" disabled={disabled} onClick={onReadWithAi}><Sparkles size={16} aria-hidden="true" />{t('Read with AI')}</button>}</div>
       </div>}
       <form onSubmit={event => { event.preventDefault(); if (!searching) void search(); }}>
         {/* Cross-page locate briefly makes the host busy; readOnly preserves query focus. */}
@@ -252,10 +238,9 @@ export function PdfSearchPanel({ document, engine, disabled, active = true, onRe
         <div className="panel-refresh-row">
           <label style={{ display: 'flex', alignItems: 'center' }}><input type="checkbox" checked={matchCase}
             disabled={!document || disabled || replacing} onChange={event => { setMatchCase(event.target.checked); invalidateSearch(); }} />{t('Match case')}</label>
-          <label style={{ display: 'flex', alignItems: 'center' }}><input type="checkbox" checked={wholeWord} aria-describedby={wordHelpId}
+          <label style={{ display: 'flex', alignItems: 'center' }}><input type="checkbox" checked={wholeWord}
             disabled={!document || disabled || replacing} onChange={event => { setWholeWord(event.target.checked); invalidateSearch(); }} />{t('Whole words')}</label>
         </div>
-        <p id={wordHelpId} className="panel-refresh-muted">{t('Whole words use Unicode letter/number boundaries, not Chinese word segmentation.')}</p>
         </details>
       </form>
       <p role="status" id={statusId} aria-live="polite" aria-atomic="true">

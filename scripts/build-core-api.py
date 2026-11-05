@@ -20,7 +20,8 @@ ACTUALTEXT_PATCH = ROOT / 'native/vendor/patches/0007-actualtext-scope.patch'
 ACTUALTEXT_UTF16_PATCH = ROOT / 'native/vendor/patches/0008-actualtext-utf16.patch'
 SUPPLEMENTARY_PATCH = ROOT / 'native/vendor/patches/0009-supplementary-text-indices.patch'
 FONT_IDENTITY_PATCH = ROOT / 'native/vendor/patches/0010-font-resource-identity.patch'
-CORE_PATCHES = (FONT_PATCH, FONT_CODE_PATCH, TEXT_SPACING_PATCH, SHADING_PATCH, ACTUALTEXT_PATCH, ACTUALTEXT_UTF16_PATCH, SUPPLEMENTARY_PATCH, FONT_IDENTITY_PATCH)
+ACTUALTEXT_GEOMETRY_PATCH = ROOT / 'native/vendor/patches/0011-actualtext-form-geometry.patch'
+CORE_PATCHES = (FONT_PATCH, FONT_CODE_PATCH, TEXT_SPACING_PATCH, SHADING_PATCH, ACTUALTEXT_PATCH, ACTUALTEXT_UTF16_PATCH, SUPPLEMENTARY_PATCH, FONT_IDENTITY_PATCH, ACTUALTEXT_GEOMETRY_PATCH)
 spec = importlib.util.spec_from_file_location('native_build', Path(__file__).with_name('prepare-native.py'))
 native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
@@ -62,6 +63,7 @@ def copy_api(source):
         ('core/fpdftext/cpdf_textpage.cpp', 'WideString TextPageUtf16Units(', ACTUALTEXT_UTF16_PATCH),
         ('core/fpdftext/cpdf_textpage.cpp', 'Keep unmarked ToUnicode text in the same UTF-16 index space as ActualText.', SUPPLEMENTARY_PATCH),
         ('core/fpdfapi/edit/cpdf_pagecontentgenerator.cpp', 'A font name is not its identity:', FONT_IDENTITY_PATCH),
+        ('core/fpdftext/cpdf_textpage.cpp', 'ActualText geometry includes the containing Form transform.', ACTUALTEXT_GEOMETRY_PATCH),
     ):
         if marker not in (source / relative).read_text(encoding='utf-8'):
             subprocess.run(['git', 'apply', '--check', str(patch)], cwd=source, check=True)

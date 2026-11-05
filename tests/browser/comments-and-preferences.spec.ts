@@ -14,10 +14,10 @@ async function mockTranslation(page: Page) {
   return requests;
 }
 async function translate(page: Page) {
-  await selectAiText(page); await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
+  await selectAiText(page); await page.getByRole('menuitem', { name: 'Translate', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Translate selected text', exact: true });
   await dialog.getByRole('combobox').selectOption('zh');
-  await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Translate', exact: true }).click();
   const result = page.getByRole('dialog', { name: 'Translation', exact: true });
   await expect(result.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue(longNote);
   return result;
@@ -55,7 +55,7 @@ test('translation shows only the result; its target selector remains usable and 
   await expect(result.getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue('Hello');
   await page.screenshot({ path: 'tmp/browser/translation-result-language.png' });
   await page.reload(); await openAiPdf(page);
-  await selectAiText(page); await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
+  await selectAiText(page); await page.getByRole('menuitem', { name: 'Translate', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Translate selected text', exact: true }).getByRole('combobox')).toHaveValue('ja');
   expect(requests).toHaveLength(2);
 });
@@ -70,14 +70,14 @@ test('late account initialization does not overwrite a target language the user 
     await route.fulfill({ json: { publishableKey: `pk_test_${Buffer.from('ui-test.clerk.accounts.dev$').toString('base64')}` } });
   });
   await page.goto('/editor/'); await openAiPdf(page);
-  await selectAiText(page); await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
+  await selectAiText(page); await page.getByRole('menuitem', { name: 'Translate', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Translate selected text', exact: true });
   await dialog.getByRole('combobox').selectOption('ja');
   const accountReady = page.waitForResponse(response => new URL(response.url()).pathname === '/api/account');
   release();
   await accountReady;
   await expect(dialog.getByRole('combobox')).toHaveValue('ja');
-  await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Translate', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Translation', exact: true }).getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('日本語の訳文');
   expect(requests).toHaveLength(1); expect(requests[0]?.targetLanguage).toBe('ja');
 });
@@ -106,7 +106,7 @@ test('AI comment opens immediately, can be reopened from its marker, edited, can
   await card.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(card.locator('.comment-body')).toHaveText('Updated comment 正文');
   await card.getByRole('button', { name: 'Delete comment', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Delete comment?', exact: true }).getByRole('button', { name: 'Delete comment', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Delete comment?', exact: true })).toHaveCount(0);
   await expect(page.locator('.annotation-marker')).toHaveCount(0);
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await page.getByRole('button', { name: 'Open comment 1 on page 1', exact: true }).click();

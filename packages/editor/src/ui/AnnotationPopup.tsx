@@ -21,7 +21,7 @@ export function AnnotationPopup({ selection, document, engine, disabled, draftRe
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [confirm, setConfirm] = useState<'close' | 'delete' | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
   const composing = useRef(false);
   const inFlight = useRef(false);
   const dirty = editing && annotation !== null && text !== annotation.text;
@@ -82,7 +82,7 @@ export function AnnotationPopup({ selection, document, engine, disabled, draftRe
   }
   const finish = async () => !dirty || await execute(false);
   useImperativeHandle(draftRef, () => ({ finish }));
-  const close = () => { if (busy) return; if (dirty) setConfirm('close'); else onClose(); };
+  const close = () => { if (busy) return; if (dirty) setConfirmClose(true); else onClose(); };
   return <>
     <AiFloatingWindow title={t('Comment')} anchor={anchor} hidden={false} onClose={close} closeLabel="Close comment" className="comment-popup">
       <section className="comment-popup-content" aria-label={t('Comment content')}>
@@ -94,21 +94,20 @@ export function AnnotationPopup({ selection, document, engine, disabled, draftRe
         </label> : <div className="comment-body" tabIndex={0} dir="auto">{annotation.text || t('No comment text')}</div>)}
         {error && <p className="task-error" role="alert">{t(error)}</p>}
         {loadFailed && <button type="button" className="button" onClick={() => setReload(value => value + 1)}>{t('Try again')}</button>}
-        {annotation && annotation.subtype !== 'text' && <p className="task-help">{t('This markup is shown read-only here to preserve its original appearance.')}</p>}
         {!document.permissions.annotate && <p className="task-help">{t('This document does not permit annotations.')}</p>}
         <footer>
           {editing ? <><button type="button" className="button" disabled={busy} onClick={() => { setText(annotation!.text); setEditing(false); setError(''); }}>{t('Cancel')}</button>
             <button type="button" className="button button-primary" disabled={busy || disabled || !dirty} onClick={() => void execute(false)}>{t('Save comment')}</button></>
             : editable && <button type="button" className="button" disabled={busy || disabled} onClick={() => setEditing(true)}>{t('Edit comment')}</button>}
-          {deletable && <button type="button" className="button" disabled={busy || disabled} onClick={() => setConfirm('delete')}>{t('Delete comment')}</button>}
+          {deletable && <button type="button" className="button" disabled={busy || disabled} onClick={() => void execute(true)}>{t('Delete comment')}</button>}
         </footer>
       </section>
     </AiFloatingWindow>
-    <AppDialog open={confirm !== null} onOpenChange={open => { if (!open) setConfirm(null); }} title={t(confirm === 'delete' ? 'Delete comment?' : 'Save comment changes?')} className="ai-owned-focus">
-      <p>{t(confirm === 'delete' ? 'You can undo this deletion.' : 'Save your edits or discard them before closing this comment.')}</p>
-      <div className="comment-confirm-actions"><button type="button" className="button" onClick={() => setConfirm(null)}>{t('Cancel')}</button>
-        {confirm === 'close' && <button type="button" className="button" onClick={onClose}>{t('Discard changes')}</button>}
-        <button type="button" className="button button-primary" disabled={busy} onClick={() => { void execute(confirm === 'delete').then(ok => { if (ok) { setConfirm(null); onClose(); } }); }}>{t(confirm === 'delete' ? 'Delete comment' : 'Save comment')}</button>
+    <AppDialog open={confirmClose} onOpenChange={setConfirmClose} title={t('Save comment changes?')} className="ai-owned-focus">
+      <p>{t('Save your edits or discard them before closing this comment.')}</p>
+      <div className="comment-confirm-actions"><button type="button" className="button" onClick={() => setConfirmClose(false)}>{t('Cancel')}</button>
+        <button type="button" className="button" onClick={onClose}>{t('Discard changes')}</button>
+        <button type="button" className="button button-primary" disabled={busy} onClick={() => { void execute(false).then(ok => { if (ok) { setConfirmClose(false); onClose(); } }); }}>{t('Save comment')}</button>
       </div>
     </AppDialog>
   </>;

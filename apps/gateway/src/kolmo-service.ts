@@ -49,6 +49,15 @@ function optionsOf(value: unknown): KolmoTranslationOptions {
   }
   return options;
 }
+function pdfInput(body: Record<string, unknown>): { name: string; bytes: Buffer<ArrayBuffer> } {
+  const name = text(body.name, 'PDF filename');
+  if (!Number.isInteger(body.pageCount) || (body.pageCount as number) < 1 || (body.pageCount as number) > 800) invalid('PDF must contain 1–800 pages');
+  if (typeof body.pdfBase64 !== 'string' || !body.pdfBase64.length || body.pdfBase64.length > Math.ceil(MAX_PDF_BYTES / 3) * 4
+    || /[^A-Za-z0-9+/=]/.test(body.pdfBase64)) invalid('Invalid PDF data (maximum 50 MiB)');
+  const bytes = Buffer.from(body.pdfBase64, 'base64');
+  if (bytes.toString('base64') !== body.pdfBase64 || bytes.length > MAX_PDF_BYTES || bytes.subarray(0, 5).toString() !== '%PDF-') invalid('Expected PDF data up to 50 MiB');
+  return { name, bytes };
+}
 function balancePoints(value: unknown): number | null {
   const data = record(value);
   for (const field of ['points', 'available_points', 'balance', 'remaining_points']) {
@@ -120,12 +129,7 @@ export function registerKolmoService(app: FastifyInstance, options: Options): vo
     points: balancePoints(await (await upstream('/api/v1/balance', key, signal)).json()) }));
   route('POST', '/api/v1/kolmo/jobs/translate-pdf', async (request, _reply, key, signal) => {
     const body = record(request.body);
-    const name = text(body.name, 'PDF filename');
-    if (!Number.isInteger(body.pageCount) || (body.pageCount as number) < 1 || (body.pageCount as number) > 800) invalid('PDF must contain 1–800 pages');
-    if (typeof body.pdfBase64 !== 'string' || !body.pdfBase64.length || body.pdfBase64.length > Math.ceil(MAX_PDF_BYTES / 3) * 4
-      || /[^A-Za-z0-9+/=]/.test(body.pdfBase64)) invalid('Invalid PDF data (maximum 50 MiB)');
-    const bytes = Buffer.from(body.pdfBase64, 'base64');
-    if (bytes.toString('base64') !== body.pdfBase64 || bytes.length > MAX_PDF_BYTES || bytes.subarray(0, 5).toString() !== '%PDF-') invalid('Expected PDF data up to 50 MiB');
+    const { name, bytes } = pdfInput(body);
     const idempotencyKey = text(request.headers['idempotency-key'], 'Idempotency-Key', 200);
     const translation = optionsOf(body.options);
     const form = new FormData();
@@ -137,6 +141,14 @@ export function registerKolmoService(app: FastifyInstance, options: Options): vo
     if (translation.glossary) form.append('glossary', new Blob([translation.glossary.text], { type: 'text/csv;charset=utf-8' }), translation.glossary.name);
     return publicJob(await (await upstream('/api/v1/jobs/translate-pdf', key, signal,
       { method: 'POST', body: form, headers: { 'Idempotency-Key': idempotencyKey } })).json(), key);
+  }, 74 * 1024 * 1024);
+  route('POST', '/api/v1/kolmo/jobs/parse', async (request, _reply, key, signal) => {
+    const { name, bytes } = pdfInput(record(request.body));
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type: 'application/pdf' }), name);
+    form.append('images_as_url', 'true'); form.append('enrichment', 'none'); form.append('enable_translation', 'false');
+    return publicJob(await (await upstream('/api/v1/jobs/parse', key, signal, { method: 'POST', body: form,
+      headers: { 'Idempotency-Key': text(request.headers['idempotency-key'], 'Idempotency-Key', 200) } })).json(), key);
   }, 74 * 1024 * 1024);
   const idOf = (request: FastifyRequest) => jobId((request.params as { id: string }).id);
   route('GET', '/api/v1/kolmo/jobs/:id', async (request, _reply, key, signal) =>
@@ -161,6 +173,6 @@ export function registerKolmoService(app: FastifyInstance, options: Options): vo
         }
       } finally { reader.releaseLock(); }
     }
-    return reply.type(mime === 'application/pdf' || mime === 'application/zip' ? mime : 'application/octet-stream').send(Buffer.concat(chunks, total));
+    return reply.type(['application/pdf', 'application/zip', 'text/markdown', 'text/plain'].includes(mime ?? '') ? mime! : 'application/octet-stream').send(Buffer.concat(chunks, total));
   });
 }

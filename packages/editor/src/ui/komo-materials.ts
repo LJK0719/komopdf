@@ -5,7 +5,7 @@ import { collectDocumentPassages, type DocumentPassage } from './document-ai-con
 
 export type MaterialDocuments = Pick<EditorAiContext, 'document' | 'documents' | 'getDocumentInfo'>;
 export const MATERIAL_EXPIRED = 'The document changed while preparing your materials. Send again to use the latest version.';
-export const MATERIAL_UPDATE_PROMPT = 'File changes detected. Save?';
+export const MATERIAL_UPDATE_PROMPT = 'Update material';
 export const MATERIAL_CLOSED = 'This reference PDF is closed. Open it again to continue.';
 export const MATERIAL_SELECTION_CHANGED = 'The original selection has changed. Select the passage again or remove this material.';
 export class MaterialContextError extends Error {}
@@ -60,21 +60,12 @@ export async function refreshMaterial(material: AiMaterial, context: MaterialDoc
 }
 
 export async function prepareMaterials(materials: readonly AiMaterial[], context: MaterialDocuments & Pick<EditorAiContext, 'engine' | 'confirmMaterialUpdate' | 'prepareDocument'>,
-  signal: AbortSignal, changedNames: readonly string[] = [], saveDocumentIds: readonly string[] = []): Promise<AiMaterial[] | null> {
+  signal: AbortSignal, _changedNames: readonly string[] = [], _saveDocumentIds: readonly string[] = []): Promise<AiMaterial[] | null> {
   const changed: AiMaterial[] = [];
   for (const material of materials) {
     const issue = materialIssue(material, context);
     if (issue && issue !== MATERIAL_UPDATE_PROMPT) throw new MaterialContextError(issue);
     if (issue) changed.push(material);
-  }
-  if (changed.length || changedNames.length) {
-    const names = [...new Set([...changed.map(material => material.name), ...changedNames])];
-    if (await context.confirmMaterialUpdate?.(names, signal) !== 'save') return null;
-    signal.throwIfAborted();
-    for (const id of new Set([...changed.map(material => material.documentId), ...saveDocumentIds])) {
-      if (!context.prepareDocument) throw new MaterialContextError('Unable to save this PDF. Try saving again.');
-      if ((await context.prepareDocument(id, signal)).status === 'cancelled') return null;
-    }
   }
   const prepared: AiMaterial[] = [];
   for (const material of materials) {

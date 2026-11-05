@@ -626,9 +626,6 @@ export function OcrPanel({
           </div>
         )}
 
-        <details><summary>{t('Searchable Text Layer')}</summary>
-          <p>{t('Adds an invisible searchable text layer over the document. The original scanned image is preserved. Injected OCR text objects can later be inspected and edited using the Text panel. Recognition results are executed locally and never uploaded.')}</p>
-        </details>
       </div>
       <footer className="task-panel-footer">
         {statusMessage ? <p className="layout-result" role="status">{t(statusMessage.message, statusMessage.values)}</p> : null}

@@ -78,7 +78,10 @@ function fixture() {
     finishReason: 'STOP', usage,
   }));
   const app = buildGateway({ config, accounts, agentProxy: { forward },
-    provider: { generate, async *stream() { throw new Error('Unexpected streaming request'); } }, runtimeLogger: { write() {} } });
+    provider: { generate, async *stream(input, signal) {
+      const result = await generate(input, signal);
+      yield { type: 'text', text: result.text }; yield { type: 'finish', finishReason: 'STOP' }; yield { type: 'usage', usage };
+    } }, runtimeLogger: { write() {} } });
   apps.push(app);
   return { app, store, forward, generate, reserve, headers: { authorization: `Bearer ${token}` } };
 }

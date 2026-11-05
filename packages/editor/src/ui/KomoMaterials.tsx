@@ -38,33 +38,31 @@ export function KomoMaterials({ context, materials, onAdd, onRemove }: Props) {
     finally { if (!abort.signal.aborted) setReading(false); pending.current = null; }
   };
   if (!materials.length && (context.documents?.length ?? 0) < 2) return null;
-  return <div className="komo-materials" aria-label={t('Pending materials')}>
-    <div className="komo-materials-heading"><span>{t('Pending materials')}</span><small>{t('References are read-only')}</small></div>
+  return <div className="komo-materials" aria-label={t('Attachments')}>
+    <div className="komo-materials-heading"><span>{t('Attachments')}</span></div>
     {materials.map(material => {
-      const valid = isMaterialCurrent(material, context);
+      const valid = isMaterialCurrent(material, context), issue = materialIssue(material, context);
       return <details className="komo-material-card" key={material.id}>
-        <summary><strong>{material.name}</strong><span>{t(material.kind === 'document' ? 'Reference PDF' : material.kind === 'selection' ? 'Selected passage' : 'Attached text')}</span>
-          {material.generatedText ? <span>{t('Generated text')}</span> : null}</summary>
+        <summary><strong>{material.name}</strong><span>{t(material.kind === 'document' ? 'PDF' : material.kind === 'selection' ? 'Selected text' : 'Text')}</span></summary>
         <div className="komo-material-card-body">
-          <p>{material.locations.length ? `${t('Pages')}: ${[...new Set(material.locations.map(location => location.pageNumber))].join(', ')}` : t('Attached text')}
-            {material.action ? ` · ${material.action}` : ''}{material.sourceLanguage ? ` · ${material.sourceLanguage} → ${material.targetLanguage ?? ''}` : ''}</p>
-          {material.text ? <><h4>{t(material.kind === 'text' ? 'Attached text' : 'PDF original')}</h4><pre>{material.text}</pre></> : null}
-          {material.generatedText ? <><h4>{t(material.generatedFromRevision !== undefined && material.generatedFromRevision !== material.revision ? 'Generated text from an earlier version' : 'Generated text')}</h4><p>{t('Generated text is not a quotation from the PDF.')}</p><pre>{material.generatedText}</pre></> : null}
-          {!valid ? <p role="status">{t(materialIssue(material, context)!)}</p> : null}
-          {materialIssue(material, context) === MATERIAL_UPDATE_PROMPT ? <button type="button" disabled={reading} onClick={() => void refresh(material)}>{t('Save and update material')}</button> : null}
-          <div className="komo-material-actions">{context.locateMaterial && material.locations.length ? <button type="button" disabled={!valid || materialDocument(context, material.documentId)?.revision !== material.revision}
-            onClick={() => void context.locateMaterial!(material).catch(() => setError('Unable to locate this material.'))}>{t('Locate source')}</button> : null}
+          {material.locations.length > 0 && <p>{t('Pages')}: {[...new Set(material.locations.map(location => location.pageNumber))].join(', ')}</p>}
+          {material.text && <><h4>{t('Original text')}</h4><pre>{material.text}</pre></>}
+          {material.generatedText && <><h4>{t('AI result')}</h4><pre>{material.generatedText}</pre></>}
+          {!valid && issue !== MATERIAL_UPDATE_PROMPT && <p role="status">{t(issue!)}</p>}
+          {issue === MATERIAL_UPDATE_PROMPT && <button type="button" disabled={reading} onClick={() => void refresh(material)}>{t('Update material')}</button>}
+          <div className="komo-material-actions">{context.locateMaterial && material.locations.length > 0 && <button type="button" disabled={!valid || materialDocument(context, material.documentId)?.revision !== material.revision}
+            onClick={() => void context.locateMaterial!(material).catch(() => setError('Unable to locate this material.'))}>{t('Locate source')}</button>}
             <button type="button" onClick={() => onRemove(material.id)}>{t('Remove material')}</button></div>
         </div>
       </details>;
     })}
-    {context.documents && context.documents.length > 1 ? <label>{t('Add reference PDF')}<select aria-label={t('Add reference PDF')} value="" disabled={reading}
+    {context.documents && context.documents.length > 1 && <label>{t('Add PDF')}<select aria-label={t('Add PDF')} value="" disabled={reading}
       onChange={event => { if (event.target.value) void addDocument(event.target.value); }}>
       <option value="">{t('Choose an open PDF…')}</option>
       {context.documents.filter(document => document.id !== context.document?.id).map(document => <option key={document.id} value={document.id}
         disabled={materials.some(material => material.kind === 'document' && material.documentId === document.id)}>{document.name}</option>)}
-    </select></label> : null}
-    {reading ? <p role="status">{t('Reading reference PDF…')}</p> : null}
-    {error ? <p role="alert">{t(error)}</p> : null}
+    </select></label>}
+    {reading && <p role="status">{t('Reading document…')}</p>}
+    {error && <p role="alert">{t(error)}</p>}
   </div>;
 }

@@ -42,6 +42,16 @@ void TestPlainSourceParagraphEdit() {
   };
   unchanged_prefix(RenderPixels(doc, 0, 300, 300));
   auto updated = RequireResult(pde_describe_page(doc, 0), "source paragraph result");
+  const auto check_character_position = [](const std::string& description) {
+    const auto start = description.find("\"characters\":[");
+    Require(start != std::string::npos, "edited source paragraph has character geometry");
+    const auto characters = description.substr(start);
+    const double x = JsonNumberAfter(characters, "\"x\":");
+    const double y = JsonNumberAfter(characters, "\"y\":");
+    Require(x >= 18 && x <= 40 && y >= 35 && y <= 75,
+        "ActualText characters use page coordinates after source text becomes a Form");
+  };
+  check_character_position(updated);
   const auto paragraph_block = TextBlockIds(updated).front();
   const char* paragraph_ids[] = {paragraph_block.c_str()};
   PdeEditCommand resize{}; resize.type = 29; resize.page_id = page.c_str(); resize.ids = paragraph_ids; resize.id_count = 1;
@@ -52,6 +62,7 @@ void TestPlainSourceParagraphEdit() {
   Require(pde_apply_commands(doc, 2, "continue-source-frame", &replace, 1) != nullptr, "saved source paragraph can continue with multiline plain content");
   unchanged_prefix(RenderPixels(doc, 0, 300, 300));
   updated = RequireResult(pde_describe_page(doc, 0), "continued fixed source paragraph");
+  check_character_position(updated);
   Require(updated.find("\"fixedFrame\":true") != std::string::npos && updated.find("Another line") != std::string::npos,
       "plain source continuation retains fixed frame and logical lines");
   Require(pde_save_memory(doc) != nullptr, "save plain source paragraph");

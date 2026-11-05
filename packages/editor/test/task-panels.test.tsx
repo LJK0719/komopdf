@@ -34,8 +34,9 @@ describe('task panel layout and delivery', () => {
       wordAvailable={false} onExport={onExport} />);
     expectFooterAction(html, 'Export PDF');
     expect(html).toContain('href="/download/"');
-    expect(html).toContain('Save a PDF copy first');
-    expect(html).toContain('do not transfer automatically');
+    expect(html).toContain('Convert PDFs to editable Word documents in the desktop app.');
+    expect(html).toContain('button button-primary');
+    expect(html).not.toContain('do not transfer automatically');
     expect(onExport).not.toHaveBeenCalled();
   });
 

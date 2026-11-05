@@ -89,8 +89,10 @@ const invalidRequests: Array<[string, Record<string, unknown>]> = [
 ];
 
 describe('text action contracts', () => {
-  it('exports the six actions and all native language labels, supporting auto only for source', () => {
-    expect(TEXT_ACTIONS).toEqual(['translate', 'explain', 'summarize', 'proofread', 'rewrite', 'shorten']);
+  it('supports free instructions alongside existing text actions and language labels', () => {
+    expect(TEXT_ACTIONS).toEqual(['translate', 'assist', 'explain', 'summarize', 'proofread', 'rewrite', 'shorten']);
+    expect(textActionRequestSchema.safeParse({ ...requestBody, action: 'assist' }).success).toBe(false);
+    expect(textActionRequestSchema.safeParse({ ...requestBody, action: 'assist', instruction: 'Make this clearer.' }).success).toBe(true);
     expect(TEXT_LANGUAGES.map(language => language.code)).toEqual([
       'en', 'zh', 'zh-TW', 'ja', 'ko', 'fr', 'de', 'es', 'it', 'pt', 'ru', 'ar', 'hi', 'tr', 'vi', 'th', 'nl', 'pl', 'sv', 'id', 'uk', 'he',
     ]);
@@ -175,7 +177,7 @@ describe('anonymous, unbilled text action route', () => {
     expect(input.systemInstruction).toContain('Target language: zh-TW (繁體中文)');
     expect(input.systemInstruction).toContain('precise academic tone');
     expect(input.systemInstruction).not.toContain(text);
-    expect(input.parts).toEqual([{ text: JSON.stringify({ segments: [{ id: 's1', text }] }) }]);
+    expect(input.parts).toEqual([{ text: JSON.stringify({ requestId: 'text-1', action: 'translate', instruction: '', segments: [{ id: 's1', text }] }) }]);
   });
 
   it.each(['neutral', 'formal', 'concise', 'friendly', 'professional', 'academic'] as const)('uses the fixed %s tone', async tone => {
@@ -218,13 +220,28 @@ describe('anonymous, unbilled text action route', () => {
     ['missing segment', { ...resultBody, segments: [] }],
     ['unexpected segment', { ...resultBody, segments: [{ id: 'other', text: 'text' }] }],
     ['duplicate segment', { ...resultBody, segments: [...resultBody.segments, ...resultBody.segments] }],
-    ['wrong request id', { ...resultBody, requestId: 'other' }],
-    ['wrong action', { ...resultBody, action: 'rewrite' }],
   ])('rejects model output with %s', async (_name, result) => {
     const { app } = fixture(fakeProvider({ async generate() { return generated(result); } }));
     const response = await app.inject({ method: 'POST', url, payload: requestBody });
     expect(response.statusCode).toBe(502);
     expect(response.json().error.code).toBe('INVALID_MODEL_OUTPUT');
+  });
+
+  it('binds the response to the actual HTTP request instead of asking the model to copy transport ids', async () => {
+    const { app } = fixture(fakeProvider({ async generate() { return generated({ ...resultBody, requestId: 'model-id', action: 'rewrite' }); } }));
+    const response = await app.inject({ method: 'POST', url, payload: requestBody });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ requestId: requestBody.requestId, action: requestBody.action });
+  });
+
+  it.each(['answer', 'replacement'] as const)('returns a free-instruction %s through the same text service', async kind => {
+    const provider = fakeProvider({ generate: vi.fn(async () => generated({ ...resultBody, action: 'assist', kind })) });
+    const { app } = fixture(provider);
+    const response = await app.inject({ method: 'POST', url, payload: { ...requestBody, action: 'assist', instruction: kind === 'answer' ? 'Explain this passage.' : 'Rewrite this more clearly.' } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ action: 'assist', kind, segments: resultBody.segments });
+    const sent = JSON.parse((vi.mocked(provider.generate).mock.calls[0]![0].parts[0] as { text: string }).text);
+    expect(sent.instruction).toBe(kind === 'answer' ? 'Explain this passage.' : 'Rewrite this more clearly.');
   });
 
   it('requires every requested segment and restores original order without dropping reasons', async () => {

@@ -6,6 +6,7 @@ import {
 } from '@pdf-editor/contracts';
 
 const STORAGE_KEY = 'komopdf.kolmo-jobs.v1';
+const CONNECTION_KEY = 'komopdf.kolmo-key.v1';
 const MAX_RESULT_BYTES = 200 * 1024 * 1024;
 type JobStorage = Pick<Storage, 'getItem' | 'setItem'>;
 type Options = { fetch?: typeof fetch; storage?: JobStorage | null };
@@ -27,6 +28,7 @@ function clone<T>(value: T): T { return structuredClone(value); }
 export class WebAiServices implements EditorAiServices {
   private key = '';
   private connectionVersion = 0;
+  private readonly listeners = new Set<() => void>();
   private readonly fetcher: typeof fetch;
   private readonly storage: JobStorage | null;
   private readonly jobs = new Map<string, KolmoSavedJob>();
@@ -35,6 +37,7 @@ export class WebAiServices implements EditorAiServices {
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.storage = options.storage === undefined ? browserStorage() : options.storage;
     try {
+      this.key = this.storage?.getItem(CONNECTION_KEY) ?? '';
       const stored: unknown = JSON.parse(this.storage?.getItem(STORAGE_KEY) ?? 'null');
       if (stored && typeof stored === 'object' && 'version' in stored && stored.version === 1 && 'jobs' in stored && Array.isArray(stored.jobs)) {
         for (const entry of stored.jobs as KolmoSavedJob[]) {
@@ -45,7 +48,7 @@ export class WebAiServices implements EditorAiServices {
           }
         }
       }
-    } catch { /* Job history is optional when storage is blocked or unavailable. */ }
+    } catch { /* Retain current-session service access when storage is unavailable. */ }
   }
 
   async textAction(request: TextActionRequest, signal: AbortSignal): Promise<TextActionResult> {
@@ -73,29 +76,45 @@ export class WebAiServices implements EditorAiServices {
   async configureKolmo(key: string): Promise<KolmoConnection> {
     const version = ++this.connectionVersion;
     const candidate = key.trim();
-    if (!candidate) { this.key = ''; return { configured: false, points: null }; }
     if (candidate.length > 512 || /[\r\n\0]/.test(candidate)) throw new Error('Invalid KolmoPDF API key');
-    const result = await (await this.request('/api/v1/kolmo/balance', {}, candidate)).json() as KolmoConnection;
+    const result: KolmoConnection = candidate
+      ? await (await this.request('/api/v1/kolmo/balance', {}, candidate)).json() as KolmoConnection
+      : { configured: false, points: null };
     if (version !== this.connectionVersion) throw new DOMException('Connection changed', 'AbortError');
-    if (!result.configured) throw new Error('Unable to verify the KolmoPDF API key');
+    if (candidate && !result.configured) throw new Error('Unable to verify the KolmoPDF API key');
     this.key = candidate;
+    try { this.storage?.setItem(CONNECTION_KEY, candidate); } catch { /* Current connection remains usable. */ }
+    this.listeners.forEach(listener => listener());
     return result;
   }
 
-  async translateDocument(input: KolmoDocumentInput, options: KolmoTranslationOptions, submissionId: string, signal: AbortSignal): Promise<KolmoJob> {
+  async subscribeKolmoConnection(listener: () => void): Promise<() => void> {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  translateDocument(input: KolmoDocumentInput, options: KolmoTranslationOptions, submissionId: string, signal: AbortSignal): Promise<KolmoJob> {
+    return this.submitDocument('translate', input, submissionId, signal, options);
+  }
+
+  parseDocument(input: KolmoDocumentInput, submissionId: string, signal: AbortSignal): Promise<KolmoJob> {
+    return this.submitDocument('parse', input, submissionId, signal);
+  }
+
+  private async submitDocument(operation: 'parse' | 'translate', input: KolmoDocumentInput, submissionId: string, signal: AbortSignal, options?: KolmoTranslationOptions): Promise<KolmoJob> {
     signal.throwIfAborted();
-    if (input.snapshot.kind !== 'bytes') throw new Error('Web translation requires a PDF snapshot');
-    if (input.snapshot.docId !== input.documentId || input.snapshot.savedRevision !== input.revision) throw new Error('The translation snapshot does not match this document revision');
-    if (!input.snapshot.bytes.byteLength || input.snapshot.bytes.byteLength > WEB_LIMITS.inputBytes) throw new Error('Web translation supports PDFs up to 50 MiB');
+    if (input.snapshot.kind !== 'bytes') throw new Error('Choose a PDF to continue');
+    if (input.snapshot.docId !== input.documentId || input.snapshot.savedRevision !== input.revision) throw new Error('The PDF changed. Please try again.');
+    if (!input.snapshot.bytes.byteLength || input.snapshot.bytes.byteLength > WEB_LIMITS.inputBytes) throw new Error('Choose a PDF smaller than 50 MB');
     if (!Number.isInteger(input.pageCount) || input.pageCount < 1 || input.pageCount > 800) throw new Error('KolmoPDF supports PDFs with 1–800 pages');
-    if (!submissionId.trim() || submissionId.length > 200 || /[\r\n\0]/.test(submissionId)) throw new Error('Invalid translation submission id');
-    const key = this.requiredKey();
-    const job = await (await this.request('/api/v1/kolmo/jobs/translate-pdf', { method: 'POST', signal,
-      headers: { 'content-type': 'application/json', 'Idempotency-Key': submissionId },
-      body: JSON.stringify({ name: input.name, pageCount: input.pageCount, pdfBase64: base64(input.snapshot.bytes), options }) }, key)).json() as KolmoJob;
+    if (!submissionId.trim() || submissionId.length > 200 || /[\r\n\0]/.test(submissionId)) throw new Error('Invalid submission id');
+    const job = await (await this.request(`/api/v1/kolmo/jobs/${operation === 'parse' ? 'parse' : 'translate-pdf'}`, {
+      method: 'POST', signal, headers: { 'content-type': 'application/json', 'Idempotency-Key': submissionId },
+      body: JSON.stringify({ name: input.name, pageCount: input.pageCount, pdfBase64: base64(input.snapshot.bytes), ...(options ? { options } : {}) }),
+    }, this.requiredKey())).json() as KolmoJob;
     const previous = this.jobs.get(job.id);
     this.jobs.set(job.id, previous ? { ...previous, job }
-      : { job, name: input.name, createdAt: Date.now(), documentId: input.documentId, revision: input.revision });
+      : { job, operation, name: input.name, createdAt: Date.now(), documentId: input.documentId, revision: input.revision });
     this.persist();
     return clone(job);
   }
@@ -111,15 +130,17 @@ export class WebAiServices implements EditorAiServices {
 
   async downloadKolmoResult(id: string, signal: AbortSignal): Promise<KolmoFile[]> {
     const job = await this.getKolmoJob(id, signal);
-    if (job.status !== 'succeeded' || !job.result) throw new Error('The translation result is not ready');
-    if (!['pdf', 'zip'].includes(job.result.kind)) throw new Error('KolmoPDF returned an unsupported translation result');
+    if (job.status !== 'succeeded' || !job.result) throw new Error('The result is not ready yet');
+    if (!['pdf', 'zip', 'markdown'].includes(job.result.kind)) throw new Error('KolmoPDF returned an unsupported result');
     const response = await this.request(`${idPath(id)}/download`, { signal }, this.requiredKey());
     const bytes = await response.arrayBuffer();
     signal.throwIfAborted();
-    if (bytes.byteLength > MAX_RESULT_BYTES) throw new Error('Translation result exceeds the 200 MiB web download limit');
+    if (bytes.byteLength > MAX_RESULT_BYTES) throw new Error('The result is too large to download in this browser');
     const result = job.result;
     const files: KolmoFile[] = [{ kind: 'bytes', name: result.filename,
-      mimeType: result.content_type ?? (result.kind === 'pdf' ? 'application/pdf' : 'application/zip'), bytes }];
+      mimeType: result.kind === 'markdown' ? 'text/markdown;charset=utf-8'
+        : result.content_type ?? (result.kind === 'pdf' ? 'application/pdf' : 'application/zip'), bytes }];
+    if (result.kind === 'markdown') return files;
     const signature = new Uint8Array(bytes, 0, Math.min(5, bytes.byteLength));
     if (result.kind === 'pdf') {
       if (new TextDecoder().decode(signature) !== '%PDF-') throw new Error('KolmoPDF did not return a PDF');
@@ -145,7 +166,7 @@ export class WebAiServices implements EditorAiServices {
   }
 
   private requiredKey(): string {
-    if (!this.key) throw new Error('Connect your KolmoPDF API key to continue');
+    if (!this.key) throw new Error('Connect KolmoPDF to continue');
     return this.key;
   }
   private remember(job: KolmoJob): KolmoJob {

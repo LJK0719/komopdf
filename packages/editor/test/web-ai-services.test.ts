@@ -8,29 +8,37 @@ const options: KolmoTranslationOptions = { sourceLanguage: 'en', targetLanguage:
 const input: KolmoDocumentInput = { name: 'edited.pdf', pageCount: 3, documentId: 'doc-one', revision: 7,
   snapshot: { kind: 'bytes', bytes: strToU8('%PDF-edited-revision-7').buffer, docId: 'doc-one', savedRevision: 7 } };
 function memoryStorage() {
-  let content = '';
-  return { getItem: vi.fn(() => content), setItem: vi.fn((_key: string, value: string) => { content = value; }), content: () => content };
+  const values = new Map<string, string>();
+  return { getItem: vi.fn((key: string) => values.get(key) ?? null), setItem: vi.fn((key: string, value: string) => { values.set(key, value); }),
+    content: (key = 'komopdf.kolmo-jobs.v1') => values.get(key) ?? '' };
 }
 const balance = () => Response.json({ configured: true, points: 90 });
 
 describe('WebAiServices', () => {
-  it('keeps credentials per instance, verifies replacement first, and clears on disconnect', async () => {
+  it('keeps the connection across reloads, verifies a replacement first and notifies all panels', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
       const key = (init?.headers as Record<string, string>)['x-kolmo-api-key'];
       return key === 'bad-key' ? Response.json({ error: { message: 'Invalid API key' } }, { status: 401 }) : balance();
     });
-    const storage = memoryStorage(); const one = new WebAiServices({ fetch: fetcher, storage });
-    const two = new WebAiServices({ fetch: fetcher, storage });
-    await expect(one.configureKolmo('key-one')).resolves.toEqual({ configured: true, points: 90 });
-    await expect(two.kolmoConnection()).resolves.toEqual({ configured: false, points: null });
-    await expect(one.configureKolmo('bad-key')).rejects.toThrow('Invalid API key');
-    await one.kolmoConnection();
+    const storage = memoryStorage();
+    const services = new WebAiServices({ fetch: fetcher, storage });
+    const changed = vi.fn(); const stop = await services.subscribeKolmoConnection(changed);
+    await expect(services.configureKolmo('key-one')).resolves.toEqual({ configured: true, points: 90 });
+    expect(changed).toHaveBeenCalledOnce();
+    const reloaded = new WebAiServices({ fetch: fetcher, storage });
+    await expect(reloaded.kolmoConnection()).resolves.toEqual({ configured: true, points: 90 });
+    await expect(services.configureKolmo('bad-key')).rejects.toThrow('Invalid API key');
+    await services.kolmoConnection();
     expect(fetcher.mock.lastCall?.[1]?.headers).toEqual({ 'x-kolmo-api-key': 'key-one' });
     expect(fetcher.mock.calls.every(([_url, init]) => init?.credentials === 'omit')).toBe(true);
-    expect(storage.content()).not.toContain('key-one'); expect(storage.setItem).not.toHaveBeenCalled();
-    await one.configureKolmo(''); const calls = fetcher.mock.calls.length;
-    await expect(one.kolmoConnection()).resolves.toEqual({ configured: false, points: null });
-    await expect(one.translateDocument(input, options, 'submission-one', signal())).rejects.toThrow('Connect'); expect(fetcher).toHaveBeenCalledTimes(calls);
+    expect(storage.content('komopdf.kolmo-key.v1')).toBe('key-one');
+    await services.configureKolmo('');
+    expect(changed).toHaveBeenCalledTimes(2); stop();
+    const calls = fetcher.mock.calls.length;
+    await expect(services.kolmoConnection()).resolves.toEqual({ configured: false, points: null });
+    await expect(services.translateDocument(input, options, 'submission-one', signal())).rejects.toThrow('Connect');
+    expect(fetcher).toHaveBeenCalledTimes(calls);
+    expect(storage.content('komopdf.kolmo-key.v1')).toBe('');
   });
   it('disconnect wins over a pending key verification', async () => {
     let finish!: (value: Response) => void;
@@ -40,7 +48,7 @@ describe('WebAiServices', () => {
     await expect(connecting).rejects.toMatchObject({ name: 'AbortError' });
     await expect(services.kolmoConnection()).resolves.toEqual({ configured: false, points: null });
   });
-  it('uses the exact snapshot and stable submission id; persists only accurate job metadata', async () => {
+  it('uses the exact snapshot and stable submission id; keeps the job and connection after reload', async () => {
     const storage = memoryStorage();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(balance())
       .mockRejectedValueOnce(new TypeError('connection lost'))
@@ -55,12 +63,28 @@ describe('WebAiServices', () => {
       expect(JSON.parse(call[1]?.body as string)).toEqual({ name: 'edited.pdf', pageCount: 3, pdfBase64: Buffer.from(input.snapshot.kind === 'bytes' ? input.snapshot.bytes : new ArrayBuffer(0)).toString('base64'), options });
     }
     expect((await services.getKolmoJob('job_one', signal())).status).toBe('processing');
-    const [saved] = await services.listKolmoJobs(); expect(saved).toMatchObject({ name: 'edited.pdf', documentId: 'doc-one', revision: 7, job: { status: 'processing', progress: 37 } });
+    const [saved] = await services.listKolmoJobs();
+    expect(saved).toMatchObject({ operation: 'translate', name: 'edited.pdf', documentId: 'doc-one', revision: 7, job: { status: 'processing', progress: 37 } });
     expect(saved?.createdAt).toBeGreaterThan(0);
     expect(storage.content()).not.toContain('key-one'); expect(storage.content()).not.toContain('pdfBase64'); expect(storage.content()).not.toContain('%PDF');
     const restored = new WebAiServices({ fetch: fetcher, storage });
     expect(await restored.listKolmoJobs()).toEqual(await services.listKolmoJobs());
-    await expect(restored.kolmoConnection()).resolves.toEqual({ configured: false, points: null });
+    fetcher.mockResolvedValueOnce(balance());
+    await expect(restored.kolmoConnection()).resolves.toEqual({ configured: true, points: 90 });
+  });
+  it('parses the current PDF and downloads Markdown through the same connected service', async () => {
+    const completed = { id: 'job_read', status: 'succeeded', result: { filename: 'edited.md', kind: 'markdown', download_url: '/api/v1/jobs/job_read/download' } };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(balance()).mockResolvedValueOnce(Response.json({ id: 'job_read', status: 'queued' }))
+      .mockResolvedValueOnce(Response.json(completed)).mockResolvedValueOnce(new Response('# Research\n\nA complete reading.'));
+    const services = new WebAiServices({ fetch: fetcher, storage: memoryStorage() });
+    await services.configureKolmo('key-one');
+    await services.parseDocument(input, 'read-current-version', signal());
+    expect(fetcher.mock.calls[1]?.[0]).toBe('/api/v1/kolmo/jobs/parse');
+    expect(JSON.parse(fetcher.mock.calls[1]?.[1]?.body as string)).toMatchObject({ name: 'edited.pdf', pageCount: 3 });
+    expect((await services.listKolmoJobs())[0]).toMatchObject({ operation: 'parse', documentId: 'doc-one', revision: 7 });
+    const files = await services.downloadKolmoResult('job_read', signal());
+    expect(files[0]).toMatchObject({ kind: 'bytes', name: 'edited.md', mimeType: 'text/markdown;charset=utf-8' });
+    expect(files[0]?.kind === 'bytes' && new TextDecoder().decode(files[0].bytes)).toContain('A complete reading.');
   });
   it('reconnects and downloads actual PDF metadata without resubmitting after download failure', async () => {
     const storage = memoryStorage();
@@ -105,7 +129,7 @@ describe('WebAiServices', () => {
     expect(fetcher.mock.lastCall?.[1]?.headers).toEqual({ 'content-type': 'application/json' });
     const controller = new AbortController(); controller.abort(); await expect(services.textAction(request, controller.signal)).rejects.toMatchObject({ name: 'AbortError' }); expect(fetcher).toHaveBeenCalledTimes(2);
   });
-  it('preserves text-service failures without job retry or key advice and does not automatically retry', async () => {
+  it('preserves text-service failures without automatically retrying', async () => {
     const request: TextActionRequest = { requestId: 'text-error', action: 'translate', sourceLanguage: 'auto', targetLanguage: 'zh', tone: 'neutral', segments: [{ id: 'sentence', text: 'A complete sentence.' }] };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: { code: 'REQUEST_TIMEOUT', message: 'AI request processing timed out' } }, { status: 504 }))
       .mockRejectedValueOnce(new TypeError('Failed to fetch'));
@@ -115,10 +139,10 @@ describe('WebAiServices', () => {
     await expect(services.textAction(request, signal())).rejects.toThrow('Unable to connect to the AI service. Check your connection and try again.');
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
-  it('rejects mismatched/native snapshots before any paid submission', async () => {
+  it('rejects mismatched/native snapshots before submission', async () => {
     const fetcher = vi.fn<typeof fetch>(); const services = new WebAiServices({ fetch: fetcher, storage: null });
-    await expect(services.translateDocument({ ...input, revision: 8 }, options, 'submit', signal())).rejects.toThrow('revision');
-    await expect(services.translateDocument({ ...input, snapshot: { kind: 'native-file', handle: 'file', docId: 'doc-one', savedRevision: 7 } }, options, 'submit', signal())).rejects.toThrow('snapshot');
+    await expect(services.translateDocument({ ...input, revision: 8 }, options, 'submit', signal())).rejects.toThrow('PDF changed');
+    await expect(services.translateDocument({ ...input, snapshot: { kind: 'native-file', handle: 'file', docId: 'doc-one', savedRevision: 7 } }, options, 'submit', signal())).rejects.toThrow('Choose a PDF');
     expect(fetcher).not.toHaveBeenCalled();
   });
 });

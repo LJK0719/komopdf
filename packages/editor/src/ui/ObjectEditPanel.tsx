@@ -207,9 +207,8 @@ export function ObjectEditPanel({ mode = 'edit', section, pageSelection, documen
           { type: 'pages.duplicate', pageIds: [page.id], newPageIds: [crypto.randomUUID()], afterPageId: page.id },
         ]))}>{t("Duplicate page")}</button>}
         {supports('pages.import') && onImportPages && <button disabled={locked} onClick={onImportPages}>{t("Import PDF pages")}</button>}
-        {supports('pages.delete') && <button disabled={locked || document.pageOrder.length <= 1} onClick={() => {
-          if (window.confirm(t("Delete this page? You can undo this action."))) void run(() => execute([{ type: 'pages.delete', pageIds: [page.id] }]));
-        }}>{t("Delete page")}</button>}
+        {supports('pages.delete') && <button disabled={locked || document.pageOrder.length <= 1}
+          onClick={() => void run(() => execute([{ type: 'pages.delete', pageIds: [page.id] }]))}>{t("Delete page")}</button>}
         {supports('pages.reorder') && <>
           <button disabled={locked || document.pageOrder[0] === page.id} onClick={() => void run(async () => { await reorder(-1); })}>{t("Move page earlier")}</button>
           <button disabled={locked || document.pageOrder.at(-1) === page.id} onClick={() => void run(async () => { await reorder(1); })}>{t("Move page later")}</button>

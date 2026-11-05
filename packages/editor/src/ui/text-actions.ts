@@ -3,7 +3,7 @@ import { readingRegions } from './reading-order.js';
 import { logicalTextBlock, logicalTextRange } from './source-text.js';
 
 export const TEXT_ACTION_LABELS: Record<TextAction, string> = {
-  translate: 'AI translate', explain: 'Explain selection', summarize: 'Summarize selection',
+  translate: 'Translate', assist: 'Use AI', explain: 'Explain selection', summarize: 'Summarize selection',
   proofread: 'Proofread selection', rewrite: 'Rewrite selection', shorten: 'Shorten selection',
 };
 export type TextActionTarget = {

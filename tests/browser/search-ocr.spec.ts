@@ -50,7 +50,7 @@ test.beforeAll(async () => {
           request={request} onBusyChange={setBusy} onCommitted={commit} onBatchFinished={() => { setRequest(null); setTool('search'); setResume(n => n + 1); }} /></div></>;
     }
     createRoot(document.getElementById('root')).render(<App />);
-  ` }, bundle: true, write: false, outfile: 'ocr-fixture.js', format: 'iife', platform: 'browser', jsx: 'automatic',
+  ` }, bundle: true, write: false, outfile: 'ocr-fixture.js', format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.svg': 'dataurl' },
     define: { 'process.env.NODE_ENV': '"test"' } });
   bundle = result.outputFiles.find(file => file.path.endsWith('.js'))!.text;
   styles = result.outputFiles.find(file => file.path.endsWith('.css'))!.text;
@@ -62,13 +62,11 @@ test('search offers full OCR, includes scanned pages with page numbers, and resu
   await page.goto('https://ocr.invalid/');
   await page.addStyleTag({ content: styles });
   await page.addScriptTag({ content: bundle });
-  const prompt = page.getByRole('dialog', { name: 'Recognize text for search?', exact: true });
-  await expect(prompt).toBeVisible();
-  await prompt.getByRole('button', { name: 'Not now', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Recognize text for search?', exact: true })).toHaveCount(0);
+  await expect(page.locator('.scan-action-card')).toBeVisible();
   const query = page.getByRole('textbox', { name: 'Find text', exact: true });
   await query.fill('Recognized'); await query.press('Enter');
   await page.getByRole('button', { name: 'Recognize entire document', exact: true }).click();
-  await prompt.getByRole('button', { name: 'Recognize entire document', exact: true }).click();
   await expect(page.locator('.pdf-search-panel')).toContainText('1 of 2');
   await expect(query).toHaveValue('Recognized');
   expect(await page.evaluate(() => (window as any).ocrCalls)).toEqual(['p1', 'p2']);

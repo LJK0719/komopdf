@@ -4697,6 +4697,7 @@ int main(int argc, char** argv) {
   Require(pde_initialize() == 1, "initialize");
   Require(pde_initialize() == 1, "idempotent initialize");
   TestSourceTextFrameResize();
+  TestPlainSourceParagraphEdit();
 
   const uint32_t document =
       pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),

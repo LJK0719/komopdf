@@ -78,7 +78,11 @@ function terms(text: string): string[] {
   return [...words, ...han, ...han.slice(1).map((char, index) => han[index]! + char)];
 }
 
-export function selectRelevantPassages(passages: readonly DocumentPassage[], question: string): DocumentPassage[] {
+export function readingTextPassages(text: string): { text: string }[] {
+  return splitBlock(text).map(range => ({ text: text.slice(...range) }));
+}
+
+export function selectRelevantPassages<T extends { text: string }>(passages: readonly T[], question: string): T[] {
   const query = [...new Set(terms(question))];
   if (!query.length) return [];
   const documentTerms = passages.map(passage => terms(passage.text));
@@ -102,9 +106,9 @@ export function selectRelevantPassages(passages: readonly DocumentPassage[], que
   return selected.sort((a, b) => a.index - b.index).map(item => item.passage);
 }
 
-export function passageBatches(passages: readonly DocumentPassage[]): DocumentPassage[][] {
-  const batches: DocumentPassage[][] = [];
-  let batch: DocumentPassage[] = [];
+export function passageBatches<T extends { text: string }>(passages: readonly T[]): T[][] {
+  const batches: T[][] = [];
+  let batch: T[] = [];
   let characters = 0;
   for (const passage of passages) {
     if (batch.length && (characters + passage.text.length > BATCH_LIMIT || batch.length >= 12)) {
@@ -158,6 +162,7 @@ export async function restoreFullDocumentAnalysis(docId: string): Promise<{
 
 export async function analyzeFullDocument(options: {
   engine: EngineAdapter;
+  passages?: DocumentPassage[];
   document: DocumentInfo;
   authorization: DocumentAiAuthorization;
   endpoint: string;
@@ -169,7 +174,7 @@ export async function analyzeFullDocument(options: {
   onProgress(message: string): void;
 }): Promise<DocumentAnalysis> {
   const { document, signal, onProgress } = options;
-  const passages = await collectDocumentPassages(options.engine, document, signal,
+  const passages = options.passages ?? await collectDocumentPassages(options.engine, document, signal,
     page => onProgress(`Reading page ${page} / ${document.pageOrder.length}`));
   if (!passages.length) throw new Error('No extractable text in this document. Use desktop OCR for scanned pages.');
   signal.throwIfAborted();

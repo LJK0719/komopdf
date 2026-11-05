@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const TEXT_ACTIONS = ['translate', 'explain', 'summarize', 'proofread', 'rewrite', 'shorten'] as const;
+export const TEXT_ACTIONS = ['translate', 'assist', 'explain', 'summarize', 'proofread', 'rewrite', 'shorten'] as const;
 export type TextAction = typeof TEXT_ACTIONS[number];
 
 export const TEXT_LANGUAGES = [
@@ -36,11 +36,13 @@ const toneSchema = z.enum(['neutral', 'formal', 'concise', 'friendly', 'professi
 export const textActionRequestSchema = z.object({
   requestId: idSchema,
   action: z.enum(TEXT_ACTIONS),
+  instruction: z.string().max(16000).optional(),
   segments: z.array(z.object({ id: idSchema, text: z.string().min(1) }).strict()).min(1).max(12),
   sourceLanguage: z.string().refine(code => code === 'auto' || supportedLanguages.has(code), 'Unsupported source language'),
   targetLanguage: languageSchema,
   tone: toneSchema,
 }).strict().superRefine((request, ctx) => {
+  if (request.action === 'assist' && !request.instruction?.trim()) ctx.addIssue({ code: 'custom', path: ['instruction'], message: 'Enter an instruction' });
   const ids = new Set<string>();
   request.segments.forEach((segment, index) => {
     if (ids.has(segment.id)) ctx.addIssue({ code: 'custom', path: ['segments', index, 'id'], message: 'Duplicate segment id' });
@@ -52,6 +54,7 @@ export type TextActionRequest = z.infer<typeof textActionRequestSchema>;
 export const textActionResultSchema = z.object({
   requestId: idSchema,
   action: z.enum(TEXT_ACTIONS),
+  kind: z.enum(['answer', 'replacement']).optional(),
   // Language detection may return BCP-47 tags outside the UI list, or auto/und/mul/zxx.
   detectedLanguage: z.string().max(64).regex(/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/),
   segments: z.array(z.object({ id: idSchema, text: z.string().min(1), reason: z.string().optional() }).strict()).min(1).max(12),

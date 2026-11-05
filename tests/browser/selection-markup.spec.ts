@@ -19,7 +19,7 @@ test('reading AI menu retains its captured selection after browser focus changes
   await openAiPdf(page);
   await selectAiText(page, 5);
   await page.evaluate(() => getSelection()?.removeAllRanges());
-  await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Translate', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Translate selected text', exact: true });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole('combobox')).toBeEnabled();
@@ -33,7 +33,7 @@ test('hand mode shows view actions rather than selected-text commands', async ({
   await page.getByLabel('Page view options', { exact: true }).click({ button: 'right', position: { x: 60, y: 90 } });
   await expect(page.getByRole('menuitem', { name: 'Fit width', exact: true })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: 'Highlight selection', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('menuitem', { name: 'AI translate', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('menuitem', { name: 'Translate', exact: true })).toHaveCount(0);
   await page.getByRole('menuitem', { name: 'Select text', exact: true }).click();
   await expect(page.locator('.pdf-text-layer')).toBeVisible();
 });

@@ -33,8 +33,8 @@ test('three selected paragraphs translate once, show one result, and replace as 
   });
   await expect(page.locator('.pdf-character')).toHaveCount(lines.join('').length);
   await selectAiText(page, lines.join('').length);
-  await page.getByRole('menuitem', { name: 'AI translate', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Translate selected text', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Translate', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Translate selected text', exact: true }).getByRole('button', { name: 'Translate', exact: true }).click();
   const result = page.getByRole('dialog', { name: 'Translation', exact: true });
   await expect(result.getByRole('textbox')).toHaveCount(1);
   await expect(result.getByRole('textbox')).toHaveValue('One complete translation.');
@@ -43,14 +43,12 @@ test('three selected paragraphs translate once, show one result, and replace as 
   await result.getByRole('button', { name: 'View original', exact: true }).click();
   await expect(result.getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue(lines.join('\n'));
   await expect(page.locator('.save-state')).toHaveText('No changes');
-  await result.locator('.ai-replace-choice > summary').click();
-  await result.getByRole('button', { name: 'Review layout', exact: true }).click();
-  await result.getByRole('button', { name: 'Confirm and apply', exact: true }).click();
+  await result.getByRole('button', { name: 'Apply to PDF', exact: true }).click();
   await expect(page.locator('.pdf-text-layer')).toHaveText('One complete translation.');
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
   await expect(page.locator('.pdf-text-layer')).toHaveText(lines.join('\n\n'));
-  await expect(result.getByRole('button', { name: 'Review layout', exact: true })).toBeEnabled();
-  await expect(result.getByText('Applied. You can undo this change.', { exact: true })).toHaveCount(0);
+  await expect(result.getByRole('button', { name: 'Apply to PDF', exact: true })).toBeEnabled();
+  await expect(result.getByText('Applied', { exact: true })).toHaveCount(0);
   await page.screenshot({ path: 'tmp/browser/review-continuous-translation.png' });
 });
 
@@ -76,14 +74,12 @@ test('finds a word across font objects, highlights the word, replaces and saves 
   await page.screenshot({ path: 'tmp/browser/review-rich-text-search.png' });
 });
 
-test('scanned pages prompt for OCR instead of pretending there is no matching text', async ({ page }) => {
-  await open(page, imageAiPdf(), 'scan.pdf');
-  await clickRibbonCommand(page, 'Find & replace');
-  const prompt = page.getByRole('dialog', { name: 'Recognize text for search?', exact: true });
-  await expect(prompt).toBeVisible();
-  await expect(prompt).toContainText('desktop app');
-  await prompt.getByRole('button', { name: 'Not now', exact: true }).click();
-  await expect(page.locator('.pdf-search-panel')).toContainText('Text in images on 1 pages has not been recognized.');
+test('scanned pages offer direct OCR and AI-reading actions without a prompt', async ({ page }) => {
+  await open(page, imageAiPdf(), 'scan.pdf'); await clickRibbonCommand(page, 'Find & replace');
+  await expect(page.getByRole('dialog', { name: 'Recognize text for search?', exact: true })).toHaveCount(0);
+  const card = page.locator('.scan-action-card'); await expect(card).toBeVisible();
+  await expect(card.getByRole('link', { name: 'Get the desktop app', exact: true })).toHaveAttribute('href', '/download/');
+  await expect(card.getByRole('button', { name: 'Read with AI', exact: true })).toBeEnabled();
 });
 
 test('links and notes coexist without canvas errors, and forms are placed by dragging', async ({ page }) => {

@@ -99,6 +99,16 @@
 .kolmo-task-list > button { display: grid; gap: 4px; width: 100%; padding: 9px 6px; border: 0; border-bottom: 1px solid var(--komo-line); background: transparent; color: var(--komo-ink); text-align: left; }
 .kolmo-task-list > button > strong { overflow: hidden; text-overflow: ellipsis; }
 .kolmo-task-list > button > span { font-size: 12px; color: var(--komo-muted); }
+.ai-instruction-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.ai-text-panel .ai-instruction-form textarea { min-height: 72px; max-height: 180px; }
+.ai-instruction-form .button { padding: 8px 12px; }
+.kolmo-connection label { display: grid; gap: 6px; min-width: 0; font-size: 13px; }
+.kolmo-connection input[type="password"] { box-sizing: border-box; width: 100%; min-width: 0; min-height: 38px; padding: 8px 10px; border: 1px solid var(--komo-line); border-radius: 6px; background: var(--komo-surface); color: var(--komo-ink); font: inherit; }
+.kolmo-connection .ai-result-heading > strong { display: inline-flex; align-items: center; gap: 5px; }
+.kolmo-connection .ai-result-heading > span { font-size: 12px; color: var(--komo-muted); }
+.kolmo-service-dialog .button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 8px 12px; font: inherit; font-size: 13px; }
+.kolmo-service-dialog .task-help { color: var(--komo-muted); font-size: 12px; }
+.kolmo-service-dialog .task-error { color: var(--komo-danger); font-size: 13px; }
 @media (max-width: 760px) {
   .ai-bilingual { grid-template-columns: minmax(0, 1fr); }
   .ribbon-content:has(.ribbon-text-properties) { grid-template-columns: minmax(0, 1fr) auto auto; }

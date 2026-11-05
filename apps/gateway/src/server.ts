@@ -18,7 +18,8 @@ import { ImageValidationError, validateImages } from './images.js';
 import type { ProviderAdapter } from './provider-types.js';
 import { finishSse, sendEvent, sendEventBestEffort, splitUtf8, startSse } from './sse.js';
 import { prepareProviderInput } from './templates.js';
-import { protectKomoIdentity } from './komo-identity.js';
+import { isIdentityQuestion, protectKomoIdentity } from './komo-identity.js';
+import { ReadingAnswerStream } from './reading-answer.js';
 import { OutputValidationError, parseAndValidateResult } from './validation.js';
 import { registerTextActionRoute } from './text-actions.js';
 import { registerKolmoService } from './kolmo-service.js';
@@ -452,15 +453,23 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       await sendEvent(reply.raw, { type: 'accepted', requestId: request.requestId }, controller.signal);
       await sendEvent(reply.raw, { type: 'progress', message: 'Processing request' }, controller.signal);
       let rawResult = '';
-      // Hold visible text until validation and identity filtering; a final-only
-      // filter cannot undo a model identifier already sent in an SSE delta.
-      if (request.feature === 'document.ask') {
+      let emittedText = '';
+      if (request.feature === 'document.ask' || request.feature === 'image.explain') {
         let resultBytes = 0;
+        const answer = new ReadingAnswerStream();
+        const showAnswer = !isIdentityQuestion(request.instruction);
         for await (const event of provider.stream(prepared.input, controller.signal)) {
           if (event.type === 'text') {
             resultBytes += Buffer.byteLength(event.text, 'utf8');
             if (resultBytes > options.config.limits.visibleResultBytes) throw new OutputValidationError('Model visible result exceeds size limit');
             rawResult += event.text;
+            const text = answer.push(event.text);
+            if (showAnswer && text.length > emittedText.length) {
+              for (const chunk of splitUtf8(text.slice(emittedText.length), OUTBOUND_DELTA_BYTES)) {
+                await sendEvent(reply.raw, { type: 'delta', text: chunk }, controller.signal);
+              }
+              emittedText = text;
+            }
           } else if (event.type === 'finish') finishReason = event.finishReason;
           else observedUsage = event.usage;
         }
@@ -480,7 +489,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
         options.config.limits.visibleResultBytes,
       );
       result = protectKomoIdentity(result, request, options.config.provider);
-      if (request.feature === 'document.ask' && result.kind === 'answer') {
+      if ((request.feature === 'document.ask' || request.feature === 'image.explain') && result.kind === 'answer' && !emittedText) {
         for (const chunk of splitUtf8(result.text, OUTBOUND_DELTA_BYTES)) {
           await sendEvent(reply.raw, { type: 'delta', text: chunk }, controller.signal);
         }

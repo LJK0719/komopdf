@@ -45,13 +45,13 @@ describe('feature templates and output validation', () => {
     expect(input.parts[0]).toMatchObject({ text: expect.stringContaining(attack) });
   });
 
-  it('allows visual answers without invented text citations and recommends Markdown', () => {
+  it('answers visual questions directly without adding conversion disclaimers', () => {
     const base = request('image.explain');
     base.context.evidence = [];
     base.context.images = [{ mimeType: 'image/jpeg', data: 'test-fixture' }];
     const prepared = prepareProviderInput(base, 8192);
-    expect(prepared.input.systemInstruction).toContain('KOLMOPDF');
-    expect(prepared.input.systemInstruction).toContain('Markdown');
+    expect(prepared.input.systemInstruction).toContain('Explain charts, diagrams and scans directly');
+    expect(prepared.input.systemInstruction).not.toContain('checking against the original');
     expect(parseAndValidateResult(JSON.stringify({ kind: 'answer', text: 'The first page contains a diagram.', citations: [] }),
       base, 'answer', prepared.allowedCommands, 8192).kind).toBe('answer');
   });
@@ -243,15 +243,13 @@ describe('feature templates and output validation', () => {
       prepared.allowedCommands, 1024 * 1024)).toThrow(/block does not match page/);
   });
 
-  it('requires document answers to carry verified evidence citations', () => {
-    const prepared = prepareProviderInput(request('document.ask'), 8192);
-    const noCitation = JSON.stringify({ kind: 'answer', text: 'raw ungrounded answer', citations: [] });
-    const clarification = parseAndValidateResult(noCitation, request('document.ask'), prepared.expectedKind, prepared.allowedCommands, 1024 * 1024);
-    expect(clarification).toMatchObject({ kind: 'clarification', question: expect.stringContaining('could not verify') });
-    expect(JSON.stringify(clarification)).not.toContain('raw ungrounded answer');
-
-    const badQuote = JSON.stringify({ kind: 'answer', text: 'answer', citations: [{ evidenceId: 'e1', quote: 'not present' }] });
-    expect(() => parseAndValidateResult(badQuote, request('document.ask'), prepared.expectedKind, prepared.allowedCommands, 1024 * 1024))
-      .toThrow(/Citation quote/);
+  it('keeps reading answers while filtering unusable citation details', () => {
+    const base = request('document.ask');
+    const prepared = prepareProviderInput(base, 8192);
+    const validate = (value: unknown) => parseAndValidateResult(JSON.stringify(value), base, prepared.expectedKind, prepared.allowedCommands, 1024 * 1024);
+    expect(validate({ kind: 'answer', text: 'A useful answer', citations: [] }))
+      .toEqual({ kind: 'answer', text: 'A useful answer', citations: [] });
+    expect(validate({ kind: 'answer', text: 'answer', citations: [{ evidenceId: 'e1', quote: 'not present' }, { evidenceId: 'unknown' }] }))
+      .toEqual({ kind: 'answer', text: 'answer', citations: [{ evidenceId: 'e1' }] });
   });
 });

@@ -72,6 +72,5 @@ export async function prepareTextActionApplication(options: {
   replacements.sort((a, b) => a.pageId.localeCompare(b.pageId) || a.blockId.localeCompare(b.blockId) || b.range[0] - a.range[0]);
   const transaction: EditTransaction = { id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision,
     source: 'ai', commands: [...conversions, ...replacements] };
-  const preview = await engine.previewTransaction(transaction);
-  return { transaction, layout, addedPages: Math.max(0, preview.pageOrder.length - document.pageOrder.length) };
+  return { transaction, layout, addedPages: 0 };
 }

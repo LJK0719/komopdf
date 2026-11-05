@@ -1,7 +1,7 @@
 import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import type { Rect, TextRange, TextAction } from '@pdf-editor/contracts';
-import { Languages, MessageSquare } from 'lucide-react';
+import { Languages, Sparkles } from 'lucide-react';
 import { TextActionMenuItems } from './TextActionMenu.js';
 import { textActionSelection, textActionTarget, type TextActionSelection } from './text-actions.js';
 import type { LoadedDocument } from './display-document.js';
@@ -409,10 +409,10 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     {onTextAction && text.trim() && shown.info.permissions.copy && !disabled && !menuOpen.current && layer.current?.contains(window.getSelection()?.focusNode ?? null) && (() => {
       const rect = targets.at(-1)?.rects.at(-1);
       return rect && <div className="selection-ai-toolbar ai-owned-focus" role="toolbar" aria-label={t('Selected text tools')}
-        style={{ left: Math.max(4, Math.min(rect.x * zoom, shown.page.widthPt * zoom - 150)), top: Math.min((rect.y + rect.height) * zoom + 6, shown.page.heightPt * zoom - 38) }}
+        style={{ left: Math.max(4, Math.min(rect.x * zoom, shown.page.widthPt * zoom - 220)), top: Math.min((rect.y + rect.height) * zoom + 6, shown.page.heightPt * zoom - 38) }}
         onPointerDown={event => { event.stopPropagation(); event.preventDefault(); }}>
-        <button type="button" onClick={() => startAction('translate')}><Languages size={16} />{t('AI translate')}</button>
-        <button type="button" onClick={() => startAction('ask')} aria-label={t('Ask KOMO about selection')} title={t('Ask KOMO about selection')}><MessageSquare size={16} /></button>
+        <button type="button" onClick={() => startAction('translate')}><Languages size={16} />{t('Translate')}</button>
+        <button type="button" onClick={() => startAction('assist')}><Sparkles size={16} />{t('Use AI')}</button>
       </div>;
     })()}
     <ContextMenu.Portal><ContextMenu.Positioner className="ui-menu-positioner"><ContextMenu.Popup className="ui-menu ai-owned-focus">

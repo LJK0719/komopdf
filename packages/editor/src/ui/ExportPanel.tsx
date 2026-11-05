@@ -89,10 +89,9 @@ export function ExportPanel({ disabled, encrypted, signed, wordAvailable, onExpo
           {format === 'jpeg' ? <label>{t('Image quality')}<input type="range" min="1" max="100" disabled={locked} value={quality} onChange={event => setQuality(Number(event.target.value))} /> <output>{quality}</output></label> : null}
         </details> : null}
         {format === 'png' || format === 'jpeg' ? <p>{t('Multiple pages are saved as a ZIP archive.')}</p> : null}
-        {format === 'html' ? <p>{t('HTML is a self-contained fixed-layout copy with page text, not a reflowable Word document.')}</p> : null}
-        {format === 'docx' ? <p>{t('Convert locally with editable text, tables and images. Complex layouts may differ; scanned pages need OCR first.')}</p> : null}
+        {format === 'html' ? <p>{t('Export pages and text as HTML.')}</p> : null}
+        {format === 'docx' ? <p>{t('Export editable text, tables and images.')}</p> : null}
       </> : <>
-        <p className="panel-refresh-muted">{t('Export a copy of the current PDF, including applied edits.')}</p>
         <label><input type="checkbox" disabled={locked} checked={optimize} onChange={event => setOptimize(event.target.checked)} />{t('Reduce file size without losing quality')}</label>
         <details open={encrypted || protection === 'set'}><summary>{t('Password protection')}</summary>
           <label>{t('Password protection')}<select disabled={locked} value={protection} onChange={event => {
@@ -112,10 +111,10 @@ export function ExportPanel({ disabled, encrypted, signed, wordAvailable, onExpo
         </details>
         {signed && (optimize || lossyImages || protection !== 'preserve') ? <p role="alert">{t('Changing protection or optimizing this PDF will invalidate its existing digital signatures. Save to a different file to retain the signed original.')}</p> : null}
       </>}
-      {!wordAvailable ? <details><summary>{t('Need Word conversion?')}</summary>
-        <p>{t('Save a PDF copy first, then open that copy in the desktop app. Your current edits do not transfer automatically.')}</p>
-        <a className="panel-result-link" href={localizedPath('/download/', locale)} target="_blank" rel="noreferrer">{t('Download desktop app')}</a>
-      </details> : null}
+      {!wordAvailable ? <div className="panel-refresh-note"><strong>{t('Word conversion')}</strong>
+        <p>{t('Convert PDFs to editable Word documents in the desktop app.')}</p>
+        <a className="button button-primary" href={localizedPath('/download/', locale)} target="_blank" rel="noreferrer">{t('Get the desktop app')}</a>
+      </div> : null}
       {completed && <div className="export-result layout-result" role="status">
         <strong>{t(completed.status === 'cancelled' ? 'Export cancelled' : completed.status === 'download-started' ? 'Download started' : completed.status === 'written' ? 'Export complete' : 'Export prepared')}</strong>
         {completed.status !== 'cancelled' && <><span>{completed.name ?? completed.format}</span>

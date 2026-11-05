@@ -34,7 +34,7 @@ export type KolmoFile = { name: string; mimeType: string; location?: string; ide
   | { kind: 'bytes'; bytes: ArrayBuffer }
   | { kind: 'native-file'; handle: string }
 );
-export type KolmoSavedJob = { job: KolmoJob; name: string; createdAt: number; documentId: string; revision: number };
+export type KolmoSavedJob = { job: KolmoJob; name: string; createdAt: number; documentId: string; revision: number; operation?: 'translate' | 'parse' };
 
 /** Services have their own credentials and billing; neither channel launches the document agent. */
 export interface EditorAiServices {
@@ -43,6 +43,7 @@ export interface EditorAiServices {
   configureKolmo(key: string): Promise<KolmoConnection>;
   subscribeKolmoConnection?(listener: () => void): Promise<() => void>;
   translateDocument(input: KolmoDocumentInput, options: KolmoTranslationOptions, submissionId: string, signal: AbortSignal): Promise<KolmoJob>;
+  parseDocument?(input: KolmoDocumentInput, submissionId: string, signal: AbortSignal): Promise<KolmoJob>;
   getKolmoJob(id: string, signal: AbortSignal): Promise<KolmoJob>;
   cancelKolmoJob(id: string): Promise<KolmoJob>;
   downloadKolmoResult(id: string, signal: AbortSignal): Promise<KolmoFile[]>;
