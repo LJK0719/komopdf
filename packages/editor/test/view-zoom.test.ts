@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { Tooltip, ViewControls } from '../src/ui/EditorChrome.js';
 import { calculateFitZoom, captureReadingZoomAnchor, readingZoomScrollDelta, formatZoomPercent, parseZoomPercent } from '../src/ui/view-zoom.js';
+import { useViewZoom } from '../src/ui/use-view-zoom.js';
 
 const viewport = { width: 1056, height: 870, paddingX: 56, paddingY: 70, columnGap: 18 };
 const portrait = { widthPt: 600, heightPt: 800 };
@@ -56,6 +57,26 @@ describe('reading fit modes', () => {
     expect(calculateFitZoom('fit-page', portrait, { ...viewport, width: 0 })).toBeNull();
     expect(calculateFitZoom('fit-page', portrait, { ...viewport, height: 0 })).toBeNull();
     expect(calculateFitZoom('fit-page', { widthPt: 0, heightPt: 800 }, viewport)).toBeNull();
+  });
+});
+
+describe('logical and transient zoom ownership', () => {
+  it('keeps percentage input on the immediate commit path and sends only gestures to preview', () => {
+    const commit = vi.fn(), preview = vi.fn();
+    let controls!: ReturnType<typeof useViewZoom>;
+    function Capture() {
+      controls = useViewZoom({ root: { current: null }, documentKey: 'doc', pageKey: 'page',
+        size: portrait, zoom: 1, busy: false, enabled: true, onZoom: commit, onGestureZoom: preview });
+      return null;
+    }
+    renderToStaticMarkup(createElement(Capture));
+    controls.manualZoom(1.75);
+    expect(commit).toHaveBeenCalledExactlyOnceWith(1.75, undefined);
+    expect(preview).not.toHaveBeenCalled();
+    const point = { x: 300, y: 450 };
+    controls.gestureZoom(2, point);
+    expect(preview).toHaveBeenCalledExactlyOnceWith(2, point);
+    expect(commit).toHaveBeenCalledOnce();
   });
 });
 

@@ -8,7 +8,33 @@ import { hitText, textClusters, type TextHit } from './text-geometry.js';
 
 type ScaleHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 export type SelectionPointerStart = Pick<PointerEvent, 'pointerId' | 'button' | 'clientX' | 'clientY' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>;
-export const ObjectSelectionStartContext = createContext<{ current: SelectionPointerStart | null } | null>(null);
+export type SelectionPointerIntent = {
+  start: SelectionPointerStart; latest: SelectionPointerStart; ended: boolean; pageVersion: number; tool: 'select' | 'edit';
+};
+export const ObjectSelectionStartContext = createContext<{
+  current: SelectionPointerIntent | null; onConsumed(): void;
+} | null>(null);
+
+/** Replay an ended gesture without attempting to capture a pointer that is up. */
+export function resumePointerIntent(intent: SelectionPointerIntent, handlers: {
+  start(event: SelectionPointerStart, capture: boolean): void;
+  move(event: SelectionPointerStart): void;
+  end(event: SelectionPointerStart): void;
+}): void {
+  handlers.start(intent.start, !intent.ended);
+  handlers.move(intent.latest);
+  if (intent.ended) handlers.end(intent.latest);
+}
+
+export function selectionPointer(event: SelectionPointerStart): SelectionPointerStart {
+  const { pointerId, button, clientX, clientY, ctrlKey, metaKey, shiftKey, altKey } = event;
+  return { pointerId, button, clientX, clientY, ctrlKey, metaKey, shiftKey, altKey };
+}
+
+export function selectionLayerPoint(clientX: number, clientY: number,
+  rect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>, render: PageGeometry): [number, number] {
+  return [(clientX - rect.left) * render.width / rect.width, (clientY - rect.top) * render.height / rect.height];
+}
 
 type Props = {
   page: PageModel;
@@ -242,7 +268,8 @@ export function ObjectSelectionLayer({
   }), [objects, selectedSet, movingSet, hoveredId, disabled, stacking, moveX, moveY, selectHitbox, locale]);
   const hitAt = (clientX: number, clientY: number) => {
     const rect = layerRef.current!.getBoundingClientRect();
-    return pickObject(objects, (clientX - rect.left) / scaleX, (clientY - rect.top) / scaleY, 3 / Math.max(scaleX, scaleY));
+    const [x, y] = selectionLayerPoint(clientX, clientY, rect, render);
+    return pickObject(objects, x / scaleX, y / scaleY, 3 / Math.max(scaleX, scaleY));
   };
   const bounds = useMemo<SelectionBounds | null>(() => {
     if (!selectedObjects.length) return null;
@@ -269,10 +296,77 @@ export function ObjectSelectionLayer({
     };
   }, [selectedObjects, textFrame, scaleX, scaleY]);
 
-  const beginSelection = (event: SelectionPointerStart, layer: HTMLDivElement) => {
+  const updateSelection = (event: SelectionPointerStart, layer: HTMLDivElement) => {
+    const active = gesture.current;
+    if (!active) { setHoveredId(disabled ? null : hitAt(event.clientX, event.clientY)?.id ?? null); return; }
+    if (active.pointerId !== event.pointerId || disabled) return;
+    const rect = layer.getBoundingClientRect();
+    const [currentX, currentY] = selectionLayerPoint(event.clientX, event.clientY, rect, render);
+    const dx = currentX - active.startX, dy = currentY - active.startY;
+    if (active.type === 'box' || active.type === 'move') {
+      if (Math.hypot(dx, dy) >= 3) moved.current = true;
+      if (moved.current) schedulePreview(active.type === 'box'
+        ? { type: 'box', x: active.startX, y: active.startY, dx, dy }
+        : { type: 'move', dx, dy, ids: active.ids });
+    } else if (active.type === 'scale') {
+      if (Math.hypot(dx, dy) >= 3) moved.current = true;
+      if (moved.current) {
+        if (active.textFrame) {
+          const [localX, localY] = localFrameDelta(active.textFrame, dx / scaleX, dy / scaleY);
+          const frame = resizedTextFrame(active.textFrame, active.handle, localX, localY);
+          schedulePreview({ type: 'resize-text', bounds: frameBounds(active.textFrame, frame) });
+          return;
+        }
+        const result = computeScaleMatrix(active.handle, active.bounds, currentX, currentY, event.shiftKey);
+        schedulePreview({ type: 'scale', ...result, ids: active.ids });
+      }
+    } else {
+      const result = computeRotateMatrix(active.bounds, active.startAngle, currentX, currentY, event.shiftKey);
+      if (Math.abs(result.angleRadians) >= 0.02) moved.current = true;
+      if (moved.current) schedulePreview({ type: 'rotate', angleDegrees: result.angleDegrees, matrix: result.matrix, ids: active.ids });
+    }
+  };
+  const finishSelection = (event: SelectionPointerStart, layer: HTMLDivElement) => {
+    const active = gesture.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    // The final coordinates also cover a move coalesced with pointerup.
+    updateSelection(event, layer);
+    const rect = layer.getBoundingClientRect();
+    const [currentX, currentY] = selectionLayerPoint(event.clientX, event.clientY, rect, render);
+    const dx = currentX - active.startX, dy = currentY - active.startY;
+    gesture.current = null;
+    clearPreview();
+    if (layer.hasPointerCapture(event.pointerId)) layer.releasePointerCapture(event.pointerId);
+    if (disabled) return;
+    if (active.type === 'box') {
+      if (!moved.current) {
+        if (active.clickId) onSelect(active.clickId, active.additive);
+        else if (!active.additive) onBoxSelect([]);
+      } else {
+        const left = Math.min(active.startX, active.startX + dx) / scaleX;
+        const top = Math.min(active.startY, active.startY + dy) / scaleY;
+        const box = { x: left, y: top, width: Math.abs(dx) / scaleX, height: Math.abs(dy) / scaleY };
+        const ids = objects.filter(object => containsRect(box, object.bounds, 1 / scaleX)).flatMap(idsFor);
+        onBoxSelect(normalizeSelection(page, active.additive ? [...new Set([...selectedIds, ...ids])] : ids));
+      }
+    } else if (active.type === 'move') {
+      if (moved.current) { onBoxSelect(active.ids); void onMove(active.ids, dx / scaleX, dy / scaleY); }
+      else onSelect(active.clickId, active.additive);
+    } else if (active.type === 'scale') {
+      if (moved.current && active.textFrame && onResizeText) {
+        const [localX, localY] = localFrameDelta(active.textFrame, dx / scaleX, dy / scaleY);
+        void onResizeText(active.textFrame.objectIds, resizedTextFrame(active.textFrame, active.handle, localX, localY));
+      } else if (moved.current && onTransform && !textOnly) {
+        void onTransform(active.ids, computeScaleMatrix(active.handle, active.bounds, currentX, currentY, event.shiftKey).matrix);
+      }
+    } else if (moved.current && onTransform) {
+      void onTransform(active.ids, computeRotateMatrix(active.bounds, active.startAngle, currentX, currentY, event.shiftKey).matrix);
+    }
+  };
+  const beginSelection = (event: SelectionPointerStart, layer: HTMLDivElement, capture = true) => {
     if (disabled || event.button !== 0) return;
     const rect = layer.getBoundingClientRect();
-    const startX = event.clientX - rect.left, startY = event.clientY - rect.top;
+    const [startX, startY] = selectionLayerPoint(event.clientX, event.clientY, rect, render);
     const object = hitAt(event.clientX, event.clientY);
     const additive = event.ctrlKey || event.metaKey || event.shiftKey;
     const box = !object || !canTransform || event.altKey || additive ||
@@ -282,16 +376,19 @@ export function ObjectSelectionLayer({
       : { type: 'move', pointerId: event.pointerId, startX, startY, additive, clickId: object.id,
           ids: idsFor(object).some(id => selectedIds.includes(id)) ? selectedIds : idsFor(object) };
     moved.current = false;
-    layer.setPointerCapture(event.pointerId);
+    if (capture) layer.setPointerCapture(event.pointerId);
   };
   const activationStart = useContext(ObjectSelectionStartContext);
   useLayoutEffect(() => {
-    const start = activationStart?.current;
-    if (!start || !layerRef.current) return;
-    activationStart.current = null;
-    // Continue the pointer that activated this page; subsequent real move/up events use the usual gesture path.
-    beginSelection(start, layerRef.current);
-  }, [activationStart]);
+    const intent = activationStart?.current, layer = layerRef.current;
+    if (!intent || intent.tool !== 'edit' || !layer || disabled) return;
+    activationStart.current = null; activationStart.onConsumed();
+    resumePointerIntent(intent, {
+      start: (event, capture) => beginSelection(event, layer, capture),
+      move: event => updateSelection(event, layer),
+      end: event => finishSelection(event, layer),
+    });
+  }, [activationStart, page, disabled]);
 
   const handleHandlePointerDown = (
     event: ReactPointerEvent<HTMLButtonElement>,
@@ -302,8 +399,7 @@ export function ObjectSelectionLayer({
     const layer = layerRef.current;
     if (!layer) return;
     const rect = layer.getBoundingClientRect();
-    const startX = event.clientX - rect.left;
-    const startY = event.clientY - rect.top;
+    const [startX, startY] = selectionLayerPoint(event.clientX, event.clientY, rect, render);
 
     if (handle === 'rotate') {
       const centerX = bounds.boxLeft + bounds.boxWidth / 2;
@@ -424,7 +520,8 @@ export function ObjectSelectionLayer({
             path.every((part, i) => child.locator.containerPath[i] === part)).map(child => child.id));
         } else if (object?.textBlock) {
           const rect = event.currentTarget.getBoundingClientRect();
-          const x = (event.clientX - rect.left) / scaleX, y = (event.clientY - rect.top) / scaleY;
+          const [localX, localY] = selectionLayerPoint(event.clientX, event.clientY, rect, render);
+          const x = localX / scaleX, y = localY / scaleY;
           const ids = new Set(object.textBlock.sourceObjectIds);
           const sources = page.objects.filter(item => item.id === object.id || ids.has(item.id));
           let nearest: { id: string; hit: TextHit } | undefined, distance = Infinity;
@@ -440,103 +537,8 @@ export function ObjectSelectionLayer({
       }}
       onPointerDown={event => beginSelection(event, event.currentTarget)}
       onPointerLeave={() => setHoveredId(null)}
-      onPointerMove={event => {
-        const active = gesture.current;
-        if (!active) { setHoveredId(disabled ? null : hitAt(event.clientX, event.clientY)?.id ?? null); return; }
-        if (active.pointerId !== event.pointerId || disabled) return;
-        const rect = event.currentTarget.getBoundingClientRect();
-        const currentX = event.clientX - rect.left;
-        const currentY = event.clientY - rect.top;
-        const dx = currentX - active.startX;
-        const dy = currentY - active.startY;
-
-        if (active.type === 'box') {
-          if (Math.hypot(dx, dy) >= 3) moved.current = true;
-          if (moved.current) schedulePreview({ type: 'box', x: active.startX, y: active.startY, dx, dy });
-        } else if (active.type === 'move') {
-          if (Math.hypot(dx, dy) >= 3) moved.current = true;
-          if (moved.current) schedulePreview({ type: 'move', dx, dy, ids: active.ids });
-        } else if (active.type === 'scale') {
-          if (Math.hypot(dx, dy) >= 3) moved.current = true;
-          if (moved.current) {
-            if (active.textFrame) {
-              const [localX, localY] = localFrameDelta(active.textFrame, dx / scaleX, dy / scaleY);
-              const frame = resizedTextFrame(active.textFrame, active.handle, localX, localY);
-              schedulePreview({ type: 'resize-text', bounds: frameBounds(active.textFrame, frame) });
-              return;
-            }
-            const res = computeScaleMatrix(active.handle, active.bounds, currentX, currentY, event.shiftKey);
-            schedulePreview({
-              type: 'scale',
-              sx: res.sx,
-              sy: res.sy,
-              originX: res.originX,
-              originY: res.originY,
-              matrix: res.matrix,
-              ids: active.ids,
-            });
-          }
-        } else if (active.type === 'rotate') {
-          const res = computeRotateMatrix(active.bounds, active.startAngle, currentX, currentY, event.shiftKey);
-          if (Math.abs(res.angleRadians) >= 0.02) moved.current = true;
-          if (moved.current) {
-            schedulePreview({
-              type: 'rotate',
-              angleDegrees: res.angleDegrees,
-              matrix: res.matrix,
-              ids: active.ids,
-            });
-          }
-        }
-      }}
-      onPointerUp={event => {
-        const active = gesture.current;
-        if (!active || active.pointerId !== event.pointerId) return;
-        const rect = event.currentTarget.getBoundingClientRect();
-        const currentX = event.clientX - rect.left;
-        const currentY = event.clientY - rect.top;
-        const dx = currentX - active.startX;
-        const dy = currentY - active.startY;
-
-        gesture.current = null;
-        clearPreview();
-        if (disabled) return;
-
-        if (active.type === 'box') {
-          if (!moved.current) {
-            if (active.clickId) onSelect(active.clickId, active.additive);
-            else if (!active.additive) onBoxSelect([]);
-          } else {
-            const left = Math.min(active.startX, active.startX + dx) / scaleX;
-            const top = Math.min(active.startY, active.startY + dy) / scaleY;
-            const right = left + Math.abs(dx) / scaleX;
-            const bottom = top + Math.abs(dy) / scaleY;
-            const box = { x: left, y: top, width: right - left, height: bottom - top };
-            const enclosed = objects.filter(object => containsRect(box, object.bounds, 1 / scaleX));
-            // Normalize after additive selection too: a Form owns its children.
-            const ids = enclosed.flatMap(idsFor);
-            onBoxSelect(normalizeSelection(page, active.additive ? [...new Set([...selectedIds, ...ids])] : ids));
-          }
-        } else if (active.type === 'move') {
-          if (moved.current) {
-            onBoxSelect(active.ids);
-            void onMove(active.ids, dx / scaleX, dy / scaleY);
-          } else onSelect(active.clickId, active.additive);
-        } else if (active.type === 'scale') {
-          if (moved.current && active.textFrame && onResizeText) {
-            const [localX, localY] = localFrameDelta(active.textFrame, dx / scaleX, dy / scaleY);
-            void onResizeText(active.textFrame.objectIds, resizedTextFrame(active.textFrame, active.handle, localX, localY));
-          } else if (moved.current && onTransform && !textOnly) {
-            const res = computeScaleMatrix(active.handle, active.bounds, currentX, currentY, event.shiftKey);
-            void onTransform(active.ids, res.matrix);
-          }
-        } else if (active.type === 'rotate') {
-          if (moved.current && onTransform) {
-            const res = computeRotateMatrix(active.bounds, active.startAngle, currentX, currentY, event.shiftKey);
-            void onTransform(active.ids, res.matrix);
-          }
-        }
-      }}
+      onPointerMove={event => updateSelection(event, event.currentTarget)}
+      onPointerUp={event => finishSelection(event, event.currentTarget)}
       onPointerCancel={() => {
         gesture.current = null;
         clearPreview();

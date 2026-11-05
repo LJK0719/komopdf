@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
-import type { EditCommand, EngineAdapter, HostAdapter } from '@pdf-editor/contracts';
-import type { LoadedDocument } from './EditorShell.js';
+import type { DocumentInfo, EditCommand, EngineAdapter, HostAdapter, PageMetrics } from '@pdf-editor/contracts';
+type PageDocument = { info: DocumentInfo; name: string; page: PageMetrics };
 import { PageThumbnail } from './PageThumbnail.js';
 import { movePages, selectPages, type SelectionModifiers } from './page-selection.js';
 import { useI18n } from './i18n.js';
@@ -9,7 +9,7 @@ import { usePageImport } from './page-import.js';
 
 export type PageAction = 'copyPages' | 'pastePages' | 'extractPages' | 'duplicatePage' | 'deletePage' | 'rotatePageLeft' | 'rotatePageRight' | 'blankPage' | 'blankPageBefore' | 'importPages' | 'movePagesStart' | 'movePagesEnd';
 type Options = {
-  document: LoadedDocument | null; engine: EngineAdapter; host: HostAdapter; disabled: boolean;
+  document: PageDocument | null; engine: EngineAdapter; host: HostAdapter; disabled: boolean;
   execute(commands: EditCommand[], resources?: Set<string>): Promise<boolean>;
   onBusy(busy: boolean): void; onError(message: string): void; onNotice(message: string): void;
 };
@@ -128,7 +128,7 @@ export function PageContextMenu({ tools, onOpen, children }: { tools: PageTools;
 }
 
 export function PageOrganizer({ document, engine, tools, disabled, width, columns, pixelRatio, onOpen }: {
-  document: LoadedDocument; engine: EngineAdapter; tools: PageTools; disabled: boolean;
+  document: PageDocument; engine: EngineAdapter; tools: PageTools; disabled: boolean;
   width: number; columns: number; pixelRatio: number; onOpen(id: string): void;
 }) {
   const { t } = useI18n();

@@ -236,7 +236,7 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   await page.locator('.ribbon-tabs').getByRole('button', { name: 'Edit', exact: true }).click();
   await clickRibbonCommand(page, 'Edit content');
 
-  const objects = page.locator('.selection-layer > [data-object-id]');
+  const objects = page.locator('.selection-layer .object-hitbox[data-object-id]');
   await expect(objects).toHaveCount(2);
   await objects.nth(0).click();
   await objects.nth(1).click({ modifiers: ['Control'] });
@@ -244,7 +244,7 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   const arrangement = page.getByRole('region', { name: 'Page and object editing', exact: true });
   await expect(arrangement.getByRole('button', { name: 'Group', exact: true })).toBeEnabled();
   await arrangement.getByRole('button', { name: 'Group', exact: true }).click();
-  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(1);
+  await expect(page.locator('.selection-layer .object-hitbox[data-object-type="group"]')).toHaveCount(1);
   await expect(objects).toHaveCount(1);
 
   const download = page.waitForEvent('download');
@@ -255,17 +255,17 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   await (await reopen).setFiles({ name: 'group-saved.pdf', mimeType: 'application/pdf', buffer: saved });
   await expect(page.getByRole('tab', { name: /^group-saved\.pdf/ })).toBeVisible({ timeout: 60_000 });
   await clickRibbonCommand(page, 'Edit content');
-  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(1);
+  await expect(page.locator('.selection-layer .object-hitbox[data-object-type="group"]')).toHaveCount(1);
 
-  await page.locator('.selection-layer > [data-object-type="group"]').click();
+  await page.locator('.selection-layer .object-hitbox[data-object-type="group"]').click();
   await clickRibbonCommand(page, 'Arrange objects');
   await arrangement.getByRole('button', { name: 'Ungroup', exact: true }).click();
   await expect(objects).toHaveCount(2);
   await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
-  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(1);
-  await page.locator('.selection-layer > [data-object-type="group"]').click();
+  await expect(page.locator('.selection-layer .object-hitbox[data-object-type="group"]')).toHaveCount(1);
+  await page.locator('.selection-layer .object-hitbox[data-object-type="group"]').click();
   await arrangement.getByRole('button', { name: 'Duplicate', exact: true }).click();
-  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(2);
+  await expect(page.locator('.selection-layer .object-hitbox[data-object-type="group"]')).toHaveCount(2);
   const copiedDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
   const copied = await readFile((await (await copiedDownload).path())!);
@@ -280,7 +280,7 @@ test('real WASM groups adjacent objects, saves the Form, and ungroups after reop
   await (await copiedChooser).setFiles({ name: 'group-copied.pdf', mimeType: 'application/pdf', buffer: copied });
   await expect(page.getByRole('tab', { name: /^group-copied\.pdf/ })).toHaveAttribute('aria-selected', 'true', { timeout: 60_000 });
   await clickRibbonCommand(page, 'Edit content');
-  await expect(page.locator('.selection-layer > [data-object-type="group"]')).toHaveCount(2);
+  await expect(page.locator('.selection-layer .object-hitbox[data-object-type="group"]')).toHaveCount(2);
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });
 

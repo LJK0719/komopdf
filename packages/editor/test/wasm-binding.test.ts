@@ -35,6 +35,17 @@ class FakePdfCoreModule implements PdfCoreEmscriptenModule {
   lastPackedEdits: PackedEdit[] = [];
   lastTransactionId = '';
   lastRender: number[] = [];
+  pageCount = 2;
+  describedPageIndices: number[] = [];
+  pageInfoIndices: number[] = [];
+  metricsOverride: Record<string, unknown> = {};
+  pendingRenderSteps = 0;
+  renderBudgets: number[] = [];
+  renderContinues = 0;
+  cancelledRenders = 0;
+  legacyRenders = 0;
+  binaryReads = 0;
+  private renderTarget: { document: number; viewport: number[]; remaining: number } | null = null;
   binaryPointer = 0;
   private binarySize = 0;
   private nextPointer = 32;
@@ -86,7 +97,10 @@ class FakePdfCoreModule implements PdfCoreEmscriptenModule {
   }
 
   _pde_open_file_utf8(): number { this.setError('INVALID_REQUEST', 'not available'); return 0; }
-  _pde_close(document: number): number { return this.documents.delete(document) ? 1 : 0; }
+  _pde_close(document: number): number {
+    if (this.renderTarget?.document === document) this.renderTarget = null;
+    return this.documents.delete(document) ? 1 : 0;
+  }
 
   _pde_document_info(document: number): number {
     const current = this.documents.get(document);
@@ -95,14 +109,23 @@ class FakePdfCoreModule implements PdfCoreEmscriptenModule {
       id: current.documentId,
       revision: current.revision,
       savedRevision: 0,
-      pageOrder: [`${current.documentId}-page-1`, `${current.documentId}-page-2`],
+      pageOrder: Array.from({ length: this.pageCount }, (_, index) => `${current.documentId}-page-${index + 1}`),
       sourceIds: [current.sourceId],
       permissions: { modify: true, copy: true, annotate: true, fillForms: true, encrypted: false, signed: false },
       capabilities: this.abiVersion === 2 ? ['text.replace'] : [],
     });
   }
 
+  _pde_page_info(document: number, pageIndex: number): number {
+    const current = this.documents.get(document);
+    if (!current) return this.fail('DOCUMENT_NOT_FOUND', 'missing document');
+    this.pageInfoIndices.push(pageIndex);
+    return this.json({ id: `${current.documentId}-page-${pageIndex + 1}`, widthPt: 200, heightPt: 100,
+      rotation: 90, ...this.metricsOverride });
+  }
+
   _pde_describe_page(document: number, pageIndex: number): number {
+    this.describedPageIndices.push(pageIndex);
     const current = this.documents.get(document);
     if (!current) return this.fail('DOCUMENT_NOT_FOUND', 'missing document');
     const pageId = `${current.documentId}-page-${pageIndex + 1}`;
@@ -156,12 +179,48 @@ class FakePdfCoreModule implements PdfCoreEmscriptenModule {
     fullWidth: number,
     fullHeight: number,
   ): number {
+    this.legacyRenders += 1;
+    return this.finishRender(document, [width, height, offsetX, offsetY, fullWidth, fullHeight], false);
+  }
+
+  _pde_render_start(document: number, _pageIndex: number, width: number, height: number, offsetX: number,
+    offsetY: number, fullWidth: number, fullHeight: number, budgetMs: number): number {
+    this.renderBudgets.push(budgetMs);
+    const viewport = [width, height, offsetX, offsetY, fullWidth, fullHeight];
+    this.lastRender = viewport;
+    this.renderTarget = { document, viewport, remaining: this.pendingRenderSteps };
+    if (this.pendingRenderSteps > 0) return this.json({ status: 'pending' });
+    this.renderTarget = null;
+    return this.finishRender(document, viewport, true);
+  }
+
+  _pde_render_continue(document: number, budgetMs: number): number {
+    this.renderBudgets.push(budgetMs);
+    this.renderContinues += 1;
+    const target = this.renderTarget;
+    if (!target || target.document !== document) return this.fail('CANCELLED', 'No active render');
+    target.remaining -= 1;
+    if (target.remaining > 0) return this.json({ status: 'pending' });
+    this.renderTarget = null;
+    return this.finishRender(document, target.viewport, true);
+  }
+
+  _pde_render_cancel(_document: number): number {
+    this.cancelledRenders += 1;
+    this.renderTarget = null;
+    this.binaryPointer = 0;
+    this.binarySize = 0;
+    return this.json({ cancelled: true });
+  }
+
+  private finishRender(document: number, viewport: number[], progressive: boolean): number {
     const current = this.documents.get(document);
     if (!current) return this.fail('DOCUMENT_NOT_FOUND', 'missing document');
-    this.lastRender = [width, height, offsetX, offsetY, fullWidth, fullHeight];
+    this.lastRender = viewport;
+    const [width, height] = viewport as [number, number];
     const stride = width * 4;
     this.setBinary(Uint8Array.from({ length: stride * height }, (_, index) => index % 251));
-    return this.json({ width, height, stride, format: 'rgba', revision: current.revision });
+    return this.json({ ...(progressive ? { status: 'done' } : {}), width, height, stride, format: 'rgba', revision: current.revision });
   }
 
   _pde_save_memory(document: number): number {
@@ -246,7 +305,7 @@ class FakePdfCoreModule implements PdfCoreEmscriptenModule {
     return this.commit(current, true, false);
   }
 
-  _pde_binary_data(): number { return this.binaryPointer; }
+  _pde_binary_data(): number { this.binaryReads += 1; return this.binaryPointer; }
   _pde_binary_size(): number { return this.binarySize; }
   _pde_error_code(): number { return this.errorCode ? this.output(this.errorCode) : 0; }
   _pde_error_message(): number { return this.errorMessage ? this.output(this.errorMessage) : 0; }
@@ -345,6 +404,119 @@ describe('WASM C ABI binding', () => {
     const saved = await binding.engine.save({ docId: info.id, protection: 'preserve' });
     expect(saved.kind).toBe('bytes');
     if (saved.kind === 'bytes') expect(new Uint8Array(saved.bytes)).toEqual(input);
+  });
+
+  it('renders from geometry in 8ms slices and only copies the final pixels', async () => {
+    const module = new FakePdfCoreModule();
+    module.pendingRenderSteps = 2;
+    const engine = createPdfCoreBinding(module).engine;
+    const info = await engine.open({ kind: 'bytes', sourceId: 'source', name: 'a.pdf', bytes: Uint8Array.of(1).buffer });
+    const task = engine.render({ docId: info.id, pageId: info.pageOrder[0]!, scale: 1 });
+    await Promise.resolve();
+    expect(module.binaryReads).toBe(0);
+    expect(module.describedPageIndices).toEqual([]);
+    expect(module.pageInfoIndices).toEqual([0]);
+    const result = await task;
+    expect(result).toMatchObject({ width: 200, height: 100, revision: 0 });
+    expect(result).not.toHaveProperty('status');
+    expect(module.renderBudgets).toEqual([8, 8, 8]);
+    expect(module.binaryReads).toBe(1);
+    expect(module.legacyRenders).toBe(0);
+  });
+
+  it('cancels the real render context at a slice boundary without reading partial pixels', async () => {
+    const module = new FakePdfCoreModule();
+    module.pendingRenderSteps = 10;
+    const engine = createPdfCoreBinding(module).engine;
+    const info = await engine.open({ kind: 'bytes', sourceId: 'source', name: 'a.pdf', bytes: Uint8Array.of(1).buffer });
+    const controller = new AbortController();
+    const task = engine.render({ docId: info.id, pageId: info.pageOrder[0]!, scale: 1 }, { signal: controller.signal });
+    await Promise.resolve();
+    controller.abort();
+    await expect(task).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(module.cancelledRenders).toBe(1);
+    expect(module.renderContinues).toBe(0);
+    expect(module.binaryReads).toBe(0);
+    module.pendingRenderSteps = 0;
+    await expect(engine.render({ docId: info.id, pageId: info.pageOrder[0]!, scale: 1 })).resolves.toMatchObject({ width: 200 });
+  });
+
+  it('does not enqueue an already-aborted render and handles closing between slices', async () => {
+    const module = new FakePdfCoreModule();
+    const engine = createPdfCoreBinding(module).engine;
+    const info = await engine.open({ kind: 'bytes', sourceId: 'source', name: 'a.pdf', bytes: Uint8Array.of(1).buffer });
+    const request = { docId: info.id, pageId: info.pageOrder[0]!, scale: 1 };
+    await expect(engine.render(request, { signal: AbortSignal.abort() })).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(module.pageInfoIndices).toEqual([]);
+    expect(module.renderBudgets).toEqual([]);
+    module.pendingRenderSteps = 10;
+    const task = engine.render(request);
+    await Promise.resolve();
+    await engine.close(info.id);
+    await expect(task).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(module.binaryReads).toBe(0);
+    expect(module.renderContinues).toBe(0);
+  });
+
+  it.each(['_pde_page_info', '_pde_render_start', '_pde_render_continue', '_pde_render_cancel'])(
+    'reports an unavailable reading core when %s is missing, without describing the model or using legacy render', async name => {
+      const module = new FakePdfCoreModule();
+      Object.defineProperty(module, name, { value: undefined });
+      const engine = createPdfCoreBinding(module).engine;
+      const info = await engine.open({ kind: 'bytes', sourceId: 'source', name: 'a.pdf', bytes: Uint8Array.of(1).buffer });
+      await expect(engine.render({ docId: info.id, pageId: info.pageOrder[0]!, scale: 1 })).rejects.toMatchObject({ code: 'CORE_UNAVAILABLE' });
+      expect(module.describedPageIndices).toEqual([]);
+      expect(module.legacyRenders).toBe(0);
+    },
+  );
+
+  it.each([{ id: 'wrong-page' }, { widthPt: 0 }, { heightPt: null }, { rotation: 45 }])(
+    'rejects invalid lightweight geometry %j', async metricsOverride => {
+      const module = new FakePdfCoreModule();
+      module.metricsOverride = metricsOverride;
+      const engine = createPdfCoreBinding(module).engine;
+      const info = await engine.open({ kind: 'bytes', sourceId: 'source', name: 'a.pdf', bytes: Uint8Array.of(1).buffer });
+      await expect(engine.describePageMetrics(info.id, info.pageOrder[0]!)).rejects.toMatchObject({ code: 'CORE_UNAVAILABLE' });
+      expect(module.describedPageIndices).toEqual([]);
+    },
+  );
+
+  it('invalidates changed page geometry and models while retaining unchanged pages', async () => {
+    const module = new FakePdfCoreModule();
+    module.abiVersion = 2;
+    const engine = createPdfCoreBinding(module).engine;
+    const info = await engine.open({ kind: 'bytes', sourceId: 'source', name: 'a.pdf', bytes: Uint8Array.of(1).buffer });
+    const first = await engine.describePage(info.id, info.pageOrder[0]!);
+    const second = await engine.describePage(info.id, info.pageOrder[1]!);
+    await engine.apply({ id: 'edit', docId: info.id, baseRevision: 0, source: 'manual', commands: [{
+      type: 'text.replace', pageId: first.id, blockId: first.objects[0]!.textBlock!.id,
+      range: [0, 'Original text'.length], text: 'Edited',
+    }] });
+    module.metricsOverride = { widthPt: 250 };
+    expect((await engine.describePageMetrics(info.id, first.id)).widthPt).toBe(250);
+    expect((await engine.describePageMetrics(info.id, second.id)).widthPt).toBe(200);
+    expect(await engine.describePage(info.id, second.id)).toBe(second);
+    expect((await engine.describePage(info.id, first.id)).objects[0]!.textBlock!.runs[0]!.text).toBe('Edited');
+    expect(module.pageInfoIndices).toEqual([0]);
+    expect(module.describedPageIndices).toEqual([0, 1, 0]);
+  });
+
+  it('keeps only eight recent models and never retains their object arrays in the geometry cache', async () => {
+    const module = new FakePdfCoreModule();
+    module.pageCount = 10;
+    const engine = createPdfCoreBinding(module).engine;
+    const info = await engine.open({ kind: 'bytes', sourceId: 'source', name: 'a.pdf', bytes: Uint8Array.of(1).buffer });
+    for (const id of info.pageOrder.slice(0, 8)) await engine.describePage(info.id, id);
+    await engine.describePage(info.id, info.pageOrder[0]!);
+    await engine.describePage(info.id, info.pageOrder[8]!);
+    await engine.describePage(info.id, info.pageOrder[0]!);
+    await engine.describePage(info.id, info.pageOrder[1]!);
+    expect(module.describedPageIndices.filter(index => index === 0)).toHaveLength(1);
+    expect(module.describedPageIndices.filter(index => index === 1)).toHaveLength(2);
+    expect(await engine.describePageMetrics(info.id, info.pageOrder[1]!)).toEqual({
+      id: info.pageOrder[1], widthPt: 200, heightPt: 100, rotation: 90,
+    });
+    expect(module.pageInfoIndices).toEqual([]);
   });
 
   it('keeps ABI 1 read-only even when optional ABI 2 methods exist on the runtime object', async () => {

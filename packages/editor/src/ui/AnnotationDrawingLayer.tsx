@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import type { CommitResult, DocumentInfo, EngineAdapter, PageModel } from '@pdf-editor/contracts';
+import type { CommitResult, EngineAdapter } from '@pdf-editor/contracts';
+import { ensureLoaded, type DisplayDocument } from './display-document.js';
 import { annotationBounds, annotationNoteBounds, annotationPointFromClient, buildDrawnAnnotation, commitDrawnAnnotation,
   type AnnotationDrawingOptions, type AnnotationPoint } from './annotation-drawing.js';
 import { useI18n } from './i18n.js';
@@ -8,8 +9,7 @@ import './annotations.css';
 export type AnnotationDraftHandle = { finish(): Promise<boolean> };
 
 type Props = {
-  document: DocumentInfo;
-  page: PageModel;
+  document: DisplayDocument;
   engine: EngineAdapter;
   options: AnnotationDrawingOptions | null;
   disabled: boolean;
@@ -23,7 +23,8 @@ type Gesture = { scope: string; pointerId: number; points: AnnotationPoint[]; st
 type Draft = { scope: string; points: AnnotationPoint[] };
 type Note = { scope: string; point: AnnotationPoint; text: string };
 
-export function AnnotationDrawingLayer({ document: info, page, engine, options, disabled, onBusyChange, onCommitted, onCancel, onCreated, onDraftChange }: Props) {
+export function AnnotationDrawingLayer({ document: shown, engine, options, disabled, onBusyChange, onCommitted, onCancel, onCreated, onDraftChange }: Props) {
+  const { info, page } = shown;
   const { t } = useI18n();
   const svg = useRef<SVGSVGElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -90,7 +91,8 @@ export function AnnotationDrawingLayer({ document: info, page, engine, options, 
     try {
       const command = buildDrawnAnnotation(page, { ...options, text }, points);
       if (!command) return false;
-      await commitDrawnAnnotation(engine, info, page, command, isCurrent, async result => {
+      const loaded = await ensureLoaded(engine, shown, { priority: 'interaction' });
+      await commitDrawnAnnotation(engine, info, loaded.page, command, isCurrent, async result => {
         await onCommitted(result);
         committed = true;
         if (mounted.current && generation.current === expectedGeneration) {

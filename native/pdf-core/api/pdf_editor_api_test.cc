@@ -1,5 +1,6 @@
 #include "pdf_editor_api.h"
 #include "native_file_path.h"
+#include "recovery_codec.h"
 #include "text_shaping.h"
 #include "tagged_content.h"
 #include "core/fpdfapi/font/cpdf_font.h"
@@ -209,6 +210,313 @@ void TestRenderPageReuse() {
   Require(RenderPixels(doc, 1, 600, 400) != full, "switching cached page changes pixels");
   Require(RenderPixels(doc, 0, 600, 400) == full, "returning to a page preserves pixels");
   Require(pde_close(doc) == 1, "close document with cached render page");
+}
+
+std::string LazyIdentityPdf(bool malformed_group = false) {
+  const std::string group_id = malformed_group ? std::string(161, 'x') : "saved-group";
+  const std::string form = "0 0 20 10 re f BT /F1 14 Tf 10 20 Td (Lazy text) Tj ET";
+  return Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 "
+      "/MediaBox [10 20 210 320] /CropBox [20 40 180 280] /Rotate 90 /UserUnit 2 >>",
+      "<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Fm 9 0 R >> >> /Contents 4 0 R >>",
+      Stream("/Fm Do 0 0 10 10 re f"),
+      "<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Fm 10 0 R >> >> /Contents 6 0 R >>",
+      Stream("/Fm Do"),
+      "<< /Type /Page /Parent 2 0 R /Contents 8 0 R >>",
+      Stream(""),
+      Stream(form, "/Type /XObject /Subtype /Form /BBox [0 0 120 80] "
+                   "/Resources << /Font << /F1 11 0 R >> >>"),
+      Stream(form, "/Type /XObject /Subtype /Form /BBox [0 0 120 80] "
+                   "/Resources << /Font << /F1 11 0 R >> >> "
+                   "/KomoGroup << /Version 1 /Id (" + group_id + ") "
+                   "/Ids [(saved-path) (saved-text)] /TextIds [() (saved-block)] >>"),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"});
+}
+
+void TestLazyPageIdentities() {
+  const std::string pdf = LazyIdentityPdf();
+  const auto open = [&](const char* id) {
+    const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+        static_cast<uint32_t>(pdf.size()), id, "lazy-source", nullptr);
+    Require(doc != 0, "open lazy page identity fixture");
+    return doc;
+  };
+  uint32_t doc = open("lazy-visit-order");
+  const std::string blank_info = RequireResult(pde_page_info(doc, 2), "unvisited blank page info");
+  const std::string first_info = RequireResult(pde_page_info(doc, 0), "unvisited first page info");
+  Require(first_info.find("\"widthPt\":480,\"heightPt\":320,\"rotation\":90}") != std::string::npos &&
+          first_info.find("objects") == std::string::npos &&
+          blank_info.find("\"widthPt\":480,\"heightPt\":320,\"rotation\":90}") != std::string::npos &&
+          pde_binary_size() == 0,
+          "lightweight inherited CropBox Rotate UserUnit geometry has no model or pixels");
+  const std::string first_id = PageIdFromDescription(first_info);
+  const std::string object_prefix = "o" + first_id.substr(1) + ":";
+  const std::string text_id = "t" + first_id.substr(1) + ":2";
+  const std::string group = RequireResult(pde_describe_page(doc, 1), "describe second page first");
+  Require(group.find("\"id\":\"saved-group\"") != std::string::npos &&
+          group.find("\"id\":\"saved-path\"") != std::string::npos &&
+          TextBlockIds(group) == std::vector<std::string>{"saved-block"},
+          "saved group IDs override lazily generated source identities");
+  const std::string first = RequireResult(pde_describe_page(doc, 0), "describe first page second");
+  for (unsigned ordinal = 0; ordinal < 4; ++ordinal)
+    Require(first.find("\"id\":\"" + object_prefix + std::to_string(ordinal) + "\"") != std::string::npos,
+            "source object IDs use original page index and preorder ordinal");
+  Require(TextBlockIds(first) == std::vector<std::string>{text_id},
+          "nested text ID is independent of page visit order");
+  Require(first.starts_with(first_info.substr(0, first_info.size() - 1) + ",\"objects\":"),
+          "page-info and describe share the exact normalized geometry");
+  Require(pde_page_info(doc, 3) == nullptr && std::string(pde_error_code()) == "INVALID_REQUEST",
+          "page-info validates page index");
+  Require(pde_close(doc) == 1, "close lazy visit fixture");
+  Require(pde_page_info(doc, 0) == nullptr && std::string(pde_error_code()) == "DOCUMENT_NOT_FOUND",
+          "page-info rejects closed documents");
+
+  doc = open("lazy-first-command");
+  PdeEditCommand insert{};
+  insert.type = 9; insert.page_id = "saved-path";
+  insert.values[0] = 100; insert.values[1] = 100;
+  Require(pde_apply_commands(doc, 0, "lazy-collision", &insert, 1) == nullptr &&
+          std::string(pde_error_message()).find("already used") != std::string::npos,
+          "first ID validation reserves saved IDs on entirely unvisited pages");
+  insert.page_id = "lazy-inserted";
+  Require(pde_apply_commands(doc, 0, "lazy-insert", &insert, 1) != nullptr,
+          "first edit rebuilds a complete source identity map");
+  Require(pde_undo(doc) != nullptr, "undo first edit after lazy open");
+  Require(pde_apply_commands(doc, 2, "lazy-reuse", &insert, 1) == nullptr &&
+          std::string(pde_error_message()).find("already used") != std::string::npos,
+          "undo never releases reserved IDs");
+  Require(pde_redo(doc) != nullptr, "redo first lazy edit");
+  Require(pde_close(doc) == 1, "close lazy first command fixture");
+
+  doc = open("lazy-snapshot");
+  const std::string info = RequireResult(pde_document_info(doc), "lazy snapshot document info");
+  const std::string before = RequireResult(pde_page_info(doc, 0), "lazy snapshot page info");
+  Require(pde_export_recovery(doc) != nullptr, "snapshot indexes every still-unvisited source page");
+  std::vector<uint8_t> snapshot(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  Require(pde_close(doc) == 1, "close fully lazy snapshot source");
+  for (const uint8_t abi : {4, 3}) {
+    // No transaction records need converting in this source-only ABI 3 fixture.
+    snapshot[sizeof(uint64_t) + std::strlen("KOMOPDF-RECOVERY") + sizeof(uint64_t)] = abi;
+    const uint32_t restored = pde_restore_recovery(snapshot.data(),
+        static_cast<uint32_t>(snapshot.size()), nullptr);
+    Require(restored != 0, "restore complete source-only ABI 3/4 snapshot");
+    Require(info == RequireResult(pde_document_info(restored), "restored lazy document info") &&
+            before == RequireResult(pde_page_info(restored, 0), "restored lazy page geometry"),
+            "recovery preserves session IDs and page identity");
+    const std::string restored_first = RequireResult(pde_describe_page(restored, 0), "recovered source IDs");
+    const std::string restored_prefix = "o" + PageIdFromDescription(before).substr(1) + ":";
+    Require(FirstObjectId(restored_first) == restored_prefix + "0" &&
+            TextBlockIds(pde_describe_page(restored, 1)) == std::vector<std::string>{"saved-block"},
+            "legacy recovery has complete nested and saved group identities");
+    Require(RequireResult(pde_page_info(restored, 2), "restored blank info").find("\"widthPt\":480") != std::string::npos &&
+            RequireResult(pde_describe_page(restored, 2), "restored blank page").ends_with("\"objects\":[]}"),
+            "loaded empty identities remain distinct from unloaded identities");
+    Require(pde_save_memory(restored) != nullptr && pde_binary_size() == pdf.size() &&
+            std::memcmp(pde_binary_data(), pdf.data(), pdf.size()) == 0,
+            "source-only recovery still saves byte-identically");
+    Require(pde_close(restored) == 1, "close restored lazy fixture");
+  }
+}
+
+void TestAbi3RecoveryCommands() {
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R >>",
+      Stream("10 10 20 20 re f")});
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "abi3-recovery", "abi3-recovery-source", nullptr);
+  Require(doc != 0, "open legacy recovery source");
+  const std::string page_id = PageIdFromDescription(RequireResult(pde_page_info(doc, 0), "legacy recovery page ID"));
+  const std::string object_id = "o" + page_id.substr(1) + ":0";
+  const uint64_t session = std::strtoull(page_id.c_str() + 2, nullptr, 10);
+  Require(pde_close(doc) == 1, "close legacy recovery source");
+
+  // Real ABI 3 command records contain ten doubles, not ABI 4's fourteen.
+  pdf_editor::RecoveryWriter out;
+  out.String("KOMOPDF-RECOVERY"); out.Integer(1); out.Integer(3);
+  out.String("abi3-recovery"); out.String("abi3-recovery-source"); out.Integer(session);
+  out.Integer(1); out.Integer(0); out.Integer(1);  // revision, saved, undoable
+  out.Blob({reinterpret_cast<const uint8_t*>(pdf.data()), pdf.size()});
+  out.Integer(1); out.String(page_id); out.Integer(1);
+  out.String(object_id); out.String(""); out.Integer(0);  // source path identity
+  out.Integer(1); out.String("abi3-rotate"); out.Integer(1); out.Integer(6);
+  for (unsigned index = 0; index < 5; ++index) out.String("");
+  out.Integer(1); out.String(page_id);
+  for (unsigned index = 0; index < 4; ++index) out.Integer(0);
+  for (unsigned index = 0; index < 10; ++index) out.Number(index == 0 ? 90 : 0);
+  out.Integer(0);  // redo transactions
+  out.Integer(1); out.String("abi3-rotate");
+  out.Integer(2); out.String(page_id); out.String(object_id);
+  out.Integer(0); out.Integer(0); out.Integer(0);  // fonts, images, PDFs
+  uint32_t restored = pde_restore_recovery(out.bytes.data(), static_cast<uint32_t>(out.bytes.size()), nullptr);
+  Require(restored != 0 && JsonNumberAfter(RequireResult(pde_page_info(restored, 0), "legacy rotated geometry"), "\"rotation\":") == 90,
+          "restore and replay an actual ten-double ABI 3 command");
+  Require(pde_undo(restored) != nullptr &&
+          FirstObjectId(RequireResult(pde_describe_page(restored, 0), "legacy undone source IDs")) == object_id,
+          "ABI 3 undo retains the complete source identity map");
+  Require(pde_redo(restored) != nullptr && pde_export_recovery(restored) != nullptr,
+          "ABI 3 commands can be redone and exported as ABI 4");
+  const std::vector<uint8_t> upgraded(pde_binary_data(), pde_binary_data() + pde_binary_size());
+  Require(pde_close(restored) == 1, "close upgraded legacy recovery");
+  restored = pde_restore_recovery(upgraded.data(), static_cast<uint32_t>(upgraded.size()), nullptr);
+  Require(restored != 0 && JsonNumberAfter(RequireResult(pde_page_info(restored, 0), "upgraded legacy geometry"), "\"rotation\":") == 90 &&
+          pde_undo(restored) != nullptr, "ABI 4 archives preserve upgraded ABI 3 history");
+  Require(pde_close(restored) == 1, "close legacy recovery command fixture");
+}
+
+void TestLazyIdentityBarriers() {
+  const std::string pdf = LazyIdentityPdf(true);
+  const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+      static_cast<uint32_t>(pdf.size()), "lazy-barriers", "lazy-barrier-source", nullptr);
+  Require(doc != 0, "open does not scan malformed identities on a distant page");
+  Require(pde_page_info(doc, 1) != nullptr, "page-info does not initialize object IDs");
+  Require(pde_recovery_resources(doc) != nullptr && pde_binary_size() == 0,
+          "resource enumeration does not force source indexing");
+  Require(pde_save_memory(doc) != nullptr && pde_binary_size() == pdf.size() &&
+          std::memcmp(pde_binary_data(), pdf.data(), pdf.size()) == 0,
+          "unedited save bypasses source identity loading");
+  Require(!RenderPixels(doc, 1, 480, 320).empty(), "raster reading bypasses object identity loading");
+  const std::string first = RequireResult(pde_describe_page(doc, 0), "describe loads only its own page IDs");
+  const std::string page_id = PageIdFromDescription(first);
+  const std::string text_id = TextBlockIds(first)[0];
+  const auto blocked = [](const char* result) {
+    Require(result == nullptr && std::string(pde_error_message()).find("Saved group ID") != std::string::npos &&
+            pde_binary_size() == 0, "full source barrier rejects an invalid unvisited identity");
+  };
+  const char* ids[] = {page_id.c_str()};
+  PdeEditCommand rotate{};
+  rotate.type = 6; rotate.ids = ids; rotate.id_count = 1; rotate.values[0] = 90;
+  blocked(pde_preview_commands(doc, 0, &rotate, 1));
+  PdeTextEdit edit{0, text_id.c_str(), 0, 4, "Edit", nullptr};
+  blocked(pde_preview_text(doc, &edit));
+  PdeEditCommand text{};
+  text.type = 3; text.page_id = page_id.c_str(); text.target_id = "lazy-preview";
+  text.text_utf8 = "Text"; text.font_id = "missing-font"; text.flags = 3;
+  text.values[2] = 100; text.values[3] = 30; text.values[4] = 12;
+  blocked(pde_preview_text_insert(doc, 0, &text));
+  blocked(pde_export_recovery(doc));
+  blocked(pde_apply_commands(doc, 0, "lazy-blocked", &rotate, 1));
+  Require(first == RequireResult(pde_describe_page(doc, 0), "source after failed lazy barriers") &&
+          pde_document_revision(doc) == 0, "failed identity barriers preserve committed state");
+  Require(pde_close(doc) == 1, "close lazy barrier fixture");
+}
+
+void RequirePendingRender(const char* result) {
+  Require(result && std::string_view(result) == "{\"status\":\"pending\"}" &&
+          pde_binary_size() == 0 && pde_binary_data() == nullptr,
+          "progressive pending never exposes partial pixels");
+}
+
+std::vector<uint8_t> FinishProgressiveRender(uint32_t doc, std::string status) {
+  for (unsigned step = 0; status == "{\"status\":\"pending\"}"; ++step) {
+    Require(step < 1000, "progressive rendering completes across bounded checkpoints");
+    RequirePendingRender(status.c_str());
+    status = RequireResult(pde_render_continue(doc, 0), "continue progressive rendering");
+  }
+  Require(status.starts_with("{\"status\":\"done\",\"width\":") &&
+          status.find("\"format\":\"rgba\",\"revision\":") != std::string::npos &&
+          pde_binary_size() > 0 && pde_binary_data(),
+          "only completed renders publish metadata and full RGBA pixels");
+  Require(JsonNumberAfter(status, "\"width\":") * JsonNumberAfter(status, "\"height\":") * 4 == pde_binary_size(),
+          "completed progressive bitmap has its full declared size");
+  return {pde_binary_data(), pde_binary_data() + pde_binary_size()};
+}
+
+void TestProgressiveRendering() {
+  std::string content = "1 0 0 rg 0 0 300 200 re f 0 1 0 rg\n";
+  for (unsigned index = 0; index < 2400; ++index)
+    content += std::to_string(10 + (index % 28) * 10) + " " +
+        std::to_string(10 + (index / 28 % 18) * 10) + " 2 2 re f\n";
+  const std::string pdf = Pdf({
+      "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [7 0 R] >> >>",
+      "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Annots [7 0 R 9 0 R] >>",
+      Stream(content),
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 6 0 R >>",
+      Stream("0 0 1 rg 0 0 300 200 re f"),
+      "<< /Type /Annot /Subtype /Widget /FT /Tx /T (Field) /V (Value) "
+      "/Rect [20 20 70 40] /AP << /N 8 0 R >> /P 3 0 R >>",
+      Stream("0 0 1 rg 0 0 50 20 re f", "/Type /XObject /Subtype /Form /BBox [0 0 50 20] /Resources << >>"),
+      "<< /Type /Annot /Subtype /Square /Rect [80 20 110 50] /AP << /N 10 0 R >> /P 3 0 R >>",
+      Stream("1 1 0 rg 0 0 30 30 re f", "/Type /XObject /Subtype /Form /BBox [0 0 30 30] /Resources << >>")});
+  const auto open = [&](const char* id) {
+    const uint32_t doc = pde_open_memory(reinterpret_cast<const uint8_t*>(pdf.data()),
+        static_cast<uint32_t>(pdf.size()), id, "progressive-source", nullptr);
+    Require(doc != 0, "open progressive render fixture");
+    return doc;
+  };
+  const uint32_t doc = open("progressive-render");
+  const auto baseline = RenderPixels(doc, 0, 600, 400);
+  Require(PixelAt(baseline, 600, 100, 340) == std::array<uint8_t, 4>{0, 0, 255, 255} &&
+          PixelAt(baseline, 600, 180, 330) == std::array<uint8_t, 4>{255, 255, 0, 255},
+          "synchronous baseline includes widget and annotation appearances");
+  Require(pde_render_start(doc, 2, 600, 400, 0, 0, 600, 400, 0) == nullptr &&
+          std::string(pde_error_code()) == "INVALID_REQUEST", "progressive validates page index");
+  Require(pde_render_start(doc, 0, 600, 400, 1, 0, 600, 400, 0) == nullptr &&
+          pde_binary_size() == 0, "progressive validates viewport before rendering");
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  Require(pde_page_info(doc, 1) != nullptr && pde_document_info(doc) != nullptr &&
+          pde_recovery_resources(doc) != nullptr, "pending render survives unrelated metadata calls");
+  Require(pde_export_recovery(doc) != nullptr && pde_binary_size() > 0,
+          "pending bitmap storage is independent of snapshot binary output");
+  std::string status = RequireResult(pde_render_continue(doc, 0), "resume after snapshot output");
+  Require(FinishProgressiveRender(doc, status) == baseline,
+          "progressive full-page pixels equal synchronous pixels including annotations and widgets");
+  Require(pde_render_continue(doc, 8) == nullptr && std::string(pde_error_code()) == "INVALID_REQUEST",
+          "completed progressive context is released");
+  status = RequireResult(pde_render_start(doc, 0, 256, 160, -150, -80, 600, 400, 8), "start progressive tile");
+  const auto tile = FinishProgressiveRender(doc, status);
+  for (uint32_t y = 0; y < 160; ++y)
+    for (uint32_t x = 0; x < 256; ++x)
+      Require(PixelAt(tile, 256, x, y) == PixelAt(baseline, 600, x + 150, y + 80),
+              "progressive clipped pixels equal the synchronous full-page crop");
+
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  Require(RequireResult(pde_render_cancel(doc), "cancel progressive render") == "{\"cancelled\":true}" &&
+          pde_binary_size() == 0, "cancel discards all partial pixels");
+  Require(RequireResult(pde_render_cancel(doc), "repeat render cancellation") == "{\"cancelled\":true}",
+          "render cancellation is idempotent");
+  Require(pde_render_continue(doc, 0) == nullptr, "cancelled render cannot continue");
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  status = RequireResult(pde_render_start(doc, 1, 600, 400, 0, 0, 600, 400, 8), "replace pending render on another page");
+  const auto other_page = FinishProgressiveRender(doc, status);
+  Require(other_page != baseline && other_page == RenderPixels(doc, 1, 600, 400),
+          "new start cancels the old context and reuses the document page cache");
+
+  const uint32_t other = open("progressive-other-document");
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  RequirePendingRender(pde_render_start(other, 0, 600, 400, 0, 0, 600, 400, 0));
+  Require(pde_render_cancel(doc) != nullptr, "cancel only one document's render");
+  status = RequireResult(pde_render_continue(other, 0), "continue independent document");
+  Require(FinishProgressiveRender(other, status) == baseline, "different documents own independent render contexts");
+  Require(pde_close(other) == 1, "close second progressive document");
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  Require(RenderPixels(doc, 0, 600, 400) == baseline && pde_render_continue(doc, 0) == nullptr,
+          "legacy synchronous rendering cancels a pending render without changing pixels");
+
+  const std::string page_id = PageIdFromDescription(RequireResult(pde_page_info(doc, 0), "page ID before mutation"));
+  const char* ids[] = {page_id.c_str()};
+  PdeEditCommand rotate{};
+  rotate.type = 6; rotate.ids = ids; rotate.id_count = 1; rotate.values[0] = 90;
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  Require(pde_apply_commands(doc, 0, "progressive-rotate", &rotate, 1) != nullptr &&
+          pde_render_continue(doc, 0) == nullptr, "committing a candidate cancels pending pixels");
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  Require(pde_undo(doc) != nullptr && pde_render_continue(doc, 0) == nullptr,
+          "undo closes a pending progressive context before replacing the PDF");
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  Require(pde_redo(doc) != nullptr && pde_render_continue(doc, 0) == nullptr,
+          "redo closes a pending progressive context before replacing the PDF");
+  status = RequireResult(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 8), "start committed revision render");
+  FinishProgressiveRender(doc, status);
+  Require(RequireResult(pde_document_info(doc), "progressive revision info").find("\"revision\":3") != std::string::npos,
+          "rendering never changes document revision");
+  RequirePendingRender(pde_render_start(doc, 0, 600, 400, 0, 0, 600, 400, 0));
+  Require(pde_close(doc) == 1, "close releases a live progressive bitmap and page");
+  Require(pde_render_cancel(doc) == nullptr && std::string(pde_error_code()) == "DOCUMENT_NOT_FOUND",
+          "cancel keeps the existing invalid-document error");
 }
 
 void TestDeletePreservesFontIdentity() {
@@ -4549,6 +4857,10 @@ int main(int argc, char** argv) {
   RemoveUnicodeFixture();
   TestTextTransactions();
   TestRenderPageReuse();
+  TestLazyPageIdentities();
+  TestAbi3RecoveryCommands();
+  TestLazyIdentityBarriers();
+  TestProgressiveRendering();
   TestDeletePreservesFontIdentity();
   TestNativeLongPath();
   TestRangeFormatting();

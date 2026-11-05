@@ -49,8 +49,10 @@ export type EditableObject = {
   id: string; pageId: string; type: 'text' | 'image' | 'path' | 'form' | 'group' | 'shading';
   bounds: Rect; transform: Matrix; locator: SourceObjectLocator; textBlock?: TextBlock;
 };
-export type PageModel = { id: string; widthPt: number; heightPt: number; rotation: 0 | 90 | 180 | 270; objects: EditableObject[] };
-export type RenderRequest = { docId: string; pageId: string; scale: number; clip?: Rect };
+export type PageMetrics = { id: string; widthPt: number; heightPt: number; rotation: 0 | 90 | 180 | 270 };
+export type PageModel = PageMetrics & { objects: EditableObject[] };
+export type RenderRequest = { docId: string; pageId: string; scale: number; clip?: Rect; jobId?: string };
+export type RenderOptions = { signal?: AbortSignal };
 export type RenderResult = { width: number; height: number; stride: number; format: 'rgba'; pixels: ArrayBuffer; byteOffset?: number; revision: number };
 export type ExtractionRequest = { docId: string; pageIds: string[] };
 export type OcrRecognitionRequest = { docId: string; pageId: string; baseRevision: number; jobId: string; clip?: Rect };
@@ -113,12 +115,13 @@ export interface EngineAdapter {
   previewTransaction(transaction: EditTransaction): Promise<TransactionPreviewResult>;
   confirmSave(request: SaveConfirmation): Promise<DocumentInfo>;
   open(source: DocumentSource, password?: string): Promise<DocumentInfo>;
+  describePageMetrics(docId: string, pageId: string): Promise<PageMetrics>;
   describePage(docId: string, pageId: string): Promise<PageModel>;
   describeForms?(docId: string): Promise<FormFieldInfo[]>;
   describeAnnotations?(docId: string, pageId: string): Promise<PdfAnnotationInfo[]>;
   describeOutline?(docId: string): Promise<OutlineEntry[]>;
   describeFonts?(docId: string): Promise<RegisteredFontInfo[]>;
-  render(request: RenderRequest): Promise<RenderResult>;
+  render(request: RenderRequest, options?: RenderOptions): Promise<RenderResult>;
   extract(request: ExtractionRequest): Promise<TextBlock[]>;
   recognizeOcr?(request: OcrRecognitionRequest): Promise<OcrRecognitionResult>;
   cancelOcr?(jobId: string): Promise<void>;
@@ -171,7 +174,7 @@ export interface HostAdapter {
 }
 export const WORKER_PROTOCOL_VERSION = 1 as const;
 export type WorkerHandshake = { protocolVersion: 1; coreBuildId: string; capabilities: CommandType[] };
-export type EngineErrorCode = 'INVALID_REQUEST' | 'DOCUMENT_NOT_FOUND' | 'STALE_REVISION' | 'UNSUPPORTED_CAPABILITY' | 'PASSWORD_REQUIRED' | 'WORKER_EXITED' | 'CORE_UNAVAILABLE' | 'RESOURCE_LIMIT' | 'SAVE_FAILED';
+export type EngineErrorCode = 'INVALID_REQUEST' | 'DOCUMENT_NOT_FOUND' | 'STALE_REVISION' | 'UNSUPPORTED_CAPABILITY' | 'PASSWORD_REQUIRED' | 'WORKER_EXITED' | 'CORE_UNAVAILABLE' | 'RESOURCE_LIMIT' | 'SAVE_FAILED' | 'CANCELLED';
 export class EngineError extends Error {
   constructor(public readonly code: EngineErrorCode, message: string) { super(message); this.name = 'EngineError'; }
 }

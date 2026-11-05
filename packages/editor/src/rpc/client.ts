@@ -1,4 +1,4 @@
-import { EngineError, WORKER_PROTOCOL_VERSION, type WorkerHandshake } from '@pdf-editor/contracts';
+import { EngineError, WORKER_PROTOCOL_VERSION, type RenderOptions, type WorkerHandshake } from '@pdf-editor/contracts';
 import {
   isRpcResponse,
   type EngineMethod,
@@ -11,6 +11,8 @@ import {
 type PendingRequest = {
   resolve(value: unknown): void;
   reject(reason: unknown): void;
+  cleanup(): void;
+  signal?: AbortSignal | undefined;
 };
 
 export class WorkerRpcClient {
@@ -30,9 +32,12 @@ export class WorkerRpcClient {
     const pending = this.pending.get(message.requestId);
     if (!pending) return;
     this.pending.delete(message.requestId);
+    pending.cleanup();
 
     if (message.kind === 'engine-error') {
       pending.reject(new EngineError(message.error.code, message.error.message));
+    } else if (pending.signal?.aborted) {
+      pending.reject(cancelled());
     } else if (message.kind === 'handshake-result') {
       pending.resolve(message.handshake);
     } else {
@@ -65,9 +70,10 @@ export class WorkerRpcClient {
     return this.handshakePromise;
   }
 
-  async call<Result>(method: EngineMethod, args: unknown[], transfer: Transferable[] = []): Promise<Result> {
+  async call<Result>(method: EngineMethod, args: unknown[], transfer: Transferable[] = [], options: RenderOptions = {}): Promise<Result> {
+    if (options.signal?.aborted) throw cancelled();
     await this.handshake();
-    return this.request<Result>({ kind: 'engine-request', method, args }, transfer);
+    return this.request<Result>({ kind: 'engine-request', method, args }, transfer, options.signal);
   }
 
   dispose(): void {
@@ -83,18 +89,37 @@ export class WorkerRpcClient {
       | { kind: 'handshake' }
       | { kind: 'engine-request'; method: EngineMethod; args: unknown[] },
     transfer: Transferable[] = [],
+    signal?: AbortSignal,
   ): Promise<Result> {
     if (this.exitedError) return Promise.reject(this.exitedError);
+    if (signal?.aborted) return Promise.reject(cancelled());
 
     const requestId = `worker-${++this.requestSequence}`;
     const request = { ...message, requestId } as EngineRpcRequest;
 
     return new Promise<Result>((resolve, reject) => {
-      this.pending.set(requestId, { resolve: resolve as (value: unknown) => void, reject });
+      let posted = false;
+      let cancelSent = false;
+      const onAbort = (): void => {
+        if (!posted || cancelSent || !this.pending.has(requestId)) return;
+        cancelSent = true;
+        try {
+          this.endpoint.postMessage({ kind: 'engine-cancel', requestId });
+        } catch {
+          // A failed control send is not a worker terminal state; still wait for its response or exit.
+        }
+        // Keep the request pending until the worker has closed its render context.
+      };
+      const cleanup = (): void => signal?.removeEventListener('abort', onAbort);
+      this.pending.set(requestId, { resolve: resolve as (value: unknown) => void, reject, cleanup, signal });
+      signal?.addEventListener('abort', onAbort, { once: true });
       try {
         this.endpoint.postMessage(request, transfer);
+        posted = true;
+        if (signal?.aborted) onAbort();
       } catch (error) {
         this.pending.delete(requestId);
+        cleanup();
         reject(error);
       }
     });
@@ -103,7 +128,14 @@ export class WorkerRpcClient {
   private failPending(error: EngineError): void {
     this.exitedError = error;
     this.handshakePromise = null;
-    for (const pending of this.pending.values()) pending.reject(error);
+    for (const pending of this.pending.values()) {
+      pending.cleanup();
+      pending.reject(error);
+    }
     this.pending.clear();
   }
+}
+
+function cancelled(): EngineError {
+  return new EngineError('CANCELLED', 'PDF rendering was cancelled');
 }

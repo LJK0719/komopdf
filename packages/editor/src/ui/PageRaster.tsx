@@ -1,22 +1,28 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import type { EngineAdapter, PageModel } from '@pdf-editor/contracts';
+import type { EngineAdapter, PageMetrics } from '@pdf-editor/contracts';
 import { drawRender, mountVisiblePageTiles, type PageRender } from './draw-render.js';
 
 type Props = {
-  engine: EngineAdapter; docId: string; page: PageModel; render: PageRender; zoom: number; pixelRatio: number;
+  engine: EngineAdapter; docId: string; page: PageMetrics; render: PageRender; zoom: number; pixelRatio: number;
   root: RefObject<HTMLElement | null>; paused: boolean; active: boolean; label: string;
   onError(error: unknown): void;
+  onPaint?(): void;
 };
 
 /** Keep at most one painted fallback until the replacement covers the visible page. */
 export function PageRaster(props: Props) {
   const ready = useRef<PageRender | null>(null);
+  const notified = useRef<PageRender | null>(null);
   const [layers, setLayers] = useState<{ front: PageRender; back: PageRender | null }>({ front: props.render, back: null });
   if (layers.front !== props.render) {
     setLayers({ front: props.render, back: props.render.mode === 'tiles' ? ready.current : null });
   }
   const painted = (render: PageRender) => {
     ready.current = render;
+    if (render === props.render && notified.current !== render) {
+      notified.current = render;
+      props.onPaint?.();
+    }
     setLayers(current => current.front === render && current.back ? { ...current, back: null } : current);
   };
   return <>{[layers.back, layers.front].filter((render): render is PageRender => render !== null).map(render =>

@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import type { Rect, TextRange, TextAction } from '@pdf-editor/contracts';
 import { Languages, MessageSquare } from 'lucide-react';
 import { TextActionMenuItems } from './TextActionMenu.js';
 import { textActionSelection, textActionTarget, type TextActionSelection } from './text-actions.js';
-import type { LoadedDocument } from './EditorShell.js';
+import type { LoadedDocument } from './display-document.js';
+import { ObjectSelectionStartContext, resumePointerIntent, selectionPointer, type SelectionPointerStart } from './ObjectSelectionLayer.js';
 import { useI18n } from './i18n.js';
 import { caretAt, domTextPoint, hitText, mergeTextRects, selectionRects, textClusters } from './text-geometry.js';
 import { readingRegions, type ReadingRegion } from './reading-order.js';
@@ -20,10 +21,20 @@ type Props = {
   onError(message: string): void;
   onTextAction?(selection: TextActionSelection, action: TextAction | 'ask'): void;
   aiSelection?: TextActionSelection | null;
+  onRequestPage?(pageId: string): Promise<void>;
+  onSelectionSettled?(): void;
+  selectionEpoch?: number | undefined;
 };
 type DomPoint = { node: Node; offset: number };
 const pageHitTests = new WeakMap<Element, (x: number, y: number) => DomPoint | null>();
 const selectionReaders = new Map<Element, () => { document: LoadedDocument; targets: TextSelectionTarget[] }>();
+const textLayerWaiters = new Map<string, Set<() => void>>();
+function waitForTextLayer(key: string, resume: () => void): () => void {
+  let waiters = textLayerWaiters.get(key);
+  if (!waiters) { waiters = new Set(); textLayerWaiters.set(key, waiters); }
+  waiters.add(resume);
+  return () => { waiters.delete(resume); if (!waiters.size) textLayerWaiters.delete(key); };
+}
 
 function actionTargets(shown: LoadedDocument, targets: TextSelectionTarget[]) {
   const objects = new Map(readingRegions(shown.page).flatMap(region => region.objects).map(object => [object.id, object]));
@@ -61,13 +72,23 @@ export function paragraphEditRange(region: ReadingRegion, targets: readonly Text
   return [start - origin, end - origin];
 }
 
-export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert, onAnnotate, onError, onTextAction, aiSelection }: Props) {
+export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert, onAnnotate, onError, onTextAction, aiSelection, onRequestPage, onSelectionSettled, selectionEpoch }: Props) {
   const { t } = useI18n();
   const layer = useRef<HTMLDivElement>(null);
-  const viewScale = useRef(zoom); viewScale.current = zoom;
   const anchor = useRef<DomPoint | null>(null);
+  const pointerPosition = useRef<SelectionPointerStart | null>(null);
+  const pointerEnded = useRef(false);
+  const pendingFocus = useRef<{ pageId: string; cancel(): void } | null>(null);
+  useEffect(() => () => {
+    if (pendingFocus.current) { pendingFocus.current.cancel(); pendingFocus.current = null; onSelectionSettled?.(); }
+  }, []);
   const affinity = useRef<{ objectId: string; offset: number; bounds: Rect } | null>(null);
   const [targets, setTargets] = useState<TextSelectionTarget[]>([]);
+  useLayoutEffect(() => {
+    pendingFocus.current?.cancel(); pendingFocus.current = null;
+    anchor.current = null; pointerPosition.current = null; pointerEnded.current = false;
+    setTargets(previous => previous.length ? [] : previous); setCaret(null);
+  }, [selectionEpoch]);
   const [localSelection, setLocalSelection] = useState(true);
   const contextText = useRef('');
   const textSpans = useRef(new Map<string, HTMLElement>());
@@ -129,8 +150,9 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
         const part = window.document.createRange(), a = domTextPoint(span, start), b = domTextPoint(span, end);
         part.setStart(a.node, a.offset); part.setEnd(b.node, b.offset);
         const root = layer.current.getBoundingClientRect();
+        const scaleX = root.width / shown.page.widthPt, scaleY = root.height / shown.page.heightPt;
         rects = [...part.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0).map(rect => ({
-          x: (rect.left - root.left) / zoom, y: (rect.top - root.top) / zoom, width: rect.width / zoom, height: rect.height / zoom,
+          x: (rect.left - root.left) / scaleX, y: (rect.top - root.top) / scaleY, width: rect.width / scaleX, height: rect.height / scaleY,
         }));
       }
       const source = sourceById.get(object.id)!;
@@ -172,7 +194,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
       else if (hit) setCaret(hit.bounds);
       else {
         const rect = selection.getRangeAt(0).getClientRects()[0], root = layer.current.getBoundingClientRect();
-        setCaret(rect ? { x: (rect.left - root.left) / zoom, y: (rect.top - root.top) / zoom, width: 0, height: rect.height / zoom } : null);
+        setCaret(rect ? { x: (rect.left - root.left) * shown.page.widthPt / root.width,
+          y: (rect.top - root.top) * shown.page.heightPt / root.height, width: 0, height: rect.height * shown.page.heightPt / root.height } : null);
       }
     } else setCaret(null);
   };
@@ -188,9 +211,11 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     if (!root) return;
     textSpans.current = new Map([...root.querySelectorAll<HTMLElement>('[data-text-object]')].map(span => [span.dataset.textObject!, span]));
     displayedSelection.current = [];
+    if (pendingFocus.current) { pendingFocus.current.cancel(); pendingFocus.current = null; onSelectionSettled?.(); }
     setCaret(null); setTargets([]); anchor.current = null; affinity.current = null;
     pageHitTests.set(root, (clientX, clientY) => {
-      const rect = root.getBoundingClientRect(), x = (clientX - rect.left) / viewScale.current, y = (clientY - rect.top) / viewScale.current;
+      const rect = root.getBoundingClientRect();
+      const x = (clientX - rect.left) * shown.page.widthPt / rect.width, y = (clientY - rect.top) * shown.page.heightPt / rect.height;
       let best: { objectId: string; offset: number; bounds: Rect } | null = null, distance = Infinity;
       for (const object of objects) {
         const hit = hitText(textClusters(object.textBlock!), x, y);
@@ -204,6 +229,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
       affinity.current = best;
       return best && span ? domTextPoint(span, best.offset) : null;
     });
+    const key = `${shown.info.id}\0${shown.page.id}`;
+    for (const resume of [...textLayerWaiters.get(key) ?? []]) resume();
     return () => { pageHitTests.delete(root); };
   }, [shown.page]);
   const copy = async () => {
@@ -239,28 +266,73 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
     </Fragment>;
   }), [objects, prefixes, shown.page.widthPt]);
 
+  const applyPointerFocus = () => {
+    const position = pointerPosition.current, start = anchor.current;
+    if (!position || !start || !layer.current) return;
+    const page = window.document.elementFromPoint(position.clientX, position.clientY)?.closest<HTMLElement>('[data-document-page]');
+    const pageId = page?.dataset.documentPage;
+    const root = page?.querySelector('.pdf-text-layer');
+    const hit = root && pageHitTests.get(root)?.(position.clientX, position.clientY);
+    if (hit) {
+      pendingFocus.current?.cancel(); pendingFocus.current = null;
+      window.getSelection()?.setBaseAndExtent(start.node, start.offset, hit.node, hit.offset);
+      onSelectionSettled?.(); showSelection();
+      if (pointerEnded.current) anchor.current = null;
+      return;
+    }
+    if (!root && pageId && onRequestPage && page?.closest('.document-pages') === layer.current.closest('.document-pages')) {
+      if (pendingFocus.current?.pageId === pageId) return;
+      pendingFocus.current?.cancel();
+      const cancel = waitForTextLayer(`${shown.info.id}\0${pageId}`, () => focusReader.current());
+      pendingFocus.current = { pageId, cancel };
+      void onRequestPage(pageId).catch(() => {
+        if (pendingFocus.current?.pageId !== pageId) return;
+        cancel(); pendingFocus.current = null; anchor.current = null; onSelectionSettled?.();
+        onError(t('Unable to display this page.'));
+      });
+      return;
+    }
+    pendingFocus.current?.cancel(); pendingFocus.current = null;
+    if (pointerEnded.current) { anchor.current = null; onSelectionSettled?.(); }
+  };
+  const focusReader = useRef(applyPointerFocus); focusReader.current = applyPointerFocus;
+  const beginSelection = (event: SelectionPointerStart, capture: boolean): boolean => {
+    if (event.button !== 0 || disabled || !layer.current) return false;
+    const hit = pageHitTests.get(layer.current)?.(event.clientX, event.clientY);
+    if (!hit) return false;
+    pendingFocus.current?.cancel(); pendingFocus.current = null;
+    layer.current.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    const start = event.shiftKey && selection?.anchorNode ? { node: selection.anchorNode, offset: selection.anchorOffset } : hit;
+    anchor.current = start; pointerPosition.current = selectionPointer(event); pointerEnded.current = false;
+    selection?.setBaseAndExtent(start.node, start.offset, hit.node, hit.offset);
+    if (capture) layer.current.setPointerCapture(event.pointerId);
+    onSelectionSettled?.(); showSelection(); return true;
+  };
+  const moveSelection = (event: SelectionPointerStart) => {
+    if (!anchor.current) return;
+    pointerPosition.current = selectionPointer(event); applyPointerFocus();
+  };
+  const endSelection = (event: SelectionPointerStart) => {
+    pointerEnded.current = true; moveSelection(event);
+    if (!pendingFocus.current) anchor.current = null;
+    if (layer.current?.hasPointerCapture(event.pointerId)) layer.current.releasePointerCapture(event.pointerId);
+    showSelection();
+  };
+  const activationStart = useContext(ObjectSelectionStartContext);
+  useLayoutEffect(() => {
+    const intent = activationStart?.current;
+    if (!intent || intent.tool !== 'select' || disabled) return;
+    activationStart.current = null; activationStart.onConsumed();
+    resumePointerIntent(intent, { start: beginSelection, move: moveSelection, end: endSelection });
+  }, [activationStart, shown.page, disabled]);
+
   return <ContextMenu.Root onOpenChange={open => { menuOpen.current = open; }}>
     <ContextMenu.Trigger render={<div />} ref={layer} className="pdf-text-layer" aria-label={t('Select text')} tabIndex={0}
-      onPointerDown={event => {
-        if (event.button !== 0 || disabled || !layer.current) return;
-        const hit = pageHitTests.get(layer.current)?.(event.clientX, event.clientY);
-        if (!hit) return;
-        event.preventDefault(); layer.current.focus({ preventScroll: true });
-        const selection = window.getSelection();
-        const start = event.shiftKey && selection?.anchorNode ? { node: selection.anchorNode, offset: selection.anchorOffset } : hit;
-        anchor.current = start;
-        selection?.setBaseAndExtent(start.node, start.offset, hit.node, hit.offset);
-        event.currentTarget.setPointerCapture(event.pointerId);
-        showSelection();
-      }}
-      onPointerMove={event => {
-        if (!anchor.current || !(event.buttons & 1)) return;
-        const root = window.document.elementFromPoint(event.clientX, event.clientY)?.closest('.pdf-text-layer');
-        const hit = root && pageHitTests.get(root)?.(event.clientX, event.clientY);
-        if (hit) window.getSelection()?.setBaseAndExtent(anchor.current.node, anchor.current.offset, hit.node, hit.offset);
-      }}
-      onPointerUp={event => { anchor.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); showSelection(); }}
-      onPointerCancel={() => { anchor.current = null; setCaret(null); }}
+      onPointerDown={event => { if (beginSelection(event, true)) event.preventDefault(); }}
+      onPointerMove={event => { if (event.buttons & 1) moveSelection(event); }}
+      onPointerUp={endSelection}
+      onPointerCancel={() => { pendingFocus.current?.cancel(); pendingFocus.current = null; anchor.current = null; setCaret(null); onSelectionSettled?.(); }}
       onDoubleClick={() => {
         const selection = window.getSelection();
         if (!selection?.focusNode || !layer.current?.contains(selection.focusNode)) return;
@@ -279,7 +351,8 @@ export function PdfTextLayer({ document: shown, zoom, disabled, onEdit, onInsert
       onBlur={event => { if (!menuOpen.current && !(event.relatedTarget instanceof Element && event.relatedTarget.closest('[role="menu"]'))) setCaret(null); }}
       onContextMenuCapture={event => {
         const rect = event.currentTarget.getBoundingClientRect();
-        setPoint({ x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom });
+        setPoint({ x: (event.clientX - rect.left) * shown.page.widthPt / rect.width,
+          y: (event.clientY - rect.top) * shown.page.heightPt / rect.height });
         const id = (event.target as HTMLElement).closest<HTMLElement>('[data-text-object]')?.dataset.textObject;
         let next = readSelection();
         const selection = window.getSelection();

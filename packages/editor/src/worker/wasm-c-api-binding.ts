@@ -9,8 +9,8 @@ import {
   type EngineErrorCode,
   type ExtractionRequest,
   type ExtractPagesRequest, type ExtractPagesResult,
-  type PageModel,
-  type RenderRequest,
+  type PageMetrics, type PageModel,
+  type RenderOptions, type RenderRequest,
   type RenderResult,
   type SaveRequest,
   type SaveResult,
@@ -32,6 +32,9 @@ const ABI_1 = 1;
 const ABI_2 = 2;
 const PDE_TEXT_EDIT_STRIDE = 24;
 const UINT32_MAX = 0xffff_ffff;
+const RENDER_BUDGET_MS = 8;
+const PAGE_MODEL_CACHE_PAGES = 8;
+const PAGE_METRICS_CACHE_PAGES = 128;
 const TEXT_REPLACE_CAPABILITY = 'text.replace' as const;
 const DEFAULT_FONT_MANIFEST_URL = '/fonts/font-resources.json';
 const KNOWN_ERROR_CODES = new Set<EngineErrorCode>([
@@ -44,6 +47,7 @@ const KNOWN_ERROR_CODES = new Set<EngineErrorCode>([
   'CORE_UNAVAILABLE',
   'RESOURCE_LIMIT',
   'SAVE_FAILED',
+  'CANCELLED',
 ]);
 
 export interface PdfCoreEmscriptenModule {
@@ -65,6 +69,11 @@ export interface PdfCoreEmscriptenModule {
   _pde_open_file_utf8(path: number, documentId: number, sourceId: number, password: number): number;
   _pde_close(document: number): number;
   _pde_document_info(document: number): number;
+  _pde_page_info?(document: number, pageIndex: number): number;
+  _pde_render_start?(document: number, pageIndex: number, width: number, height: number,
+    offsetX: number, offsetY: number, fullWidth: number, fullHeight: number, budgetMs: number): number;
+  _pde_render_continue?(document: number, budgetMs: number): number;
+  _pde_render_cancel?(document: number): number;
   _pde_describe_page(document: number, pageIndex: number): number;
   _pde_describe_forms?(document: number): number;
   _pde_describe_annotations?(document: number, pageIndex: number): number;
@@ -130,6 +139,8 @@ type DocumentSession = {
   info: DocumentInfo;
   pageIndices: ReadonlyMap<string, number>;
   pageModels: Map<string, PageModel>;
+  pageMetrics: Map<string, PageMetrics>;
+  activeRender?: symbol;
 };
 
 type RenderMetadata = Omit<RenderResult, 'pixels'>;
@@ -254,7 +265,7 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
         this.capabilities,
       );
       const pageIndices = pageIndexMap(info.pageOrder);
-      this.documents.set(documentId, { handle, password, info, pageIndices, pageModels: new Map() });
+      this.documents.set(documentId, { handle, password, info, pageIndices, pageModels: new Map(), pageMetrics: new Map() });
       return info;
     } catch (error) {
       this.module._pde_close(handle);
@@ -262,9 +273,23 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     }
   }
 
+  async describePageMetrics(docId: string, pageId: string): Promise<PageMetrics> {
+    const session = this.document(docId);
+    const pageIndex = this.pageIndex(session, pageId);
+    if (!this.module._pde_page_info) {
+      throw new EngineError('CORE_UNAVAILABLE', 'PDF core is missing the lightweight page-info export');
+    }
+    const cached = getRecent(session.pageMetrics, pageId);
+    if (cached) return cached;
+    const metrics = validatePageMetrics(this.readJson(
+      () => this.module._pde_page_info!(session.handle, pageIndex), 'Unable to read PDF page geometry'), pageId);
+    retainRecent(session.pageMetrics, pageId, metrics, PAGE_METRICS_CACHE_PAGES);
+    return metrics;
+  }
+
   async describePage(docId: string, pageId: string): Promise<PageModel> {
     const session = this.document(docId);
-    const cached = session.pageModels.get(pageId);
+    const cached = getRecent(session.pageModels, pageId);
     if (cached) return cached;
     const pageIndex = this.pageIndex(session, pageId);
     const page = validatePageModel(
@@ -274,7 +299,8 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
       ),
       pageId,
     );
-    session.pageModels.set(pageId, page);
+    retainRecent(session.pageModels, pageId, page, PAGE_MODEL_CACHE_PAGES);
+    retainRecent(session.pageMetrics, pageId, validatePageMetrics(page, pageId), PAGE_METRICS_CACHE_PAGES);
     return page;
   }
 
@@ -315,40 +341,63 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     return this.readRecoveryResources(this.document(docId).handle).fontFaces;
   }
 
-  async render(request: RenderRequest): Promise<RenderResult> {
+  async render(request: RenderRequest, options: RenderOptions = {}): Promise<RenderResult> {
+    const signal = options.signal;
+    if (signal?.aborted) throw renderCancelled();
     if (!Number.isFinite(request.scale) || request.scale <= 0) {
       throw new EngineError('INVALID_REQUEST', 'Render scale must be a positive finite number');
     }
-    const session = this.document(request.docId);
-    const pageIndex = this.pageIndex(session, request.pageId);
-    const page = await this.describePage(request.docId, request.pageId);
-    const viewport = renderViewport(page, request);
-    const metadata = validateRenderMetadata(
-      this.readJson(
-        () => this.module._pde_render(
-          session.handle,
-          pageIndex,
-          viewport.width,
-          viewport.height,
-          viewport.offsetX,
-          viewport.offsetY,
-          viewport.fullWidth,
-          viewport.fullHeight,
-        ),
-        'Unable to render PDF page',
-      ),
-      viewport.width,
-      viewport.height,
-    );
-    const pixels = this.copyBinary('Unable to read rendered pixels');
-    const expectedBytes = metadata.stride * metadata.height;
-    if (pixels.byteLength !== expectedBytes) {
-      throw new EngineError(
-        'CORE_UNAVAILABLE',
-        `PDF core returned ${pixels.byteLength} render bytes; expected ${expectedBytes}`,
-      );
+    if (!this.module._pde_render_start || !this.module._pde_render_continue || !this.module._pde_render_cancel) {
+      throw new EngineError('CORE_UNAVAILABLE', 'PDF core is missing progressive rendering exports');
     }
-    return { ...metadata, pixels };
+    const session = this.document(request.docId);
+    const revision = session.info.revision;
+    const page = await this.describePageMetrics(request.docId, request.pageId);
+    const isCancelled = (): boolean => Boolean(signal?.aborted
+      || this.documents.get(request.docId) !== session || session.info.revision !== revision);
+    if (isCancelled()) throw renderCancelled();
+    if (session.activeRender) throw new EngineError('INVALID_REQUEST', 'A page render is already active for this document');
+    const pageIndex = this.pageIndex(session, request.pageId);
+    const viewport = renderViewport(page, request);
+    const renderId = Symbol();
+    session.activeRender = renderId;
+    let needsCancel = true;
+    try {
+      let step = this.readJson(() => this.module._pde_render_start!(
+        session.handle, pageIndex, viewport.width, viewport.height, viewport.offsetX, viewport.offsetY,
+        viewport.fullWidth, viewport.fullHeight, RENDER_BUDGET_MS), 'Unable to start PDF page rendering');
+      for (;;) {
+        if (isCancelled()) throw renderCancelled();
+        if (!isRecord(step) || (step.status !== 'pending' && step.status !== 'done')) {
+          throw new EngineError('CORE_UNAVAILABLE', 'PDF core returned invalid progressive render status');
+        }
+        if (step.status === 'done') {
+          const metadata = validateRenderMetadata(step, viewport.width, viewport.height);
+          if (metadata.revision !== revision) throw new EngineError('STALE_REVISION', 'Document changed during rendering');
+          // Pending slices never read/copy the shared operation buffer. Only the final pixels leave WASM.
+          const pixels = this.copyBinary('Unable to read rendered pixels');
+          const expectedBytes = metadata.stride * metadata.height;
+          if (pixels.byteLength !== expectedBytes) {
+            throw new EngineError('CORE_UNAVAILABLE', `PDF core returned ${pixels.byteLength} render bytes; expected ${expectedBytes}`);
+          }
+          needsCancel = false;
+          return { ...metadata, pixels };
+        }
+        // A macrotask boundary is necessary: Promise microtasks alone starve worker cancel messages.
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        if (isCancelled()) throw renderCancelled();
+        step = this.readJson(() => this.module._pde_render_continue!(session.handle, RENDER_BUDGET_MS),
+          'Unable to continue PDF page rendering');
+      }
+    } finally {
+      try {
+        if (needsCancel && this.documents.get(request.docId) === session) {
+          this.readJson(() => this.module._pde_render_cancel!(session.handle), 'Unable to cancel PDF page rendering');
+        }
+      } finally {
+        if (session.activeRender === renderId) delete session.activeRender;
+      }
+    }
   }
 
   async extract(request: ExtractionRequest): Promise<TextBlock[]> {
@@ -690,7 +739,7 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
       const resources = this.readRecoveryResources(handle);
       const fontRegistry = this.requireFontRegistry();
       for (const fontId of resources.fonts) fontRegistry.markRegistered(fontId);
-      this.documents.set(info.id, { handle, password: request.password, info, pageIndices, pageModels: new Map() });
+      this.documents.set(info.id, { handle, password: request.password, info, pageIndices, pageModels: new Map(), pageMetrics: new Map() });
       return info;
     } catch (error) {
       this.module._pde_close(handle);
@@ -749,9 +798,11 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
       pageOrder: result.pageOrder,
     };
     session.pageIndices = pageIndexMap(result.pageOrder);
-    for (const pageId of result.changedPageIds) session.pageModels.delete(pageId);
-    for (const pageId of session.pageModels.keys()) {
-      if (!session.pageIndices.has(pageId)) session.pageModels.delete(pageId);
+    for (const cache of [session.pageModels, session.pageMetrics]) {
+      for (const pageId of result.changedPageIds) cache.delete(pageId);
+      for (const pageId of cache.keys()) {
+        if (!session.pageIndices.has(pageId)) cache.delete(pageId);
+      }
     }
   }
 
@@ -1099,7 +1150,7 @@ function validateReplacementStyle(style: TextStyle | undefined): string | undefi
   return style.fontId;
 }
 
-function renderViewport(page: PageModel, request: RenderRequest): {
+function renderViewport(page: PageMetrics, request: RenderRequest): {
   width: number;
   height: number;
   offsetX: number;
@@ -1176,17 +1227,20 @@ function stringsSubsetOf(values: readonly string[], allowed: readonly string[]):
   return values.every(value => allowed.includes(value));
 }
 
+function validatePageMetrics(value: unknown, pageId: string): PageMetrics {
+  if (!isRecord(value) || value.id !== pageId
+      || typeof value.widthPt !== 'number' || !Number.isFinite(value.widthPt) || value.widthPt <= 0
+      || typeof value.heightPt !== 'number' || !Number.isFinite(value.heightPt) || value.heightPt <= 0
+      || ![0, 90, 180, 270].includes(value.rotation as number)) {
+    throw new EngineError('CORE_UNAVAILABLE', 'PDF core returned invalid PageMetrics JSON');
+  }
+  // Never retain objects through the lightweight geometry cache.
+  return { id: pageId, widthPt: value.widthPt, heightPt: value.heightPt, rotation: value.rotation as PageMetrics['rotation'] };
+}
+
 function validatePageModel(value: unknown, pageId: string): PageModel {
-  if (!isRecord(value)
-      || value.id !== pageId
-      || typeof value.widthPt !== 'number'
-      || !Number.isFinite(value.widthPt)
-      || value.widthPt <= 0
-      || typeof value.heightPt !== 'number'
-      || !Number.isFinite(value.heightPt)
-      || value.heightPt <= 0
-      || ![0, 90, 180, 270].includes(value.rotation as number)
-      || !Array.isArray(value.objects)) {
+  validatePageMetrics(value, pageId);
+  if (!isRecord(value) || !Array.isArray(value.objects)) {
     throw new EngineError('CORE_UNAVAILABLE', 'PDF core returned invalid PageModel JSON');
   }
   return value as PageModel;
@@ -1313,7 +1367,7 @@ function validateRenderMetadata(value: unknown, width: number, height: number): 
       || value.format !== 'rgba') {
     throw new EngineError('CORE_UNAVAILABLE', 'PDF core returned invalid RenderResult metadata');
   }
-  return value as RenderMetadata;
+  return { width, height, stride: value.stride, format: 'rgba', revision: value.revision };
 }
 
 function validateTextLayoutResult(value: unknown): TextLayoutResult {
@@ -1446,6 +1500,22 @@ function isFontManifestEntry(value: unknown): value is FontManifestEntry {
     && (value.format === 'ttf' || value.format === 'otf')
     && typeof value.url === 'string' && value.url.length > 0
     && typeof value.sha256 === 'string' && /^[0-9a-f]{64}$/.test(value.sha256);
+}
+
+function getRecent<T>(cache: Map<string, T>, id: string): T | undefined {
+  const value = cache.get(id);
+  if (value !== undefined) { cache.delete(id); cache.set(id, value); }
+  return value;
+}
+
+function retainRecent<T>(cache: Map<string, T>, id: string, value: T, limit: number): void {
+  cache.delete(id);
+  cache.set(id, value);
+  while (cache.size > limit) cache.delete(cache.keys().next().value!);
+}
+
+function renderCancelled(): EngineError {
+  return new EngineError('CANCELLED', 'PDF rendering was cancelled');
 }
 
 function pageIndexMap(pageOrder: readonly string[]): ReadonlyMap<string, number> {

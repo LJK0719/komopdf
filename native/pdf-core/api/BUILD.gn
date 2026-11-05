@@ -40,7 +40,12 @@ executable("pdf_editor_api_test") {
     ":pdf_editor_api",
     "//:pdfium",
   ]
-  configs += [ "//:pdfium_core_config" ]
+  # Recovery codec fixtures use the same exception-enabled headers as the API.
+  configs -= [ "//build/config/compiler:no_exceptions" ]
+  configs += [
+    "//:pdfium_core_config",
+    "//build/config/compiler:exceptions",
+  ]
 }
 
 executable("cff2_font_test") {

@@ -12,6 +12,7 @@ type ViewZoomOptions = {
   busy: boolean;
   enabled: boolean;
   onZoom(zoom: number, point?: ReadingZoomPoint): void | Promise<void>;
+  onGestureZoom?(zoom: number, point?: ReadingZoomPoint): void | Promise<void>;
 };
 
 /** Reading-only zoom state; bitmap refinement never delays the logical view. */
@@ -70,8 +71,14 @@ export function useViewZoom(options: ViewZoomOptions) {
     exitFitMode();
     return latest.current.onZoom(clampViewZoom(scale), point);
   }, [exitFitMode]);
+  const gestureZoom = useCallback((scale: number, point?: ReadingZoomPoint) => {
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    exitFitMode();
+    const current = latest.current;
+    return (current.onGestureZoom ?? current.onZoom)(clampViewZoom(scale), point);
+  }, [exitFitMode]);
   const fitWidth = useCallback(() => selectMode('fit-width'), [selectMode]);
   const fitPage = useCallback(() => selectMode('fit-page'), [selectMode]);
 
-  return { mode, fitWidth, fitPage, manualZoom, exitFitMode };
+  return { mode, fitWidth, fitPage, manualZoom, gestureZoom, exitFitMode };
 }

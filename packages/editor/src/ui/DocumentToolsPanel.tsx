@@ -8,6 +8,7 @@ import {
   type EditTransaction,
   type EngineAdapter,
   type FormFieldInfo,
+  type PageMetrics,
   type PageModel,
   type PdfAnnotationInfo,
 } from '@pdf-editor/contracts';
@@ -26,7 +27,7 @@ type Props = {
   mode?: 'comment' | 'forms';
   active?: boolean;
   document: DocumentInfo;
-  page: PageModel;
+  page: PageMetrics;
   selectedIds: string[];
   engine: EngineAdapter;
   disabled: boolean;
@@ -227,10 +228,16 @@ export function DocumentToolsPanel({ mode = 'comment', active = true, document, 
     const transaction: EditTransaction = {
       id: crypto.randomUUID(), docId: document.id, baseRevision: document.revision, source: 'manual', commands,
     };
-    const targetPageIds = new Set(commands.flatMap(item => 'pageId' in item ? [item.pageId] : []));
-    const pages = new Map([[page.id, page]]);
-    await Promise.all([...targetPageIds].filter(id => id !== page.id).map(async id => {
-      pages.set(id, await engine.describePage(document.id, id));
+    const targetPageIds = new Set([page.id, ...commands.flatMap(item => 'pageId' in item ? [item.pageId] : [])]);
+    const pages = new Map<string, PageModel>();
+    // Listing comments/forms needs only geometry. A write gets the real models
+    // for validation at this boundary, without making the inspector nullable.
+    await Promise.all([...targetPageIds].map(async id => {
+      const version = engine.getPageVersion?.(document.id, id) ?? document.revision;
+      const model = await renderWork(engine, () => engine.describePage(document.id, id),
+        { priority: 'interaction', key: `model:${JSON.stringify([document.id, id, version])}` });
+      if (version !== (engine.getPageVersion?.(document.id, id) ?? document.revision)) throw new Error('The document changed while previewing this edit');
+      pages.set(id, model);
     }));
     if (scopeRef.current !== expectedScope) throw new Error('The document changed while previewing this edit');
     const context = {

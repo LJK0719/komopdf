@@ -2,6 +2,7 @@ import type { EngineAdapter, EngineErrorCode, WorkerHandshake } from '@pdf-edito
 
 export const ENGINE_METHODS = [
   'open',
+  'describePageMetrics',
   'describePage',
   'describeForms',
   'describeAnnotations',
@@ -30,7 +31,9 @@ export type EngineMethod = (typeof ENGINE_METHODS)[number];
 
 export type EngineRpcRequest =
   | { kind: 'handshake'; requestId: string }
-  | { kind: 'engine-request'; requestId: string; method: EngineMethod; args: unknown[] };
+  | { kind: 'engine-request'; requestId: string; method: EngineMethod; args: unknown[] }
+  // Control messages bypass the execution queue; the render response is still its terminal acknowledgement.
+  | { kind: 'engine-cancel'; requestId: string };
 
 export type EngineRpcFailure = {
   code: EngineErrorCode;
@@ -67,7 +70,7 @@ export function isEngineMethod(value: unknown): value is EngineMethod {
 
 export function isRpcRequest(value: unknown): value is EngineRpcRequest {
   if (!isRecord(value) || typeof value.requestId !== 'string') return false;
-  if (value.kind === 'handshake') return true;
+  if (value.kind === 'handshake' || value.kind === 'engine-cancel') return true;
   return value.kind === 'engine-request' && isEngineMethod(value.method) && Array.isArray(value.args);
 }
 

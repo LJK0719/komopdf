@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-// ABI 3. Calls are serialized by the host. Handles are private to the adapter;
+// ABI 4. Calls are serialized by the host. Handles are private to the adapter;
 // document/page/object IDs exposed to the editor are strings, not PDF pointers.
 uint32_t pde_abi_version(void);
 // Returns the global command-name JSON array implemented by this core build.
@@ -16,7 +16,8 @@ int pde_initialize(void);
 void pde_shutdown(void);
 
 // The core copies memory input and retains an immutable source until close.
-// The caller creates a fresh document_id for each open/recovery session.
+// The caller creates a fresh document_id for each open. Recovery restores the
+// archived document/session IDs rather than allocating new source identities.
 uint32_t pde_open_memory(const uint8_t* bytes,
                          uint32_t length,
                          const char* document_id,
@@ -32,6 +33,10 @@ int pde_close(uint32_t document);
 // Returns UTF-8 JSON matching contracts, or NULL on error. A returned string
 // remains valid until the next operation, excluding the binary/error getters.
 const char* pde_document_info(uint32_t document);
+// Normalized CropBox/Rotate/UserUnit geometry only: {id,widthPt,heightPt,rotation}.
+// Does not parse page contents or initialize object/text identities.
+const char* pde_page_info(uint32_t document, uint32_t page_index);
+// Object identities and the complete text/editing model are loaded on demand.
 const char* pde_describe_page(uint32_t document, uint32_t page_index);
 const char* pde_extract_page(uint32_t document, uint32_t page_index);
 
@@ -47,6 +52,28 @@ const char* pde_render(uint32_t document,
                        int32_t offset_y,
                        uint32_t full_width,
                        uint32_t full_height);
+
+// Cooperative rendering uses the same viewport and pixels as pde_render().
+// Each serialized call works until PDFium reaches a pause checkpoint after the
+// budget (0 requests the earliest pause). Page loading and widget appearances
+// are not preemptible. A valid start replaces this document's previous render.
+// start/continue return {status:"pending"} with no binary, or
+// {status:"done",width,height,stride,format:"rgba",revision} with complete pixels.
+// Pending resources survive unrelated calls and their binary output buffers.
+const char* pde_render_start(uint32_t document,
+                             uint32_t page_index,
+                             uint32_t width,
+                             uint32_t height,
+                             int32_t offset_x,
+                             int32_t offset_y,
+                             uint32_t full_width,
+                             uint32_t full_height,
+                             uint32_t budget_ms);
+// Fails with INVALID_REQUEST if no progressive render is pending.
+const char* pde_render_continue(uint32_t document, uint32_t budget_ms);
+// Idempotent for an open document; returns {cancelled:true} and no pixels.
+// Closing or changing the document also cancels its pending render.
+const char* pde_render_cancel(uint32_t document);
 
 // Unchanged documents save as the exact immutable source. Edited documents
 // serialize the committed PDFium state. Export reports the current revision but
@@ -130,19 +157,19 @@ const char* pde_apply_text(uint32_t document,
 // or 2048=real paragraph underline (requires 1024). Type 20 can use 2048 too.
 // Type 20 is paragraph reflow: type-3 geometry/style plus ids=source block IDs;
 // target_id is the new logical object's ID and flag 1024 is required.
-// Type 21 aligns two or more top-level object IDs on one page; values[0] is
+// Type 21 aligns two or more sibling object IDs in one page container; values[0] is
 // 0=left, 1=center, 2=right, 3=top, 4=middle, 5=bottom.
 // Types 22/23 update or delete a persistent annotation on page_id. Type 22
 // takes the same complete appearance/geometry payload as annotation.add;
 // both preserve the annotation ID and enter the ordinary PDF transaction.
-// Type 24 distributes three or more top-level objects by center within the
+// Type 24 distributes three or more sibling objects by center within the
 // selected outer centers; values[0] 0=horizontal, 1=vertical.
 // Type 25 crops each page in ids to a top-left normalized rectangle in
 // values[0..3]. Pixels outside CropBox remain in the PDF; this is not redaction.
-// Type 26 groups two or more adjacent top-level objects in ids as a persistent
+// Type 26 groups two or more adjacent sibling objects in ids as a persistent
 // Form XObject with target_id=groupId; type 27 ungroups target_id=groupId.
-// Nested Form children, MCIDs and cross-stream members need fuller structural
-// rewriting and are rejected rather than silently changing drawing order.
+// Nested Form containers and supported tagged scopes retain their structure;
+// unsafe scope partitioning is rejected rather than changing drawing order.
 // Type 29 resizes a text frame without scaling its glyphs: ids=source block IDs,
 // values[0..3]=x,y,width,height in the old frame's local top-left coordinates.
 typedef struct PdeEditCommand {

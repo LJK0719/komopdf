@@ -103,7 +103,9 @@ std::set<std::string> ReadRecoveryStrings(pdf_editor::RecoveryReader& in) {
 }
 
 bool BuildRecoverySnapshot(Document* document, std::vector<uint8_t>* output) {
-  if (!EnsureImmutableSourceBytes(document)) return false;
+  // ABI 3/4 archives have no lazy-identity marker: always serialize complete IDs.
+  if (!EnsureAllSourceIdentities(document) ||
+      !EnsureImmutableSourceBytes(document)) return false;
   pdf_editor::RecoveryWriter out;
   out.String("KOMOPDF-RECOVERY"); out.Integer(1); out.Integer(kAbiVersion);
   out.String(document->document_id); out.String(document->source_id);
@@ -189,6 +191,7 @@ uint32_t RestoreRecoverySnapshot(std::span<const uint8_t> bytes, const char* pas
       pdf_editor::RecoveryReader::Invalid();
     for (size_t page_index = 0; page_index < pages; ++page_index) {
       PageIdentity page;
+      page.objects_loaded = true;
       page.id = in.String();
       if (!ValidateId(page.id.c_str(), "Recovered page ID")) pdf_editor::RecoveryReader::Invalid();
       const size_t objects = in.Count();

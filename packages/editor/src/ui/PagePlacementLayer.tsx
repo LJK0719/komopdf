@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CommitResult, DocumentInfo, EditCommand, EngineAdapter, PageModel, Rect } from '@pdf-editor/contracts';
+import type { CommitResult, DocumentInfo, EditCommand, EngineAdapter, PageMetrics, Rect } from '@pdf-editor/contracts';
 import { annotationBounds, annotationPointFromClient, type AnnotationPoint } from './annotation-drawing.js';
 import { useI18n } from './i18n.js';
 
@@ -9,7 +9,7 @@ export type PagePlacementRequest = {
 };
 
 export function PagePlacementLayer({ request, document: info, page, engine, disabled, onBusyChange, onCommitted, onCancel }: {
-  request: PagePlacementRequest; document: DocumentInfo; page: PageModel; engine: EngineAdapter; disabled: boolean;
+  request: PagePlacementRequest; document: DocumentInfo; page: PageMetrics; engine: EngineAdapter; disabled: boolean;
   onBusyChange(busy: boolean): void; onCommitted(result: CommitResult): Promise<void>; onCancel(): void;
 }) {
   const { t } = useI18n();

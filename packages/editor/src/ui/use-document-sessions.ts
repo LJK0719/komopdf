@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, type SetStateAction } from 'react';
 import type { DocumentSource, SaveOutcome } from '@pdf-editor/contracts';
-import type { LoadedDocument } from './EditorShell.js';
+import { displayDocument, releaseDisplayModel, type DisplayDocument, type LoadedDocument } from './display-document.js';
 import type { PageView, PointerTool } from './DocumentViewport.js';
 import type { RibbonTab } from './EditorRibbon.js';
 
@@ -15,7 +15,7 @@ type SessionView = {
   scroll: { top: number; left: number };
 };
 export type DocumentSession = SessionView & {
-  loaded: LoadedDocument;
+  loaded: DisplayDocument;
   identity?: string;
   location?: string;
   saveIdentity?: string;
@@ -33,9 +33,9 @@ export function useDocumentSessions() {
   const commit = useCallback((next: SessionsState) => {
     let documents = next.documents;
     for (const [id, session] of documents) {
-      if (id === next.activeId || !session.loaded.render.bitmap) continue;
+      if (id === next.activeId || (!session.loaded.render.bitmap && session.loaded.model.status === 'unloaded')) continue;
       if (documents === next.documents) documents = new Map(documents);
-      documents.set(id, { ...session, loaded: { ...session.loaded, render: { ...session.loaded.render, bitmap: null } } });
+      documents.set(id, { ...session, loaded: { ...releaseDisplayModel(session.loaded), render: { ...session.loaded.render, bitmap: null } } });
     }
     const value = documents === next.documents ? next : { ...next, documents };
     current.current = value; setState(value);
@@ -47,20 +47,22 @@ export function useDocumentSessions() {
     const documents = new Map(state.documents); documents.set(id, next);
     commit({ ...state, documents });
   }, [commit]);
-  const setDocument = useCallback((value: SetStateAction<LoadedDocument | null>) => {
+  const setDocument = useCallback((value: DisplayDocument | LoadedDocument | null
+    | ((previous: DisplayDocument | null) => DisplayDocument | LoadedDocument | null)) => {
     const state = current.current;
     const previous = state.activeId ? state.documents.get(state.activeId)?.loaded ?? null : null;
-    const loaded = typeof value === 'function' ? value(previous) : value;
-    if (loaded === previous) return;
-    if (!loaded) { commit({ ...state, activeId: null }); return; }
+    const next = typeof value === 'function' ? value(previous) : value;
+    if (next === previous) return;
+    if (!next) { commit({ ...state, activeId: null }); return; }
+    const loaded = displayDocument(next);
     const documents = new Map(state.documents), session = documents.get(loaded.info.id);
     documents.set(loaded.info.id, session ? { ...session, loaded } : { ...initialView(), loaded, hasSaveTarget: false });
     commit({ ...state, documents, activeId: loaded.info.id });
   }, [commit]);
-  // Existing page/edit handlers keep a synchronous view of the same session store.
+  // Reading and editing handlers share the same synchronous session store.
   const documentRef = useMemo(() => ({
-    get current() { const state = current.current; return state.activeId ? state.documents.get(state.activeId)?.loaded ?? null : null; },
-    set current(value: LoadedDocument | null) { setDocument(value); },
+    get current(): DisplayDocument | null { const state = current.current; return state.activeId ? state.documents.get(state.activeId)?.loaded ?? null : null; },
+    set current(value: DisplayDocument | LoadedDocument | null) { setDocument(value); },
   }), [setDocument]);
   const updateView = useCallback(<K extends keyof SessionView>(key: K, value: SetStateAction<SessionView[K]>) => {
     const state = current.current, session = state.activeId ? state.documents.get(state.activeId) : undefined;
@@ -79,7 +81,8 @@ export function useDocumentSessions() {
     setPointer: (value: SetStateAction<PointerTool>) => updateView('pointer', value),
     setTab: (value: SetStateAction<RibbonTab>) => updateView('tab', value),
   }), [updateView]);
-  const add = useCallback((loaded: LoadedDocument, source?: DocumentSource) => {
+  const add = useCallback((value: DisplayDocument | LoadedDocument, source?: DocumentSource) => {
+    const loaded = displayDocument(value);
     const state = current.current, documents = new Map(state.documents);
     documents.set(loaded.info.id, { ...initialView(), loaded, hasSaveTarget: false,
       ...(source?.identity ? { identity: source.identity } : {}), ...(source?.location ? { location: source.location } : {}) });

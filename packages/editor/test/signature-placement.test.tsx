@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { DocumentInfo, EngineAdapter, PageModel } from '@pdf-editor/contracts';
 import { buildSignatureTransaction, SignaturePanel } from '../src/ui/SignaturePanel.js';
 import { SignaturePlacementLayer } from '../src/ui/SignaturePlacementLayer.js';
+import { pageRenderGeometry } from '../src/ui/draw-render.js';
+import { pageMetrics, type DisplayDocument } from '../src/ui/display-document.js';
 import {
   initialSignaturePlacement, moveSignaturePlacement, resizeSignaturePlacement,
   signaturePagePoint, signaturePreviewPoints, type SignatureDraft,
@@ -85,8 +87,10 @@ describe('signature controls', () => {
   });
 
   it('renders the page preview and confirm/cancel/resize controls without creating any transaction', () => {
-    const engine = { previewTransaction: vi.fn(), apply: vi.fn() } as unknown as EngineAdapter;
-    const markup = renderToStaticMarkup(<SignaturePlacementLayer document={document} page={page} draft={draft}
+    const engine = { previewTransaction: vi.fn(), apply: vi.fn(), describePage: vi.fn() } as unknown as EngineAdapter;
+    const display: DisplayDocument = { info: document, name: 'test.pdf', page: pageMetrics(page),
+      render: pageRenderGeometry(page, 1, document.revision, 1), pageVersion: document.revision, model: { status: 'unloaded' } };
+    const markup = renderToStaticMarkup(<SignaturePlacementLayer document={display} draft={draft}
       disabled={false} engine={engine} onBusyChange={() => {}} onCommitted={async () => {}} onCancel={() => {}} />);
     expect(markup).toContain('Signature placement preview');
     expect(markup).toContain('Confirm signature');
@@ -94,6 +98,8 @@ describe('signature controls', () => {
     expect(markup).toContain('Resize signature');
     expect(markup).toContain('Make signature smaller');
     expect(markup).toContain('Make signature larger');
+    expect(engine.describePage).not.toHaveBeenCalled();
+    expect(display.page).not.toHaveProperty('objects');
     expect(engine.previewTransaction).not.toHaveBeenCalled();
     expect(engine.apply).not.toHaveBeenCalled();
   });

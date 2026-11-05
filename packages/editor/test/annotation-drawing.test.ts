@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CommitResult, DocumentInfo, EngineAdapter, PageModel, PdfAnnotationInfo } from '@pdf-editor/contracts';
 import { AnnotationDrawingLayer } from '../src/ui/AnnotationDrawingLayer.js';
 import { DocumentToolsPanel } from '../src/ui/DocumentToolsPanel.js';
+import { pageRenderGeometry } from '../src/ui/draw-render.js';
+import { pageMetrics, type DisplayDocument } from '../src/ui/display-document.js';
 import { annotationPointFromClient, buildDrawnAnnotation, commitDrawnAnnotation, filterAnnotations,
   type AnnotationDrawingOptions } from '../src/ui/annotation-drawing.js';
 
@@ -13,11 +15,13 @@ const document: DocumentInfo = {
   capabilities: ['annotation.add', 'annotation.update', 'annotation.delete'],
 };
 const page: PageModel = { id: 'page-1', widthPt: 612, heightPt: 792, rotation: 0, objects: [] };
+const display: DisplayDocument = { info: document, name: 'test.pdf', page: pageMetrics(page),
+  render: pageRenderGeometry(page, 1, document.revision, 1), pageVersion: document.revision, model: { status: 'unloaded' } };
 const options: AnnotationDrawingOptions = { tool: 'rectangle', color: '#336699', opacity: 0.7, strokeWidth: 3, text: '' };
 const result: CommitResult = { docId: 'doc-1', revision: 5, changedPageIds: ['page-1'], pageOrder: document.pageOrder, canUndo: true, canRedo: false };
 function mockEngine() {
   return { previewTransaction: vi.fn(async () => ({ docId: 'doc-1', baseRevision: 4, pageOrder: document.pageOrder, changedPageIds: ['page-1'] })),
-    apply: vi.fn(async () => result), describeAnnotations: vi.fn(async () => []) } as unknown as EngineAdapter;
+    apply: vi.fn(async () => result), describePage: vi.fn(async () => page), describeAnnotations: vi.fn(async () => []) } as unknown as EngineAdapter;
 }
 
 describe('direct PDF annotations', () => {
@@ -91,14 +95,17 @@ describe('direct PDF annotations', () => {
   });
 
   it('does not mount an event-catching overlay unless an annotation tool is explicitly active', () => {
-    const props = { document, page, engine: mockEngine(), options: null, disabled: false,
+    const props = { document: display, engine: mockEngine(), options: null, disabled: false,
       onBusyChange: vi.fn(), onCommitted: vi.fn(async () => {}), onCancel: vi.fn() };
     expect(renderToStaticMarkup(createElement(AnnotationDrawingLayer, props))).toBe('');
     const html = renderToStaticMarkup(createElement(AnnotationDrawingLayer, { ...props, options }));
     expect(html).toContain('data-annotation-tool="rectangle"'); expect(html).toContain('viewBox="0 0 612 792"');
     expect(html).toContain('Drag to draw a rectangle. Esc cancels.');
     expect(renderToStaticMarkup(createElement(AnnotationDrawingLayer, { ...props, options,
-      document: { ...document, permissions: { ...document.permissions, annotate: false } } }))).toBe('');
+      document: { ...display, info: { ...document, permissions: { ...document.permissions, annotate: false } } } }))).toBe('');
+    expect(display.page).not.toHaveProperty('objects');
+    expect(props.engine.describePage).not.toHaveBeenCalled();
+    expect(props.engine.previewTransaction).not.toHaveBeenCalled();
   });
 });
 
@@ -116,8 +123,11 @@ describe('document annotation list', () => {
   });
 
   it('offers canvas drawing and all-document filtering without coordinate-based legacy tools', () => {
-    const html = renderToStaticMarkup(createElement(DocumentToolsPanel, { document, page, engine: mockEngine(), selectedIds: [],
+    const engine = mockEngine();
+    const html = renderToStaticMarkup(createElement(DocumentToolsPanel, { document, page: display.page, engine, selectedIds: [],
       disabled: false, drawing: options, onDrawingChange: vi.fn(), onNavigate: vi.fn(), onBusyChange: vi.fn(), onCommitted: vi.fn(async () => {}) }));
+    expect(display.page).not.toHaveProperty('objects');
+    expect(engine.describePage).not.toHaveBeenCalled();
     expect(html).toContain('aria-label="Draw annotations"'); expect(html).toContain('aria-pressed="true"');
     expect(html).toContain('Document annotations'); expect(html).toContain('All pages'); expect(html).toContain('All types');
     expect(html).toContain('Find annotation text'); expect(html).toContain('Freehand');

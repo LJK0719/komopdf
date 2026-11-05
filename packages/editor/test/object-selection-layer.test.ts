@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 import type { PageModel, RenderResult } from '@pdf-editor/contracts';
-import { keyboardScaleMatrix, ObjectSelectionLayer } from '../src/ui/ObjectSelectionLayer.js';
+import { keyboardScaleMatrix, ObjectSelectionLayer, resumePointerIntent, selectionLayerPoint, type SelectionPointerIntent, type SelectionPointerStart } from '../src/ui/ObjectSelectionLayer.js';
 import { pickObject } from '../src/ui/object-selection.js';
 
 const dummyPage: PageModel = {
@@ -39,7 +39,46 @@ const dummyRender: RenderResult = {
   revision: 0,
 };
 
+describe('deferred first page gesture', () => {
+  const start: SelectionPointerStart = { pointerId: 7, button: 0, clientX: 60, clientY: 65,
+    ctrlKey: true, metaKey: false, shiftKey: true, altKey: false };
+  const intent = (ended: boolean, latest = start): SelectionPointerIntent => ({ start, latest, ended, pageVersion: 4, tool: 'edit' });
+
+  it('completes a click whose pointerup arrived before the model, without capturing the ended pointer', () => {
+    const capture = vi.fn(), select = vi.fn(), order: string[] = [];
+    resumePointerIntent(intent(true), {
+      start: (event, live) => { order.push('down'); if (live) capture(event.pointerId); },
+      move: () => { order.push('move'); },
+      end: event => { order.push('up'); select(event); },
+    });
+    expect(order).toEqual(['down', 'move', 'up']);
+    expect(capture).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledExactlyOnceWith(start);
+  });
+
+  it('replays both endpoints and final modifiers for an already ended drag', () => {
+    const latest = { ...start, clientX: 190, clientY: 230, ctrlKey: false, altKey: true };
+    const handlers = { start: vi.fn(), move: vi.fn(), end: vi.fn() };
+    resumePointerIntent(intent(true, latest), handlers);
+    expect(handlers.start).toHaveBeenCalledExactlyOnceWith(start, false);
+    expect(handlers.move).toHaveBeenCalledExactlyOnceWith(latest);
+    expect(handlers.end).toHaveBeenCalledExactlyOnceWith(latest);
+  });
+
+  it('hands a still-down pointer to the normal move/up path', () => {
+    const handlers = { start: vi.fn(), move: vi.fn(), end: vi.fn() };
+    resumePointerIntent(intent(false, { ...start, clientX: 80 }), handlers);
+    expect(handlers.start).toHaveBeenCalledExactlyOnceWith(start, true);
+    expect(handlers.move).toHaveBeenCalledWith(expect.objectContaining({ clientX: 80 }));
+    expect(handlers.end).not.toHaveBeenCalled();
+  });
+});
+
 describe('ObjectSelectionLayer', () => {
+  it('maps an imperative zoom preview back to unchanged editing geometry', () => {
+    expect(selectionLayerPoint(260, 330, { left: 10, top: 30, width: 1000, height: 1500 }, { width: 500, height: 750 }))
+      .toEqual([125, 150]);
+  });
   it.each([
     ['e', [1.1, 0, 0, 1, -5, 0]],
     ['w', [1.1, 0, 0, 1, -15, 0]],

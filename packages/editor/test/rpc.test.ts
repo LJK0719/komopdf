@@ -120,6 +120,144 @@ describe('Worker RPC', () => {
     detach();
   });
 
+  it('delivers cancellation outside the execution queue and waits for the real render terminal state', async () => {
+    const pair = createLinkedEndpoints();
+    const started = deferred<void>();
+    const aborted = deferred<void>();
+    const cleanup = deferred<void>();
+    const calls: string[] = [];
+    const engine = {
+      render: async (_request: unknown, { signal }: { signal: AbortSignal }) => {
+        calls.push('render');
+        signal.addEventListener('abort', () => aborted.resolve(undefined), { once: true });
+        started.resolve(undefined);
+        await aborted.promise;
+        await cleanup.promise;
+        calls.push('render-closed');
+        throw new EngineError('CANCELLED', 'render closed');
+      },
+      redo: async () => { calls.push('redo'); return 'next'; },
+    } as unknown as EngineAdapter;
+    const detach = attachEngineWorker(pair.server, async () => ({ handshake: HANDSHAKE, engine }));
+    const client = new WorkerRpcClient(pair.client);
+    await client.handshake();
+    const controller = new AbortController();
+    let settled = false;
+    const rendering = client.call('render', [{ docId: 'doc', pageId: 'page', scale: 1 }], [], { signal: controller.signal });
+    void rendering.then(() => { settled = true; }, () => { settled = true; });
+    await started.promise;
+    const next = client.call('redo', ['doc']);
+    controller.abort();
+    await aborted.promise;
+    expect(settled).toBe(false);
+    expect(calls).toEqual(['render']);
+    cleanup.resolve(undefined);
+    await expect(rendering).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(next).resolves.toBe('next');
+    expect(calls).toEqual(['render', 'render-closed', 'redo']);
+    client.dispose();
+    detach();
+  });
+
+  it('cancels queued render registrations before they enter the engine', async () => {
+    const pair = createLinkedEndpoints();
+    const first = deferred<void>();
+    const started = deferred<void>();
+    let renderCalls = 0;
+    const engine = {
+      undo: async () => { started.resolve(undefined); await first.promise; },
+      render: async () => { renderCalls += 1; },
+    } as unknown as EngineAdapter;
+    const detach = attachEngineWorker(pair.server, async () => ({ handshake: HANDSHAKE, engine }));
+    const client = new WorkerRpcClient(pair.client);
+    await client.handshake();
+    const undo = client.call('undo', ['doc']);
+    const controller = new AbortController();
+    const rendering = client.call('render', [{ docId: 'doc', pageId: 'page', scale: 1 }], [], { signal: controller.signal });
+    await started.promise;
+    controller.abort();
+    first.resolve(undefined);
+    await undo;
+    await expect(rendering).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(renderCalls).toBe(0);
+    client.dispose();
+    detach();
+  });
+
+  it.each(['close', 'apply'] as const)('cancels rendering before a queued %s mutates the document', async method => {
+    const pair = createLinkedEndpoints();
+    const started = deferred<void>();
+    const closed = deferred<void>();
+    const calls: string[] = [];
+    const engine = {
+      render: async (_request: unknown, { signal }: { signal: AbortSignal }) => {
+        signal.addEventListener('abort', () => closed.resolve(undefined), { once: true });
+        started.resolve(undefined);
+        await closed.promise;
+        calls.push('render-cancelled');
+        throw new EngineError('CANCELLED', 'render closed');
+      },
+      [method]: async () => { calls.push(method); },
+    } as unknown as EngineAdapter;
+    const detach = attachEngineWorker(pair.server, async () => ({ handshake: HANDSHAKE, engine }));
+    const client = new WorkerRpcClient(pair.client);
+    await client.handshake();
+    const rendering = client.call('render', [{ docId: 'doc', pageId: 'page', scale: 1 }]);
+    await started.promise;
+    const mutating = client.call(method, method === 'apply' ? [{ docId: 'doc' }] : ['doc']);
+    await expect(rendering).rejects.toMatchObject({ code: 'CANCELLED' });
+    await mutating;
+    expect(calls).toEqual(['render-cancelled', method]);
+    client.dispose();
+    detach();
+  });
+
+  it('does not post an already-aborted render or serialize its AbortSignal', async () => {
+    const endpoint = new ManualClientEndpoint();
+    const client = new WorkerRpcClient(endpoint);
+    await expect(client.call('render', [{}], [], { signal: AbortSignal.abort() })).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(endpoint.requests).toEqual([]);
+    const handshake = client.handshake();
+    endpoint.emitMessage({ kind: 'handshake-result', requestId: requestIdOf(endpoint.requests[0]?.message), handshake: HANDSHAKE });
+    await handshake;
+    const controller = new AbortController();
+    const request = { docId: 'doc', pageId: 'page', scale: 1 };
+    let settled = false;
+    const rendering = client.call('render', [request], [], { signal: controller.signal });
+    void rendering.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    const renderRequest = endpoint.requests[1]?.message;
+    expect(renderRequest).toMatchObject({ kind: 'engine-request', method: 'render', args: [request] });
+    expect(renderRequest).not.toHaveProperty('signal');
+    controller.abort();
+    expect(endpoint.requests[2]?.message).toEqual({ kind: 'engine-cancel', requestId: requestIdOf(renderRequest) });
+    expect(settled).toBe(false);
+    endpoint.emitMessage({ kind: 'engine-error', requestId: requestIdOf(renderRequest), error: { code: 'CANCELLED', message: 'closed' } });
+    await expect(rendering).rejects.toMatchObject({ code: 'CANCELLED' });
+    client.dispose();
+  });
+
+  it('still waits for the worker terminal response if sending cancel fails', async () => {
+    const endpoint = new ManualClientEndpoint();
+    const client = new WorkerRpcClient(endpoint);
+    const handshake = client.handshake();
+    endpoint.emitMessage({ kind: 'handshake-result', requestId: requestIdOf(endpoint.requests[0]?.message), handshake: HANDSHAKE });
+    await handshake;
+    const controller = new AbortController();
+    let settled = false;
+    const rendering = client.call('render', [{}], [], { signal: controller.signal });
+    void rendering.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    const request = endpoint.requests[1]?.message;
+    endpoint.failCancellation = true;
+    controller.abort();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    endpoint.emitMessage({ kind: 'engine-result', requestId: requestIdOf(request), result: { pixels: new ArrayBuffer(4) } });
+    await expect(rendering).rejects.toMatchObject({ code: 'CANCELLED' });
+    client.dispose();
+  });
+
   it('returns CORE_UNAVAILABLE without fallback when core module is missing', async () => {
     const pair = createLinkedEndpoints();
     const detach = attachEngineWorker(pair.server, async () => {
@@ -149,12 +287,14 @@ describe('Worker RPC', () => {
 });
 
 class ManualClientEndpoint implements EngineWorkerClientEndpoint {
+  failCancellation = false;
   readonly requests: { message: EngineRpcRequest; transfer: Transferable[] }[] = [];
   private readonly messageListeners = new Set<(event: RpcMessageEvent) => void>();
   private readonly errorListeners = new Set<(event: RpcFailureEvent) => void>();
   private readonly messageErrorListeners = new Set<(event: RpcFailureEvent) => void>();
 
   postMessage(message: EngineRpcRequest, transfer: Transferable[] = []): void {
+    if (message.kind === 'engine-cancel' && this.failCancellation) throw new Error('Control channel send failed');
     this.requests.push({ message, transfer });
   }
 

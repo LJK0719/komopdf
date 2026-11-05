@@ -1,5 +1,7 @@
-import { WEB_LIMITS, type EngineAdapter, type PageModel, type Rect, type RenderResult } from '@pdf-editor/contracts';
-import { isRenderCancelled, renderWork, type RenderPriority, type RenderWorkOptions } from './render-work.js';
+import { WEB_LIMITS, type EngineAdapter, type PageMetrics, type Rect, type RenderResult } from '@pdf-editor/contracts';
+import { isRenderCancelled, type RenderPriority, type RenderWorkOptions } from './render-work.js';
+import { requestPageBitmap } from './raster-cache.js';
+export { requestPageBitmap, clearPageBitmaps } from './raster-cache.js';
 
 const TILE_SIZE = 512;
 
@@ -14,7 +16,7 @@ export function devicePixelRatio(): number {
   return Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
 }
 
-export function pageRenderGeometry(page: PageModel, zoom: number, revision: number, pixelRatio = devicePixelRatio()): PageRender {
+export function pageRenderGeometry(page: PageMetrics, zoom: number, revision: number, pixelRatio = devicePixelRatio()): PageRender {
   const width = page.widthPt * zoom, height = page.heightPt * zoom;
   const physicalWidth = Math.ceil(page.widthPt * (zoom * pixelRatio));
   const physicalHeight = Math.ceil(page.heightPt * (zoom * pixelRatio));
@@ -26,17 +28,18 @@ export function matchesPageRender(render: PageRender, zoom: number, pixelRatio: 
   return render.zoom === zoom && render.pixelRatio === pixelRatio && (render.mode === 'tiles' || render.bitmap !== null);
 }
 
-export async function renderPage(engine: EngineAdapter, docId: string, page: PageModel, zoom: number, revision: number,
+export async function renderPage(engine: EngineAdapter, docId: string, page: PageMetrics, zoom: number, revision: number,
   pixelRatio = devicePixelRatio(), options: RenderWorkOptions = {}): Promise<PageRender> {
   const render = pageRenderGeometry(page, zoom, revision, pixelRatio);
   if (render.mode === 'full') {
-    render.bitmap = await renderWork(engine, () => engine.render({ docId, pageId: page.id, scale: zoom * pixelRatio }), options);
+    render.bitmap = await requestPageBitmap(engine, { docId, pageId: page.id, scale: zoom * pixelRatio },
+      engine.getPageVersion?.(docId, page.id) ?? revision, options);
     render.revision = render.bitmap.revision;
   }
   return render;
 }
 
-export function tileClip(page: PageModel, scale: number, column: number, row: number): Rect {
+export function tileClip(page: PageMetrics, scale: number, column: number, row: number): Rect {
   const left = Math.max(0, column * TILE_SIZE - 1);
   const top = Math.max(0, row * TILE_SIZE - 1);
   const right = Math.min(page.widthPt, ((column + 1) * TILE_SIZE + 1) / scale);
@@ -52,7 +55,7 @@ export function mountVisiblePageTiles(
   stage: HTMLElement,
   engine: EngineAdapter,
   docId: string,
-  page: PageModel,
+  page: PageMetrics,
   render: PageRender,
   onError: (error: unknown) => void,
   options: TileOptions = {},
@@ -84,7 +87,7 @@ export function mountVisiblePageTiles(
       if (isRenderCancelled(error) || !isCurrent() || tiles.get(key) !== canvas) return;
       failed = true; tiles.delete(key); release(canvas); onError(error);
     };
-    void renderWork(engine, () => engine.render({ docId, pageId: page.id, scale, clip }),
+    void requestPageBitmap(engine, { docId, pageId: page.id, scale, clip }, version,
       { signal: controller.signal, priority: options.priority?.() ?? 'active' }).then(bitmap => {
       try {
         if (!isCurrent() || tiles.get(key) !== canvas) return;

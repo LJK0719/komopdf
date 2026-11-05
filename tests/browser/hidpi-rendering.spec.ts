@@ -159,12 +159,18 @@ test('raster mode changes retain the last painted generation until all new visib
   await expect(canvas).toHaveCount(0);
   await expect.poll(() => page.locator('.pdf-tile').evaluateAll(nodes => nodes.length > 0 && nodes.every(node => (node as HTMLCanvasElement).width > 0))).toBe(true);
   await page.evaluate(() => { (window as any).densityProbe.hold = true; });
-  await zoom.fill('125'); await zoom.press('Enter');
+  // Use a new scale: the initial 125% raster is deliberately retained by the cache.
+  await zoom.fill('130'); await zoom.press('Enter');
   await expect.poll(() => page.evaluate(() => (window as any).densityProbe.pending.length)).toBe(1);
   expect(await page.locator('.pdf-tile').evaluateAll(nodes => nodes.some(node => (node as HTMLCanvasElement).width > 0))).toBe(true);
   await page.evaluate(() => { const state = (window as any).densityProbe; state.hold = false; state.pending.splice(0).forEach((send: () => void) => send()); });
-  await expect(canvas).toHaveJSProperty('width', 2250);
+  await expect(canvas).toHaveJSProperty('width', 2340);
   await expect(page.locator('.pdf-tile')).toHaveCount(0);
+  await page.evaluate(() => { const state = (window as any).densityProbe; state.requests = []; state.hold = true; });
+  await zoom.fill('125'); await zoom.press('Enter');
+  await expect(canvas).toHaveJSProperty('width', 2250);
+  expect(await page.evaluate(() => (window as any).densityProbe.pending.length)).toBe(0);
+  expect(await page.evaluate(() => (window as any).densityProbe.requests.length)).toBe(0);
   await expect(page.locator('.status-dot-error')).toHaveCount(0);
 });
 
@@ -198,6 +204,7 @@ test('editing-mode zoom transforms a dense hitbox layer without rewriting every 
 test('gesture-event pinch previews every frame without rendering, replacing character nodes, or blocking the UI', async ({ page }) => {
   await openPdf(page);
   await expect(page.locator('.document-pages .pdf-canvas')).toHaveJSProperty('width', 1050);
+  await expect(page.locator('.pdf-character').first()).toBeVisible();
   const result = await page.evaluate(async () => {
     const state = (window as any).densityProbe; state.requests = []; state.hold = true;
     const stage = document.querySelector('.canvas-stage')!, wrapper = document.querySelector('.page-wrap')!;

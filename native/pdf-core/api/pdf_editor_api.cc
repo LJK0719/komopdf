@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -76,6 +77,7 @@
 #include "public/fpdf_formfill.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_ppo.h"
+#include "public/fpdf_progressive.h"
 #include "public/fpdf_save.h"
 #include "public/fpdf_signature.h"
 #include "public/fpdf_text.h"
@@ -352,6 +354,8 @@ struct ObjectIdentity {
 struct PageIdentity {
   std::string id;
   std::vector<ObjectIdentity> objects;
+  // An unloaded page is distinct from an initialized page with no objects.
+  bool objects_loaded = false;
 };
 
 struct CandidateMetadata {
@@ -367,6 +371,54 @@ static_assert(offsetof(PdeEditCommand, values) == 48,
               "PdeEditCommand values must start at byte 48 on wasm32");
 #endif
 
+struct RenderViewport {
+  uint32_t width;
+  uint32_t height;
+  int32_t offset_x;
+  int32_t offset_y;
+  uint32_t full_width;
+  uint32_t full_height;
+};
+
+struct ProgressiveRender {
+  ~ProgressiveRender() {
+    Close();
+    if (bitmap) FPDFBitmap_Destroy(bitmap);
+  }
+
+  FPDF_PAGE PageHandle() const { return FPDFPageFromIPDFPage(page.Get()); }
+
+  void Close() {
+    if (started) {
+      FPDF_RenderPage_Close(PageHandle());
+      started = false;
+    }
+  }
+
+  // Retain the cached page and own the bitmap storage independently of g_binary.
+  RetainPtr<CPDF_Page> page;
+  std::vector<uint8_t> pixels;
+  FPDF_BITMAP bitmap = nullptr;
+  RenderViewport viewport{};
+  uint32_t revision = 0;
+  bool started = false;
+};
+
+struct RenderPause : IFSDK_PAUSE {
+  explicit RenderPause(uint32_t budget_ms)
+      : IFSDK_PAUSE{},
+        deadline(std::chrono::steady_clock::now() +
+                 std::chrono::milliseconds(budget_ms)) {
+    version = 1;
+    NeedToPauseNow = [](IFSDK_PAUSE* pause) -> FPDF_BOOL {
+      return std::chrono::steady_clock::now() >=
+             static_cast<RenderPause*>(pause)->deadline;
+    };
+  }
+
+  std::chrono::steady_clock::time_point deadline;
+};
+
 struct Document {
   ~Document() {
     ClearRenderPage();
@@ -375,7 +427,10 @@ struct Document {
     }
   }
 
+  void CancelRender() { progressive_render.reset(); }
+
   void ClearRenderPage() {
+    CancelRender();
     if (render_page) {
       FPDF_ClosePage(render_page);
       render_page = nullptr;
@@ -403,6 +458,7 @@ struct Document {
   FPDF_DOCUMENT pdf = nullptr;
   FPDF_PAGE render_page = nullptr;
   uint32_t render_page_index = 0;
+  std::unique_ptr<ProgressiveRender> progressive_render;
   bool editing_allowed = false;
   uint32_t revision = 0;
   uint32_t saved_revision = 0;
@@ -1571,6 +1627,7 @@ bool BuildGeneratedPageIdentity(const Document& document,
       return false;
     }
   }
+  identity->objects_loaded = true;
   return true;
 }
 
@@ -1596,43 +1653,63 @@ bool BuildInitialMetadata(Document* document) {
   CandidateMetadata metadata;
   metadata.pages.resize(static_cast<size_t>(page_count));
   for (int page_index = 0; page_index < page_count; ++page_index) {
-    PageIdentity& page_identity =
-        metadata.pages[static_cast<size_t>(page_index)];
-    page_identity.id =
-        SourcePageId(*document, static_cast<uint32_t>(page_index));
-    ScopedPage page(FPDF_LoadPage(document->pdf, page_index));
-    if (!page.get()) {
-      SetError("CORE_UNAVAILABLE", "The PDF page could not be loaded.");
-      return false;
-    }
-    const int object_count = FPDFPage_CountObjects(page.get());
-    if (object_count < 0) {
-      SetUnexpectedError();
-      return false;
-    }
-    page_identity.objects.resize(static_cast<size_t>(object_count));
-    uint64_t next_ordinal = 0;
-    for (int object_index = 0; object_index < object_count; ++object_index) {
-      FPDF_PAGEOBJECT object = FPDFPage_GetObject(page.get(), object_index);
-      if (!object ||
-          !BuildSourceObjectIdentity(
-              *document, static_cast<uint32_t>(page_index), object, 0,
-              &next_ordinal,
-              &page_identity.objects[static_cast<size_t>(object_index)])) {
-        if (g_error_code.empty()) {
-          SetUnexpectedError();
-        }
-        return false;
-      }
-    }
+    PageIdentity& page = metadata.pages[static_cast<size_t>(page_index)];
+    page.id = SourcePageId(*document, static_cast<uint32_t>(page_index));
+    document->reserved_ids.insert(page.id);
   }
   document->source_metadata = metadata;
   document->metadata = std::move(metadata);
-  for (const PageIdentity& page : document->metadata.pages) {
-    document->reserved_ids.insert(page.id);
-    for (const ObjectIdentity& object : page.objects) {
-      AddIdentityIds(object, &document->reserved_ids);
+  return true;
+}
+
+bool EnsureSourcePageIdentity(Document* document,
+                              uint32_t page_index,
+                              FPDF_PAGE loaded_page = nullptr) {
+  PageIdentity& source = document->source_metadata.pages[page_index];
+  if (source.objects_loaded) return true;
+  // Every replay passes the full source barrier, so unloaded pages still have
+  // their original order in the committed PDF. Never derive IDs from visit order.
+  if (page_index >= document->metadata.pages.size() ||
+      document->metadata.pages[page_index].id != source.id) {
+    SetError("CORE_UNAVAILABLE", "The source page identity map is out of sync.");
+    return false;
+  }
+  ScopedPage page(loaded_page ? nullptr :
+      FPDF_LoadPage(document->pdf, static_cast<int>(page_index)));
+  FPDF_PAGE handle = loaded_page ? loaded_page : page.get();
+  if (!handle) {
+    SetError("CORE_UNAVAILABLE", "The PDF page could not be loaded.");
+    return false;
+  }
+  const int object_count = FPDFPage_CountObjects(handle);
+  if (object_count < 0) {
+    SetUnexpectedError();
+    return false;
+  }
+  PageIdentity identity;
+  identity.id = source.id;
+  identity.objects.resize(static_cast<size_t>(object_count));
+  uint64_t next_ordinal = 0;
+  for (int index = 0; index < object_count; ++index) {
+    FPDF_PAGEOBJECT object = FPDFPage_GetObject(handle, index);
+    if (!object || !BuildSourceObjectIdentity(*document, page_index, object, 0,
+          &next_ordinal, &identity.objects[static_cast<size_t>(index)])) {
+      if (g_error_code.empty()) SetUnexpectedError();
+      return false;
     }
+  }
+  identity.objects_loaded = true;
+  for (const auto& object : identity.objects)
+    AddIdentityIds(object, &document->reserved_ids);
+  document->metadata.pages[page_index] = identity;
+  source = std::move(identity);
+  return true;
+}
+
+bool EnsureAllSourceIdentities(Document* document) {
+  for (size_t index = 0; index < document->source_metadata.pages.size(); ++index) {
+    if (!EnsureSourcePageIdentity(document, static_cast<uint32_t>(index)))
+      return false;
   }
   return true;
 }
@@ -2005,13 +2082,50 @@ void EnumerateObject(FPDF_PAGEOBJECT object,
   }
 }
 
-bool BuildPageData(Document* document, uint32_t page_index, PageData* result) {
+bool ValidatePageIndex(const Document& document, uint32_t page_index) {
   if (page_index > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
-      page_index >= document->metadata.pages.size() ||
-      page_index >= static_cast<uint32_t>(FPDF_GetPageCount(document->pdf))) {
+      page_index >= document.metadata.pages.size() ||
+      page_index >= static_cast<uint32_t>(FPDF_GetPageCount(document.pdf))) {
     SetError("INVALID_REQUEST", "The page index is out of range.");
     return false;
   }
+  return true;
+}
+
+bool PopulatePageInfo(CPDF_Page* page, std::string_view id, PageData* result) {
+  if (!page) {
+    SetUnexpectedError();
+    return false;
+  }
+  const double user_unit = GetUserUnit(page);
+  result->id = id;
+  result->width_pt = page->GetPageWidth() * user_unit;
+  result->height_pt = page->GetPageHeight() * user_unit;
+  result->rotation = page->GetPageRotation() * 90;
+  if (!std::isfinite(result->width_pt) || !std::isfinite(result->height_pt) ||
+      result->width_pt <= 0 || result->height_pt <= 0) {
+    SetError("CORE_UNAVAILABLE", "The PDF page has invalid geometry.");
+    return false;
+  }
+  return true;
+}
+
+bool BuildPageInfo(const Document& document, uint32_t page_index, PageData* result) {
+  if (!ValidatePageIndex(document, page_index)) return false;
+  auto* native = CPDFDocumentFromFPDFDocument(document.pdf);
+  auto dictionary = native->GetMutablePageDictionary(static_cast<int>(page_index));
+  if (!CPDF_Page::IsValidPageDictLoose(dictionary)) {
+    SetError("CORE_UNAVAILABLE", "The PDF page could not be loaded.");
+    return false;
+  }
+  // Construct the same normalized PDFium page geometry without ParseContent(),
+  // a text page, an image cache, or the editing identity tree.
+  auto page = pdfium::MakeRetain<CPDF_Page>(native, std::move(dictionary));
+  return PopulatePageInfo(page.Get(), document.metadata.pages[page_index].id, result);
+}
+
+bool BuildPageData(Document* document, uint32_t page_index, PageData* result) {
+  if (!ValidatePageIndex(*document, page_index)) return false;
 
   ScopedPage page(FPDF_LoadPage(document->pdf, static_cast<int>(page_index)));
   if (!page.get()) {
@@ -2029,16 +2143,10 @@ bool BuildPageData(Document* document, uint32_t page_index, PageData* result) {
   const Matrix pdf_to_page =
       MatrixFromCfx(native_page->GetDisplayMatrix()).Then(unit_scale);
 
+  if (!document->metadata.pages[page_index].objects_loaded &&
+      !EnsureSourcePageIdentity(document, page_index, page.get())) return false;
   const PageIdentity& page_identity = document->metadata.pages[page_index];
-  result->id = page_identity.id;
-  result->width_pt = native_page->GetPageWidth() * user_unit;
-  result->height_pt = native_page->GetPageHeight() * user_unit;
-  result->rotation = native_page->GetPageRotation() * 90;
-  if (!std::isfinite(result->width_pt) || !std::isfinite(result->height_pt) ||
-      result->width_pt <= 0 || result->height_pt <= 0) {
-    SetError("CORE_UNAVAILABLE", "The PDF page has invalid geometry.");
-    return false;
-  }
+  if (!PopulatePageInfo(native_page, page_identity.id, result)) return false;
 
   ScopedTextPage text_page(FPDFText_LoadPage(page.get()));
   if (!text_page.get()) {
@@ -2344,7 +2452,7 @@ std::string SerializeDocumentInfo(const Document& document) {
   return output;
 }
 
-std::string SerializePage(const PageData& page) {
+std::string SerializePageInfo(const PageData& page) {
   std::string output;
   output.append("{\"id\":");
   AppendJsonString(&output, page.id);
@@ -2354,6 +2462,13 @@ std::string SerializePage(const PageData& page) {
   AppendJsonNumber(&output, page.height_pt);
   output.append(",\"rotation\":");
   AppendJsonSigned(&output, page.rotation);
+  output.push_back('}');
+  return output;
+}
+
+std::string SerializePage(const PageData& page) {
+  std::string output = SerializePageInfo(page);
+  output.pop_back();
   output.append(",\"objects\":[");
   for (size_t index = 0; index < page.objects.size(); ++index) {
     if (index) {
@@ -4854,6 +4969,7 @@ bool ApplyPageInsert(FPDF_DOCUMENT pdf,
   }
   PageIdentity identity;
   identity.id = command.page_id;
+  identity.objects_loaded = true;
   metadata->pages.insert(
       metadata->pages.begin() + static_cast<std::ptrdiff_t>(index),
       std::move(identity));
@@ -6054,7 +6170,8 @@ bool RebuildCandidate(
     bool* overflow = nullptr,
     TextInsertLayoutResult* text_insert_layout = nullptr,
     bool allow_text_insert_overflow = false) {
-  if (!EnsureImmutableSourceBytes(document)) {
+  if (!EnsureAllSourceIdentities(document) ||
+      !EnsureImmutableSourceBytes(document)) {
     return false;
   }
   ScopedDocument candidate(FPDF_LoadMemDocument64(
@@ -6668,8 +6785,9 @@ bool AddRequiredFontResources(
   return true;
 }
 
-bool ValidateNewCommandIds(const Document& document,
+bool ValidateNewCommandIds(Document& document,
                            const EditTransaction& transaction) {
+  if (!EnsureAllSourceIdentities(&document)) return false;
   std::set<std::string> ids = document.reserved_ids;
   CollectDocumentToolIds(document, &ids);
   for (const EditCommand& command : transaction.commands) {
@@ -7152,6 +7270,7 @@ const char* CommitGenericTransaction(Document* document,
     SetError("INVALID_REQUEST", "The transaction ID was already used.");
     return nullptr;
   }
+  document->CancelRender();
   if (!ValidateNewCommandIds(*document, transaction)) {
     return nullptr;
   }
@@ -7183,6 +7302,104 @@ const char* CommitGenericTransaction(Document* document,
   document->redo_transactions.clear();
   document->undoable_count = undoable_count;
   ++document->revision;
+  g_result.swap(result);
+  return g_result.c_str();
+}
+
+bool ValidateRenderViewport(const Document& document,
+                             uint32_t page_index,
+                             const RenderViewport& viewport) {
+  if (!ValidatePageIndex(document, page_index)) return false;
+  const auto [width, height, offset_x, offset_y, full_width, full_height] = viewport;
+  if (width == 0 || height == 0 || full_width == 0 || full_height == 0 ||
+      width > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
+      height > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
+      full_width > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
+      full_height > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
+      offset_x > 0 || offset_y > 0) {
+    SetError("INVALID_REQUEST", "Render dimensions and offsets are invalid.");
+    return false;
+  }
+  if (static_cast<uint64_t>(-static_cast<int64_t>(offset_x)) + width > full_width ||
+      static_cast<uint64_t>(-static_cast<int64_t>(offset_y)) + height > full_height) {
+    SetError("INVALID_REQUEST", "The render viewport is outside the full page.");
+    return false;
+  }
+  const uint64_t stride = static_cast<uint64_t>(width) * 4;
+  const uint64_t bytes = stride * height;
+  if (stride > static_cast<uint64_t>(std::numeric_limits<int>::max()) ||
+      bytes > std::numeric_limits<uint32_t>::max() ||
+      bytes > std::numeric_limits<size_t>::max()) {
+    SetError("RESOURCE_LIMIT", "The render bitmap is too large.");
+    return false;
+  }
+  return true;
+}
+
+bool DrawWidgetAppearances(const Document& document,
+                           FPDF_PAGE page,
+                           FPDF_BITMAP bitmap,
+                           const RenderViewport& viewport) {
+  if (!CPDFDocumentFromFPDFDocument(document.pdf)->GetRoot()->KeyExist("AcroForm"))
+    return true;
+  FPDF_FORMFILLINFO callbacks{};
+  callbacks.version = 2;
+  std::unique_ptr<std::remove_pointer_t<FPDF_FORMHANDLE>,
+                  decltype(&FPDFDOC_ExitFormFillEnvironment)> form(
+      FPDFDOC_InitFormFillEnvironment(document.pdf, &callbacks),
+      &FPDFDOC_ExitFormFillEnvironment);
+  if (!form) {
+    SetError("CORE_UNAVAILABLE", "The form appearances could not be rendered.");
+    return false;
+  }
+  // Draw existing widget appearances only; never execute document/page actions
+  // or PDF JavaScript. This matches the synchronous rendering path.
+  FORM_OnAfterLoadPage(page, form.get());
+  FPDF_FFLDraw(form.get(), bitmap, page, viewport.offset_x, viewport.offset_y,
+               static_cast<int>(viewport.full_width),
+               static_cast<int>(viewport.full_height), 0, 0);
+  FORM_OnBeforeClosePage(page, form.get());
+  return true;
+}
+
+void ConvertBgraToRgba(std::vector<uint8_t>* pixels) {
+  for (size_t offset = 0; offset < pixels->size(); offset += 4)
+    std::swap((*pixels)[offset], (*pixels)[offset + 2]);
+}
+
+std::string SerializeRenderResult(const RenderViewport& viewport,
+                                   uint32_t revision,
+                                   bool progressive) {
+  std::string result = progressive ? "{\"status\":\"done\",\"width\":" : "{\"width\":";
+  AppendJsonUnsigned(&result, viewport.width);
+  result.append(",\"height\":");
+  AppendJsonUnsigned(&result, viewport.height);
+  result.append(",\"stride\":");
+  AppendJsonUnsigned(&result, static_cast<uint64_t>(viewport.width) * 4);
+  result.append(",\"format\":\"rgba\",\"revision\":");
+  AppendJsonUnsigned(&result, revision);
+  result.push_back('}');
+  return result;
+}
+
+const char* PublishRenderStep(Document* document, int status) {
+  if (status == FPDF_RENDER_TOBECONTINUED) {
+    g_result = "{\"status\":\"pending\"}";
+    return g_result.c_str();
+  }
+  auto render = std::move(document->progressive_render);
+  if (status != FPDF_RENDER_DONE) {
+    SetError("CORE_UNAVAILABLE", "The PDF page could not be rendered.");
+    return nullptr;
+  }
+  // PDFium's progressive render context must be closed before FFLDraw installs
+  // its own context on this page. Partial pixels never enter the output buffer.
+  render->Close();
+  if (!DrawWidgetAppearances(*document, render->PageHandle(), render->bitmap,
+                             render->viewport)) return nullptr;
+  ConvertBgraToRgba(&render->pixels);
+  std::string result = SerializeRenderResult(render->viewport, render->revision, true);
+  g_binary.swap(render->pixels);
   g_result.swap(result);
   return g_result.c_str();
 }
@@ -7542,6 +7759,19 @@ const char* pde_document_info(uint32_t document) {
   });
 }
 
+const char* pde_page_info(uint32_t document, uint32_t page_index) {
+  return Guard<const char*>(nullptr, [&]() -> const char* {
+    BeginOperation();
+    if (!RequireInitialized()) return nullptr;
+    const Document* value = FindDocument(document);
+    if (!value) return nullptr;
+    PageData info;
+    if (!BuildPageInfo(*value, page_index, &info)) return nullptr;
+    g_result = SerializePageInfo(info);
+    return g_result.c_str();
+  });
+}
+
 const char* pde_describe_page(uint32_t document, uint32_t page_index) {
   return Guard<const char*>(nullptr, [&]() -> const char* {
     BeginOperation();
@@ -7597,37 +7827,11 @@ const char* pde_render(uint32_t document,
     if (!value) {
       return nullptr;
     }
-    if (page_index > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
-        page_index >= static_cast<uint32_t>(FPDF_GetPageCount(value->pdf))) {
-      SetError("INVALID_REQUEST", "The page index is out of range.");
-      return nullptr;
-    }
-    if (width == 0 || height == 0 || full_width == 0 || full_height == 0 ||
-        width > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
-        height > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
-        full_width > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
-        full_height > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
-        offset_x > 0 || offset_y > 0) {
-      SetError("INVALID_REQUEST", "Render dimensions and offsets are invalid.");
-      return nullptr;
-    }
-    if (static_cast<uint64_t>(-static_cast<int64_t>(offset_x)) + width >
-            full_width ||
-        static_cast<uint64_t>(-static_cast<int64_t>(offset_y)) + height >
-            full_height) {
-      SetError("INVALID_REQUEST",
-               "The render viewport is outside the full page.");
-      return nullptr;
-    }
-
+    const RenderViewport viewport{width, height, offset_x, offset_y, full_width, full_height};
+    if (!ValidateRenderViewport(*value, page_index, viewport)) return nullptr;
+    value->CancelRender();
     const uint64_t stride64 = static_cast<uint64_t>(width) * 4;
     const uint64_t byte_size64 = stride64 * height;
-    if (stride64 > static_cast<uint64_t>(std::numeric_limits<int>::max()) ||
-        byte_size64 > std::numeric_limits<uint32_t>::max() ||
-        byte_size64 > std::numeric_limits<size_t>::max()) {
-      SetError("RESOURCE_LIMIT", "The render bitmap is too large.");
-      return nullptr;
-    }
 
     FPDF_PAGE page = value->RenderPage(page_index);
     if (!page) {
@@ -7652,37 +7856,87 @@ const char* pde_render(uint32_t document,
     FPDF_RenderPageBitmap(bitmap.get(), page, offset_x, offset_y,
                           static_cast<int>(full_width),
                           static_cast<int>(full_height), 0, FPDF_ANNOT | FPDF_RENDER_LIMITEDIMAGECACHE);
-    if (CPDFDocumentFromFPDFDocument(value->pdf)->GetRoot()->KeyExist("AcroForm")) {
-      FPDF_FORMFILLINFO callbacks{};
-      callbacks.version = 2;
-      std::unique_ptr<std::remove_pointer_t<FPDF_FORMHANDLE>,
-                      decltype(&FPDFDOC_ExitFormFillEnvironment)> form(
-          FPDFDOC_InitFormFillEnvironment(value->pdf, &callbacks),
-          &FPDFDOC_ExitFormFillEnvironment);
-      if (!form) {
-        SetError("CORE_UNAVAILABLE", "The form appearances could not be rendered.");
-        return nullptr;
-      }
-      // Draw existing widget appearances only. No document/page actions or
-      // JavaScript callbacks are executed by the editor.
-      FORM_OnAfterLoadPage(page, form.get());
-      FPDF_FFLDraw(form.get(), bitmap.get(), page, offset_x, offset_y,
-                   static_cast<int>(full_width), static_cast<int>(full_height), 0, 0);
-      FORM_OnBeforeClosePage(page, form.get());
-    }
-    for (size_t offset = 0; offset < g_binary.size(); offset += 4) {
-      std::swap(g_binary[offset], g_binary[offset + 2]);
-    }
+    if (!DrawWidgetAppearances(*value, page, bitmap.get(), viewport)) return nullptr;
+    ConvertBgraToRgba(&g_binary);
+    g_result = SerializeRenderResult(viewport, value->revision, false);
+    return g_result.c_str();
+  });
+}
 
-    g_result.append("{\"width\":");
-    AppendJsonUnsigned(&g_result, width);
-    g_result.append(",\"height\":");
-    AppendJsonUnsigned(&g_result, height);
-    g_result.append(",\"stride\":");
-    AppendJsonUnsigned(&g_result, stride64);
-    g_result.append(",\"format\":\"rgba\",\"revision\":");
-    AppendJsonUnsigned(&g_result, value->revision);
-    g_result.push_back('}');
+const char* pde_render_start(uint32_t document,
+                             uint32_t page_index,
+                             uint32_t width,
+                             uint32_t height,
+                             int32_t offset_x,
+                             int32_t offset_y,
+                             uint32_t full_width,
+                             uint32_t full_height,
+                             uint32_t budget_ms) {
+  return Guard<const char*>(nullptr, [&]() -> const char* {
+    BeginOperation();
+    if (!RequireInitialized()) return nullptr;
+    Document* value = FindDocument(document);
+    if (!value) return nullptr;
+    const RenderViewport viewport{width, height, offset_x, offset_y, full_width, full_height};
+    if (!ValidateRenderViewport(*value, page_index, viewport)) return nullptr;
+    RenderPause pause(budget_ms);
+    value->CancelRender();
+    FPDF_PAGE page = value->RenderPage(page_index);
+    if (!page) {
+      SetError("CORE_UNAVAILABLE", "The PDF page could not be loaded.");
+      return nullptr;
+    }
+    auto render = std::make_unique<ProgressiveRender>();
+    render->page = pdfium::WrapRetain(CPDFPageFromFPDFPage(page));
+    render->viewport = viewport;
+    render->revision = value->revision;
+    const int stride = static_cast<int>(width * 4);
+    render->pixels.resize(static_cast<size_t>(stride) * height);
+    render->bitmap = FPDFBitmap_CreateEx(static_cast<int>(width), static_cast<int>(height),
+        FPDFBitmap_BGRA, render->pixels.data(), stride);
+    if (!render->bitmap) {
+      SetAllocationError();
+      return nullptr;
+    }
+    if (!FPDFBitmap_FillRect(render->bitmap, 0, 0, static_cast<int>(width),
+                             static_cast<int>(height), 0xffffffff)) {
+      SetUnexpectedError();
+      return nullptr;
+    }
+    value->progressive_render = std::move(render);
+    value->progressive_render->started = true;
+    const int status = FPDF_RenderPageBitmap_Start(value->progressive_render->bitmap,
+        page, offset_x, offset_y, static_cast<int>(full_width),
+        static_cast<int>(full_height), 0, FPDF_ANNOT | FPDF_RENDER_LIMITEDIMAGECACHE, &pause);
+    return PublishRenderStep(value, status);
+  });
+}
+
+const char* pde_render_continue(uint32_t document, uint32_t budget_ms) {
+  return Guard<const char*>(nullptr, [&]() -> const char* {
+    BeginOperation();
+    if (!RequireInitialized()) return nullptr;
+    Document* value = FindDocument(document);
+    if (!value) return nullptr;
+    if (!value->progressive_render) {
+      SetError("INVALID_REQUEST", "There is no progressive render to continue.");
+      return nullptr;
+    }
+    RenderPause pause(budget_ms);
+    const int status = FPDF_RenderPage_Continue(
+        value->progressive_render->PageHandle(), &pause);
+    return PublishRenderStep(value, status);
+  });
+}
+
+const char* pde_render_cancel(uint32_t document) {
+  return Guard<const char*>(nullptr, [&]() -> const char* {
+    BeginOperation();
+    if (!RequireInitialized()) return nullptr;
+    Document* value = FindDocument(document);
+    if (!value) return nullptr;
+    value->CancelRender();
+    g_result = "{\"cancelled\":true}";
     return g_result.c_str();
   });
 }
@@ -7902,6 +8156,7 @@ int pde_register_rgba_image(uint32_t document,
     resource->width = width;
     resource->height = height;
     resource->rgba.assign(rgba, rgba + length);
+    value->CancelRender();
     value->image_resources.emplace(resource->id, std::move(resource));
     return 1;
   });
@@ -7960,6 +8215,7 @@ const char* pde_register_pdf_resource(uint32_t document,
     resource->id = id;
     resource->bytes.assign(bytes, bytes + length);
     resource->page_count = static_cast<uint32_t>(page_count);
+    value->CancelRender();
     value->pdf_resources.emplace(resource->id, resource);
     g_result.append("{\"id\":");
     AppendJsonString(&g_result, resource->id);
@@ -8145,6 +8401,7 @@ const char* pde_confirm_save(uint32_t document, uint32_t saved_revision) {
                "The confirmed saved revision is newer than the document.");
       return nullptr;
     }
+    value->CancelRender();
     value->saved_revision = saved_revision;
     g_result = SerializeDocumentInfo(*value);
     return g_result.c_str();
@@ -8170,6 +8427,7 @@ const char* pde_undo(uint32_t document) {
       return nullptr;
     }
 
+    value->CancelRender();
     const EditTransaction transaction = value->transactions.back();
     auto transactions = value->transactions;
     transactions.pop_back();
@@ -8218,6 +8476,7 @@ const char* pde_redo(uint32_t document) {
       return nullptr;
     }
 
+    value->CancelRender();
     const EditTransaction transaction = value->redo_transactions.back();
     auto transactions = value->transactions;
     transactions.push_back(transaction);

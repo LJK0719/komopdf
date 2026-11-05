@@ -54,7 +54,7 @@ describe('Document replacement', () => {
     const closed: string[] = [];
     const engine = {
       open: async () => documentInfo,
-      describePage: async () => { throw new Error('render setup failed'); },
+      describePageMetrics: async () => { throw new Error('render setup failed'); },
       close: async (docId: string) => { closed.push(docId); },
     } as unknown as EngineAdapter;
 
@@ -93,13 +93,45 @@ describe('Inactive document bitmaps', () => {
     sessions.add(next);
     const inactive = sessions.current.current.documents.get(previous.info.id)!;
     expect(inactive.loaded.render.bitmap).toBeNull();
-    expect(inactive.loaded.page).toBe(previous.page);
+    expect(inactive.loaded.page).toEqual({ id: previous.page.id, widthPt: 612, heightPt: 792, rotation: 0 });
+    expect(inactive.loaded.page).not.toHaveProperty('objects');
+    expect(inactive.loaded.model.status).toBe('unloaded');
     expect(inactive.loaded.info).toBe(previous.info);
     expect(inactive.selectedIds).toEqual(['selected-object']);
     sessions.activate(previous.info.id);
     expect(sessions.current.current.activeId).toBe(previous.info.id);
     expect(sessions.current.current.documents.get('second-doc')!.loaded.render.bitmap).toBeNull();
     expect(matchesPageRender(inactive.loaded.render, inactive.zoom, 1)).toBe(false);
+  });
+});
+
+describe('explicit page interaction ownership', () => {
+  it('keeps a still-visible editing or geometric-placement page ahead of viewport-center tracking', () => {
+    const source = readFileSync(resolve(__dirname, '../src/ui/DocumentViewport.tsx'), 'utf-8');
+    const visible = source.indexOf('if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) continue;');
+    const ownership = source.indexOf("if ((current.pointer === 'edit' || current.drawing) && id === current.document.page.id) return;");
+    const center = source.indexOf('const delta = middle < rect.top');
+    expect(visible).toBeGreaterThanOrEqual(0);
+    expect(ownership).toBeGreaterThan(visible);
+    expect(ownership).toBeLessThan(center);
+  });
+});
+
+describe('insert-and-edit readiness', () => {
+  it('awaits the committed model before locating and opening newly inserted text or images', () => {
+    const source = readFileSync(resolve(__dirname, '../src/ui/EditorShell.tsx'), 'utf-8');
+    const insertion = source.slice(source.indexOf('if (await executeCommands([command], resources))'), source.indexOf('  useEffect(() => {\n    const change = () => {'));
+    expect(insertion).toContain('const active = await ensureEditable(committed);');
+    expect(insertion.indexOf('const active = await ensureEditable(committed);')).toBeLessThan(insertion.indexOf('let inserted = active.page.objects.find'));
+    expect(insertion).toContain('setInlineRange(null); setInlineRangeIsLogical(false); setInlineHit(null); setInlineTextId(inserted.id);');
+    expect(insertion).not.toContain('const active = loadedDocument(documentRef.current)');
+  });
+
+  it('keeps text/image placement clickable on the geometry overlay before an editing model is ready', () => {
+    const source = readFileSync(resolve(__dirname, '../src/ui/EditorShell.tsx'), 'utf-8');
+    const overlay = source.slice(source.indexOf('renderDisplayOverlay='), source.indexOf('renderOverlay='));
+    expect(overlay).toContain('className="placement-layer"');
+    expect(source).toContain('drawing={Boolean(annotationDrawing || pendingSignature || pagePlacement || placement)}');
   });
 });
 

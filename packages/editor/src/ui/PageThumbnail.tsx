@@ -1,13 +1,11 @@
-import { useI18n } from './i18n.js';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { EngineAdapter } from '@pdf-editor/contracts';
-import { devicePixelRatio, drawRender } from './draw-render.js';
+import { devicePixelRatio, drawRender, requestPageBitmap } from './draw-render.js';
 import { renderWork } from './render-work.js';
 
 type Props = { engine: EngineAdapter; docId: string; pageId: string; revision: number; pixelRatio?: number };
 
-export function PageThumbnail({ engine, docId, pageId, revision, pixelRatio = devicePixelRatio() }: Props) {
-  useI18n();
+export const PageThumbnail = memo(function PageThumbnail({ engine, docId, pageId, revision, pixelRatio = devicePixelRatio() }: Props) {
   const version = engine.getPageVersion?.(docId, pageId) ?? revision;
   const canvas = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
@@ -47,9 +45,10 @@ export function PageThumbnail({ engine, docId, pageId, revision, pixelRatio = de
     const options = { signal: controller.signal, priority: 'thumbnail' as const };
     const timer = setTimeout(() => {
       void (async () => {
-        const page = await renderWork(engine, () => engine.describePage(docId, pageId), options);
+        const page = await renderWork(engine, () => engine.describePageMetrics(docId, pageId),
+          { ...options, key: `metrics:${JSON.stringify([docId, pageId, version])}` });
         const scale = Math.min(width / page.widthPt, height / page.heightPt);
-        const render = await renderWork(engine, () => engine.render({ docId, pageId, scale }), options);
+        const render = await requestPageBitmap(engine, { docId, pageId, scale }, version, options);
         if (!controller.signal.aborted && version === (engine.getPageVersion?.(docId, pageId) ?? render.revision)) drawRender(element, render);
       })().catch(() => {
         // A thumbnail is optional; the full-size page reports its own errors.
@@ -59,4 +58,4 @@ export function PageThumbnail({ engine, docId, pageId, revision, pixelRatio = de
   }, [engine, docId, pageId, version, visible, width, height]);
 
   return <canvas ref={canvas} width={0} height={0} className="page-thumbnail" aria-hidden="true" />;
-}
+});

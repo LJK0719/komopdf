@@ -67,6 +67,55 @@ describe('display work before the serial engine', () => {
   });
 });
 
+describe('shared display consumers', () => {
+  it('does not cancel a shared provider when only one consumer aborts', async () => {
+    const engine = {}, done = deferred<number>(), first = new AbortController();
+    let signal!: AbortSignal;
+    const run = vi.fn((value: AbortSignal) => { signal = value; return done.promise; });
+    const a = renderWork(engine, run, { key: 'page', signal: first.signal }).catch(error => error.name);
+    const b = renderWork(engine, run, { key: 'page' });
+    await Promise.resolve(); first.abort();
+    expect(await a).toBe('AbortError'); expect(signal.aborted).toBe(false);
+    done.resolve(7); expect(await b).toBe(7); expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels the provider only after the final consumer leaves, retaining the lane until it ends', async () => {
+    const engine = {}, done = deferred<void>(), a = new AbortController(), b = new AbortController();
+    let signal!: AbortSignal;
+    const run = (value: AbortSignal) => { signal = value; return done.promise; };
+    const first = renderWork(engine, run, { key: 'page', signal: a.signal }).catch(() => undefined);
+    const second = renderWork(engine, run, { key: 'page', signal: b.signal }).catch(() => undefined);
+    await Promise.resolve(); a.abort(); b.abort(); await Promise.all([first, second]);
+    expect(signal.aborted).toBe(true);
+    const next = vi.fn(async () => 9);
+    const fresh = renderWork(engine, next, { key: 'page' });
+    await Promise.resolve(); expect(next).not.toHaveBeenCalled();
+    done.resolve(); expect(await fresh).toBe(9);
+  });
+
+  it('promotes shared work and orders equal priorities by visible distance', async () => {
+    const engine = {} as EngineAdapter, owner = {}, order: string[] = [];
+    setRenderWorkPaused(engine, owner, true);
+    const run = (name: string) => async () => { order.push(name); return name; };
+    const a = renderWork(engine, run('shared'), { key: 'shared', priority: 'thumbnail' });
+    const far = renderWork(engine, run('far'), { priority: 'page', distance: 8 });
+    const near = renderWork(engine, run('near'), { priority: 'page', distance: 1 });
+    const promoted = renderWork(engine, run('never'), { key: 'shared', priority: 'active' });
+    setRenderWorkPaused(engine, owner, false);
+    await Promise.all([a, far, near, promoted]);
+    expect(order).toEqual(['shared', 'near', 'far']);
+  });
+
+  it('allows explicit interaction work through a background pause', async () => {
+    const engine = {} as EngineAdapter, owner = {}, background = vi.fn(async () => 2);
+    setRenderWorkPaused(engine, owner, true);
+    const waiting = renderWork(engine, background, { priority: 'background' });
+    expect(await renderWork(engine, async () => 1, { priority: 'interaction' })).toBe(1);
+    expect(background).not.toHaveBeenCalled();
+    setRenderWorkPaused(engine, owner, false); expect(await waiting).toBe(2);
+  });
+});
+
 describe('pixel views without whole-frame copies', () => {
   it('views a native metadata-prefixed buffer directly, including an unaligned byte offset', () => {
     const bytes = new Uint8Array([99, 99, 99, 99, 99, 10, 20, 30, 255, 40, 50, 60, 255]);

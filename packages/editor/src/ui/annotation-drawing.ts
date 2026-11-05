@@ -1,5 +1,5 @@
 import { CommandRegistry, validateTransaction } from '@pdf-editor/commands';
-import type { CommitResult, DocumentInfo, EditCommand, EditTransaction, EngineAdapter, PageModel, PdfAnnotationInfo, Rect } from '@pdf-editor/contracts';
+import type { CommitResult, DocumentInfo, EditCommand, EditTransaction, EngineAdapter, PageMetrics, PageModel, PdfAnnotationInfo, Rect } from '@pdf-editor/contracts';
 
 export type AnnotationDrawingOptions = {
   tool: 'text' | 'rectangle' | 'ink';
@@ -14,7 +14,7 @@ export type AnnotationCommand = Extract<EditCommand, { type: 'annotation.add' }>
 /** Commands use displayed page-space points, top-left origin. The core applies crop/rotation and PDF's Y flip. */
 export function annotationPointFromClient(
   clientX: number, clientY: number, rect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>,
-  page: Pick<PageModel, 'widthPt' | 'heightPt'>,
+  page: Pick<PageMetrics, 'widthPt' | 'heightPt'>,
 ): AnnotationPoint {
   return [
     Math.max(0, Math.min(page.widthPt, (clientX - rect.left) * page.widthPt / rect.width)),
@@ -22,7 +22,7 @@ export function annotationPointFromClient(
   ];
 }
 
-export function annotationBounds(points: AnnotationPoint[], page: PageModel, padding = 0): Rect {
+export function annotationBounds(points: AnnotationPoint[], page: PageMetrics, padding = 0): Rect {
   let left = page.widthPt, top = page.heightPt, right = 0, bottom = 0;
   for (const [x, y] of points) {
     left = Math.min(left, x); top = Math.min(top, y);
@@ -33,14 +33,14 @@ export function annotationBounds(points: AnnotationPoint[], page: PageModel, pad
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-export function annotationNoteBounds(point: AnnotationPoint, page: PageModel): Rect {
+export function annotationNoteBounds(point: AnnotationPoint, page: PageMetrics): Rect {
   const width = Math.min(24, page.widthPt), height = Math.min(24, page.heightPt);
   return { x: Math.max(0, Math.min(page.widthPt - width, point[0] - width / 2)),
     y: Math.max(0, Math.min(page.heightPt - height, point[1] - height / 2)), width, height };
 }
 
 /** Null means an empty gesture; it must never create a history entry. */
-export function buildDrawnAnnotation(page: PageModel, options: AnnotationDrawingOptions, points: AnnotationPoint[]): AnnotationCommand | null {
+export function buildDrawnAnnotation(page: PageMetrics, options: AnnotationDrawingOptions, points: AnnotationPoint[]): AnnotationCommand | null {
   if (!points.length) return null;
   if (points.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > page.widthPt || y > page.heightPt)) {
     throw new Error('Annotation points must fit within the page.');

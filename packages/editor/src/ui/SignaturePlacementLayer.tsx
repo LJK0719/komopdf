@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
-import type { CommitResult, DocumentInfo, EngineAdapter, PageModel, Rect } from '@pdf-editor/contracts';
+import type { CommitResult, EngineAdapter, Rect } from '@pdf-editor/contracts';
+import { ensureLoaded, type DisplayDocument } from './display-document.js';
 import { useI18n } from './i18n.js';
 import { commitSignature } from './SignaturePanel.js';
 import {
@@ -9,8 +10,7 @@ import {
 import './signature-placement.css';
 
 type Props = {
-  document: DocumentInfo;
-  page: PageModel;
+  document: DisplayDocument;
   draft: SignatureDraft;
   disabled: boolean;
   engine: EngineAdapter;
@@ -21,7 +21,8 @@ type Props = {
 type Gesture = { pointerId: number; kind: 'move' | 'resize'; start: SignaturePoint; bounds: Rect };
 
 /** A disposable visual draft. Only the explicit confirm button writes an Ink transaction. */
-export function SignaturePlacementLayer({ document, page, draft, disabled, engine, onBusyChange, onCommitted, onCancel }: Props) {
+export function SignaturePlacementLayer({ document: shown, draft, disabled, engine, onBusyChange, onCommitted, onCancel }: Props) {
+  const document = shown.info, page = shown.page;
   const { t } = useI18n();
   const layer = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -87,7 +88,9 @@ export function SignaturePlacementLayer({ document, page, draft, disabled, engin
     setError('');
     onBusyChange(true);
     try {
-      await commitSignature(engine, document, page, draft.strokes, bounds, draft.strokeWidth,
+      const loaded = await ensureLoaded(engine, shown, { priority: 'interaction' });
+      if (!mounted.current || currentScope.current !== scope) return;
+      await commitSignature(engine, document, loaded.page, draft.strokes, bounds, draft.strokeWidth,
         () => mounted.current && currentScope.current === scope, onCommitted);
       onCancel();
     } catch (caught) {

@@ -11,7 +11,7 @@ describe('page rendering budget and pixel density', () => {
     const result = await renderPage({ render } as unknown as EngineAdapter, 'doc-1', page, 0.5, 3, 1);
     expect(result).toMatchObject({ width: 1000, height: 1500, zoom: 0.5, pixelRatio: 1, mode: 'full', revision: 3 });
     expect(result.bitmap).toBe(small);
-    expect(render).toHaveBeenCalledWith({ docId: 'doc-1', pageId: page.id, scale: 0.5 });
+    expect(render).toHaveBeenCalledWith({ docId: 'doc-1', pageId: page.id, scale: 0.5 }, { signal: expect.any(AbortSignal) });
   });
 
   it.each([1, 1.25, 2, 3])('renders at DPR %s without scaling page or editing coordinates', async pixelRatio => {
@@ -23,7 +23,7 @@ describe('page rendering budget and pixel density', () => {
     expect(result.width).toBe(765); expect(result.height).toBe(990);
     expect(result.bitmap?.width).toBe(Math.ceil(765 * pixelRatio));
     expect(result.bitmap?.height).toBe(Math.ceil(990 * pixelRatio));
-    expect(render).toHaveBeenCalledWith({ docId: 'doc-1', pageId: page.id, scale: zoom * pixelRatio });
+    expect(render).toHaveBeenCalledWith({ docId: 'doc-1', pageId: page.id, scale: zoom * pixelRatio }, { signal: expect.any(AbortSignal) });
   });
 
   it('selects tiles from the physical pixel budget without allocating a full-page bitmap', async () => {

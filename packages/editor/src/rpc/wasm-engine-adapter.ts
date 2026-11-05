@@ -8,8 +8,8 @@ import {
   type EngineAdapter,
   type ExtractionRequest,
   type ExtractPagesRequest, type ExtractPagesResult,
-  type PageModel,
-  type RenderRequest,
+  type PageMetrics, type PageModel,
+  type RenderOptions, type RenderRequest,
   type RenderResult,
   type SaveRequest,
   type SaveResult,
@@ -65,6 +65,19 @@ export class WasmEngineAdapter implements EngineAdapter {
     }
   }
 
+  describePageMetrics(docId: string, pageId: string): Promise<PageMetrics> {
+    return this.pages.metrics(docId, pageId, async () => {
+      const value = await this.rpc.call<PageMetrics>('describePageMetrics', [docId, pageId]);
+      if (!value || value.id !== pageId
+          || !Number.isFinite(value.widthPt) || value.widthPt <= 0
+          || !Number.isFinite(value.heightPt) || value.heightPt <= 0
+          || ![0, 90, 180, 270].includes(value.rotation)) {
+        throw new EngineError('CORE_UNAVAILABLE', 'PDF worker returned invalid page geometry');
+      }
+      return { id: value.id, widthPt: value.widthPt, heightPt: value.heightPt, rotation: value.rotation };
+    });
+  }
+
   describePage(docId: string, pageId: string): Promise<PageModel> {
     return this.pages.describe(docId, pageId, () => this.rpc.call<PageModel>('describePage', [docId, pageId]));
   }
@@ -85,10 +98,12 @@ export class WasmEngineAdapter implements EngineAdapter {
     return this.rpc.call<RegisteredFontInfo[]>('describeFonts', [docId]);
   }
 
-  async render(request: RenderRequest): Promise<RenderResult> {
-    const page = await this.describePage(request.docId, request.pageId);
+  async render(request: RenderRequest, options: RenderOptions = {}): Promise<RenderResult> {
+    if (options.signal?.aborted) throw new EngineError('CANCELLED', 'PDF rendering was cancelled');
+    const page = await this.describePageMetrics(request.docId, request.pageId);
+    if (options.signal?.aborted) throw new EngineError('CANCELLED', 'PDF rendering was cancelled');
     assertRenderBudget(request, page);
-    const result = await this.rpc.call<RenderResult>('render', [request]);
+    const result = await this.rpc.call<RenderResult>('render', [request], [], options);
     if (result.width * result.height > WEB_LIMITS.renderPixels) {
       throw new EngineError(
         'RESOURCE_LIMIT',
@@ -235,13 +250,20 @@ export class WasmEngineAdapter implements EngineAdapter {
   }
 }
 
-function assertRenderBudget(request: RenderRequest, page: PageModel): void {
+function assertRenderBudget(request: RenderRequest, page: PageMetrics): void {
   if (!Number.isFinite(request.scale) || request.scale <= 0) {
     throw new EngineError('INVALID_REQUEST', 'Render scale must be a positive number');
   }
-  const widthPt = request.clip?.width ?? page.widthPt;
-  const heightPt = request.clip?.height ?? page.heightPt;
-  const estimatedPixels = Math.ceil(widthPt * request.scale) * Math.ceil(heightPt * request.scale);
+  const clip = request.clip;
+  if (clip && (![clip.x, clip.y, clip.width, clip.height].every(Number.isFinite)
+      || clip.x < 0 || clip.y < 0 || clip.width <= 0 || clip.height <= 0
+      || clip.x + clip.width > page.widthPt + 1e-6 || clip.y + clip.height > page.heightPt + 1e-6)) {
+    throw new EngineError('INVALID_REQUEST', 'Render clip must be inside normalized page bounds');
+  }
+  const fullWidth = Math.ceil(page.widthPt * request.scale), fullHeight = Math.ceil(page.heightPt * request.scale);
+  const width = clip ? Math.min(fullWidth, Math.ceil((clip.x + clip.width) * request.scale)) - Math.floor(clip.x * request.scale) : fullWidth;
+  const height = clip ? Math.min(fullHeight, Math.ceil((clip.y + clip.height) * request.scale)) - Math.floor(clip.y * request.scale) : fullHeight;
+  const estimatedPixels = width * height;
   if (!Number.isFinite(estimatedPixels) || estimatedPixels > WEB_LIMITS.renderPixels) {
     throw new EngineError(
       'RESOURCE_LIMIT',

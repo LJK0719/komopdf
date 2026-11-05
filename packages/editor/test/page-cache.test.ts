@@ -38,6 +38,40 @@ describe('derived page cache', () => {
     expect(cache.version('doc', 'a')).not.toBe(restored);
   });
 
+  it('reuses lightweight geometry across viewport and render requests without retaining objects', async () => {
+    const cache = new PageCache(1), load = vi.fn(async () => page('a'));
+    const first = cache.metrics('doc', 'a', load), second = cache.metrics('doc', 'a', load);
+    expect(first).toBe(second);
+    const geometry = await first;
+    expect(geometry).not.toHaveProperty('objects');
+    expect(await cache.metrics('doc', 'a', load)).toBe(geometry);
+    expect(load).toHaveBeenCalledTimes(1);
+    cache.commit(commit(['b']));
+    expect(await cache.metrics('doc', 'a', load)).toBe(geometry);
+    cache.commit(commit(['a']));
+    expect(await cache.metrics('doc', 'a', load)).not.toBe(geometry);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('evicts model payloads without changing their page-content token', async () => {
+    const cache = new PageCache(2), load = vi.fn(async () => page('a'));
+    const version = cache.version('doc', 'a');
+    await cache.describe('doc', 'a', load);
+    await cache.describe('doc', 'b', async () => page('b'));
+    await cache.describe('doc', 'c', async () => page('c'));
+    expect(cache.version('doc', 'a')).toBe(version);
+    await cache.describe('doc', 'a', load);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(cache.version('doc', 'a')).toBe(version);
+  });
+
+  it('returns but does not retain models beyond the byte budget', async () => {
+    const cache = new PageCache(32, 1), load = vi.fn(async () => page('a'));
+    expect((await cache.describe('doc', 'a', load)).id).toBe('a');
+    await cache.describe('doc', 'a', load);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['commit', 'close', 'clear'] as const)('does not refill invalidated entries after %s', async operation => {
     const cache = new PageCache();
     let resolve!: (value: PageModel) => void;
