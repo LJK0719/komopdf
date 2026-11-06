@@ -2,24 +2,24 @@
   "schemaVersion": 1,
   "product": "komopdf",
   "channel": "stable",
-  "version": "0.1.21",
-  "publishedAt": "2026-11-05T05:42:02Z",
-  "releaseUrl": "https://github.com/LJK0719/komopdf-releases/releases/tag/v0.1.21",
+  "version": "0.1.23",
+  "publishedAt": "2026-11-06T07:59:56Z",
+  "releaseUrl": "https://github.com/LJK0719/komopdf-releases/releases/tag/v0.1.23",
   "artifacts": [
     {
       "target": "windows-x64",
-      "name": "komopdf-0.1.21-windows-x64-setup.exe",
-      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.21/komopdf-0.1.21-windows-x64-setup.exe",
-      "sha256": "63087ab179eaf559b6452c61db3d16bb7bd9fe529311341df4641076973e5beb",
-      "bytes": 482328391,
+      "name": "komopdf-0.1.23-windows-x64-setup.exe",
+      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.23/komopdf-0.1.23-windows-x64-setup.exe",
+      "sha256": "89e9fa48fc1ff62c26fbf8c93397bc534e5c5e34a36f1c3d0162534a1b142445",
+      "bytes": 482239389,
       "minimumOs": "Windows 10 22H2 or later, 64-bit"
     },
     {
       "target": "macos-arm64",
-      "name": "komopdf-0.1.21-macos-arm64.dmg",
-      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.21/komopdf-0.1.21-macos-arm64.dmg",
-      "sha256": "c68180e9e02dc511d78506d24205fd836adb3018da71418f814f3d755569f9e4",
-      "bytes": 319064641,
+      "name": "komopdf-0.1.23-macos-arm64.dmg",
+      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.23/komopdf-0.1.23-macos-arm64.dmg",
+      "sha256": "5a082358363483ea828994997849b5911a7ce192ed74207c0e139958c80259fd",
+      "bytes": 294032233,
       "minimumOs": "macOS 13.0 or later, Apple Silicon"
     }
   ]
