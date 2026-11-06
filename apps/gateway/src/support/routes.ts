@@ -55,7 +55,7 @@ export function registerSupport(app: FastifyInstance, options: SupportOptions, a
       await identity(request,reply); rate.take(`chat:${request.ip}`,20);
       const body = supportObject(request.body); const locale = normalizeUiLocale(String(body.locale || 'en')) || 'en';
       const controller = new AbortController(); reply.raw.once('close', () => controller.abort());
-      const response = await supportChat(body,locale,options.environment,controller.signal);
+      const response = await supportChat(body,locale,options.environment,controller.signal,supportCopy(locale));
       reply.type('text/plain; charset=utf-8');
       return reply.send(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream));
     } catch (error) { return fail(reply,error); }

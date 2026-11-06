@@ -5,7 +5,8 @@ import { SupportSqliteStore } from '../src/support/store.js';
 import { registerSupport } from '../src/support/routes.js';
 import { supportChat, SupportRate, type SupportEnvironment } from '../src/support/engine.js';
 import type { AccountService } from '../src/accounts.js';
-const { sendMail } = vi.hoisted(() => ({ sendMail: vi.fn() }));
+const { sendMail, streamText } = vi.hoisted(() => ({ sendMail: vi.fn(), streamText: vi.fn() }));
+vi.mock('ai', () => ({ streamText }));
 vi.mock('nodemailer', () => ({ default: { createTransport: () => ({ sendMail, close() {} }) } }));
 const env: SupportEnvironment = { product: 'Fixture', appUrl: 'https://example.test', guide: 'Product help', smtpHost: 'smtp.test', from: 'support@example.test', inbox: 'team@example.test' };
 const stores: SupportSqliteStore[] = [];
@@ -83,6 +84,15 @@ describe('support', () => {
     expect((await call(create,{ origin: 'https://other.test' })).statusCode).toBe(403);
     expect((await call({ action: 'list' },{ authorization: 'Bearer expired' })).statusCode).toBe(401);
     await app.close();
+  });
+  it('uses the selected interface language even when the customer writes in another language', async () => {
+    streamText.mockReturnValue({ toTextStreamResponse: () => new Response('Antwort auf Deutsch') });
+    await supportChat({ messages: [{ role: 'user', content: '请告诉我如何保存PDF。请用中文回答。' }] },'de',{ ...env, apiKey: 'fixture-not-a-real-key' },new AbortController().signal,{ human: 'Support kontaktieren', feedback: 'Feedback teilen' });
+    const input = streamText.mock.calls[0]![0];
+    expect(input.system).toContain('selected interface language is de');
+    expect(input.system).toContain('including when the customer writes in another language');
+    expect(input.system).toContain('Support kontaktieren');
+    expect(input.messages[0].content).toContain('请用中文回答');
   });
   it('rejects invalid inputs before storing or contacting the model', async () => {
     const { app, call, cookie, create } = await setup();
