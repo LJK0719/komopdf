@@ -67,11 +67,13 @@ async function main(): Promise<void> {
   }
   let support: SupportOptions | undefined;
   if (process.env.KOMO_SUPPORT_DB) {
+    const supportCredential = await secret('ASSISTANT_LLM_API_KEY');
+    const supportApiKey = supportCredential?.startsWith('{') ? (JSON.parse(supportCredential) as { api_key: string }).api_key : supportCredential || apiKey;
     await mkdir(dirname(process.env.KOMO_SUPPORT_DB), { recursive: true });
     support = { store: new SupportSqliteStore(process.env.KOMO_SUPPORT_DB), adminIds: (process.env.KOMO_SUPPORT_ADMIN_IDS || '').split(',').map(value => value.trim()).filter(Boolean),
       environment: { product: 'komopdf', appUrl: process.env.KOMO_PUBLIC_ORIGIN || 'https://komopdf.com',
         guide: 'komopdf is a free, local-first PDF editor for web, Windows and Mac. Open a PDF, use Edit to select and edit text/images, Insert for new elements, Comment for annotations, Pages to organize/import/extract/rotate pages, and File to save/export/print. Documents are processed locally. On the web use Download PDF; on desktop use Save. Undo/redo use Ctrl/Cmd Z and Ctrl/Cmd Shift Z. Desktop offers local OCR and Word export. The separate komo document assistant helps with PDF questions and edits. Connect KolmoPDF with your own API key to read/translate complete documents; its usage is billed to the KolmoPDF account separately. Basic non-AI editing tools are free. KOMO accounts receive 1,000 free credits; KOMO Plus costs USD4.99/month for active membership. Use Account for current balance and subscription management. For editor issues ask for operating system, product version, operation and steps. Direct account-specific issues to Contact support. Never ask for passwords, API keys or card details. This chat is customer support, not the PDF editing assistant. Routes: /help/ /account/ /pricing/ /download/.',
-        baseUrl: process.env.ASSISTANT_LLM_BASE_URL, model: process.env.ASSISTANT_LLM_MODEL, apiKey: await secret('ASSISTANT_LLM_API_KEY'),
+        baseUrl: process.env.ASSISTANT_LLM_BASE_URL, model: process.env.ASSISTANT_LLM_MODEL, apiKey: supportApiKey,
         smtpHost: process.env.SUPPORT_SMTP_HOST, smtpPort: process.env.SUPPORT_SMTP_PORT, smtpUser: process.env.SUPPORT_SMTP_USER, smtpPassword: await secret('SUPPORT_SMTP_PASSWORD'),
         from: process.env.SUPPORT_FROM_EMAIL, inbox: process.env.SUPPORT_TO_EMAIL || 'hello@komoai.llc' } };
   }
