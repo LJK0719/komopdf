@@ -15,10 +15,10 @@ import {
 import type { GatewayConfig } from './config.js';
 import { GeminiNativeAdapter, ProviderError } from './gemini.js';
 import { ImageValidationError, validateImages } from './images.js';
-import type { ProviderAdapter } from './provider-types.js';
+import { mergeUsage, type ProviderAdapter } from './provider-types.js';
 import { finishSse, sendEvent, sendEventBestEffort, splitUtf8, startSse } from './sse.js';
 import { prepareProviderInput } from './templates.js';
-import { isIdentityQuestion, protectKomoIdentity } from './komo-identity.js';
+import { identitySafePrefix, isIdentityQuestion, protectKomoIdentity } from './komo-identity.js';
 import { ReadingAnswerStream } from './reading-answer.js';
 import { OutputValidationError, parseAndValidateResult } from './validation.js';
 import { registerTextActionRoute } from './text-actions.js';
@@ -49,6 +49,7 @@ export type RuntimeLogRecord = {
   hasImage: boolean;
   errorCode?: string | null;
   upstreamStatus?: number;
+  estimatedOutputTokens?: number;
 };
 
 export type GatewayRuntimeLogger = { write(record: RuntimeLogRecord): void };
@@ -278,6 +279,12 @@ function safeError(error: unknown, timeout: boolean): { code: string; message: s
   if (error instanceof ProviderError && error.code === 'CONNECT_TIMEOUT') {
     return { code: 'UPSTREAM_TIMEOUT', message: 'Temporarily unable to connect to AI service', status: 'upstream_timeout' };
   }
+  if (error instanceof ProviderError) {
+    if (error.upstreamStatus === 429) return { code: 'RATE_LIMIT', message: 'AI service is busy. Try again shortly.', status: 'rate_limit' };
+    if (error.upstreamStatus === 413) return { code: 'PAYLOAD_TOO_LARGE', message: 'The request exceeds the AI service limit.', status: 'invalid_request' };
+    if (error.upstreamStatus === 400 || error.upstreamStatus === 422) return { code: 'INVALID_REQUEST', message: 'The AI service could not accept this request.', status: 'invalid_request' };
+    if (error.upstreamStatus === 408 || error.upstreamStatus === 504) return { code: 'UPSTREAM_TIMEOUT', message: 'AI service timed out.', status: 'upstream_timeout' };
+  }
   return { code: 'UPSTREAM_UNAVAILABLE', message: 'AI service temporarily unavailable', status: 'upstream_error' };
 }
 
@@ -313,10 +320,10 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
     charges.set(request, result.lease);
     return result.maxOutput;
   };
-  const settle = (request: FastifyRequest, usage: AiUsage | null, completed: boolean): void => {
+  const settle = (request: FastifyRequest, usage: AiUsage | null, completed: boolean, deliveredOutputTokens = 0): void => {
     const charge = charges.get(request);
     if (charge && options.accounts) {
-      options.accounts.store.settle(charge, usage, completed);
+      options.accounts.store.settle(charge, usage, completed, deliveredOutputTokens);
       charges.delete(request);
     }
   };
@@ -434,6 +441,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
       await reply.code(error.statusCode).send(errorBody(error.code, error.message)); return;
     }
     const prepared = prepareProviderInput(request, outputTokens);
+    let deliveredBytes = 0;
     const controller = new AbortController();
     let clientCancelled = false;
     let finishReason: string | null = null;
@@ -466,15 +474,16 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
             resultBytes += Buffer.byteLength(event.text, 'utf8');
             if (resultBytes > options.config.limits.visibleResultBytes) throw new OutputValidationError('Model visible result exceeds size limit');
             rawResult += event.text;
-            const text = answer.push(event.text);
+            const text = identitySafePrefix(answer.push(event.text));
             if (showAnswer && text.length > emittedText.length) {
               for (const chunk of splitUtf8(text.slice(emittedText.length), OUTBOUND_DELTA_BYTES)) {
                 await sendEvent(reply.raw, { type: 'delta', text: chunk }, controller.signal);
+                deliveredBytes += Buffer.byteLength(chunk, 'utf8');
               }
               emittedText = text;
             }
           } else if (event.type === 'finish') finishReason = event.finishReason;
-          else observedUsage = event.usage;
+          else observedUsage = mergeUsage(observedUsage, event.usage);
         }
       } else {
         const generated = await provider.generate(prepared.input, controller.signal);
@@ -492,9 +501,11 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
         options.config.limits.visibleResultBytes,
       );
       result = protectKomoIdentity(result, request, options.config.provider);
-      if ((request.feature === 'document.ask' || request.feature === 'image.explain') && result.kind === 'answer' && !emittedText) {
-        for (const chunk of splitUtf8(result.text, OUTBOUND_DELTA_BYTES)) {
+      if ((request.feature === 'document.ask' || request.feature === 'image.explain') && result.kind === 'answer') {
+        const remaining = result.text.startsWith(emittedText) ? result.text.slice(emittedText.length) : '';
+        for (const chunk of splitUtf8(remaining, OUTBOUND_DELTA_BYTES)) {
           await sendEvent(reply.raw, { type: 'delta', text: chunk }, controller.signal);
+          deliveredBytes += Buffer.byteLength(chunk, 'utf8');
         }
       }
       await sendEvent(reply.raw, { type: 'result', response: createEnvelope(request, result) }, controller.signal);
@@ -523,7 +534,9 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
         }
       }
     } finally {
-      settle(fastifyRequest, observedUsage, false);
+      // Conservative output-only estimate; do not bill unseen prompt/thinking tokens.
+      const estimatedOutputTokens = Math.ceil(deliveredBytes / 4);
+      settle(fastifyRequest, observedUsage, false, estimatedOutputTokens);
       try {
         await finishSse(reply.raw, controller.signal);
       } catch {
@@ -547,6 +560,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
         status,
         finishReason,
         usage: observedUsage,
+        ...(observedUsage === null && deliveredBytes ? { estimatedOutputTokens } : {}),
         hasImage: imageRoute,
       });
     }

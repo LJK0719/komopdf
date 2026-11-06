@@ -11,12 +11,16 @@ export async function askReading(options: ReadingOptions, texts: readonly string
   const document = options.document;
   const authorization = new DocumentAiAuthorization(document.id);
   authorization.enable(document.sourceIds);
+  // Visual batches carry the full page image; supplementary text must not overflow
+  // the request just because the PDF contains hundreds of tiny text objects.
+  const contextText = texts.filter(text => text.trim()).join('\n\n');
+  const passages = readingTextPassages(visual ? contextText.slice(0, 36_000) : contextText);
   const request = aiRequestSchema.parse({ protocolVersion: 1, requestId: crypto.randomUUID(),
     document: { id: document.id, revision: document.revision }, feature: visual ? 'image.explain' : 'document.summarize',
     instruction: options.instruction, options: {}, context: { scope: 'document', evidence: [], ...visual,
       sourceDocuments: [{ id: document.id, revision: document.revision, name: options.name,
         sourceIds: document.sourceIds, pageIds: document.pageOrder }],
-      referenceEvidence: texts.filter(text => text.trim()).map((text, index) => ({ id: `r${index + 1}`, docId: document.id,
+      referenceEvidence: passages.map(({ text }, index) => ({ id: `r${index + 1}`, docId: document.id,
         revision: document.revision, sourceId: document.sourceIds[0]!, materialId: 'document-reading', kind: 'analysis', text })),
     } });
   const workflow = new AiWorkflow({ endpoint: options.endpoint, authorization, getCurrentDocument: options.currentDocument,
@@ -30,17 +34,26 @@ export async function askReading(options: ReadingOptions, texts: readonly string
   } finally { authorization.revoke(); }
 }
 
+export class PartialReadingError extends Error {
+  constructor(readonly sections: string[]) { super('The summary could not be shortened further. The section results are shown here.'); }
+}
+
 export async function condenseReading(options: ReadingOptions, text: string, budget: number): Promise<string> {
-  let sections = readingTextPassages(text);
-  while (sections.reduce((sum, section) => sum + section.text.length, 0) > budget) {
-    const summaries: { text: string }[] = [];
+  let current = text;
+  let calls = 0;
+  for (let round = 0; current.length > budget; round++) {
+    const sections = readingTextPassages(current);
+    if (round === 4) throw new PartialReadingError(sections.map(section => section.text));
+    const summaries: string[] = [];
     for (const batch of passageBatches(sections)) {
       options.signal.throwIfAborted(); options.onProgress?.('Reading document…');
-      summaries.push({ text: await askReading({ ...options,
-        instruction: `Summarize this part in at most 150 words, retaining the details relevant to the user's question: ${options.instruction}` }, batch.map(section => section.text)) });
+      if (++calls > 128) throw new PartialReadingError(sections.map(section => section.text));
+      summaries.push(await askReading({ ...options,
+        instruction: `Summarize this part in at most ${Math.min(150, Math.max(30, Math.floor(budget / 8)))} words, retaining the details relevant to the user's question: ${options.instruction}` }, batch.map(section => section.text)));
     }
-    if (summaries.length === 1) return summaries[0]!.text;
-    sections = summaries;
+    const next = summaries.join('\n\n');
+    if (next.length > budget && next.length >= current.length * 0.9) throw new PartialReadingError(summaries);
+    current = next;
   }
-  return sections.map(section => section.text).join('\n\n');
+  return current;
 }

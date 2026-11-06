@@ -49,11 +49,16 @@ function ConnectedAccount({ children }: { children: ReactNode }) {
   const currentUser = useRef(userId); currentUser.current = userId;
   const [error, setError] = useState('');
   const authenticatedFetch = useCallback<typeof fetch>(async (input, init) => {
+    const owner = userId;
+    init?.signal?.throwIfAborted();
+    if (currentUser.current !== owner) throw new DOMException('Account changed', 'AbortError');
     const token = await getToken();
+    init?.signal?.throwIfAborted();
+    if (currentUser.current !== owner) throw new DOMException('Account changed', 'AbortError');
     if (!token) return Response.json({ error: { code: 'SIGN_IN_REQUIRED', message: 'Sign in to continue.' } }, { status: 401 });
     const headers = new Headers(init?.headers); headers.set('Authorization', `Bearer ${token}`);
     return fetch(input, { ...init, headers, cache: 'no-store' });
-  }, [getToken]);
+  }, [getToken, userId]);
   const request = useCallback(async (path: string, body?: unknown) => {
     let response: Response;
     try { response = await authenticatedFetch(path, body === undefined ? undefined : {

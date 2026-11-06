@@ -35,9 +35,17 @@ async function mockAccount(page: Page) {
     const session = { id: 'session_ui_test', status: 'active', user, getToken: async () => 'ui-test-only-token',
       lastActiveToken: { jwt: { claims: { sub: user.id, sid: 'session_ui_test' } } } };
     const resources = { client: { id: 'client_ui_test', sessions: [session] }, session, user, organization: null };
-    Object.assign(window, { Clerk: { ...resources, loaded: true, status: 'ready', __internal_lastEmittedResources: resources,
+    const listeners = new Set<(value: unknown) => void>();
+    Object.assign(window, { switchKomoTestAccount: (id: string) => {
+      const nextUser = { ...user, id };
+      const nextSession = { ...session, user: nextUser, id: `session_${id}`,
+        lastActiveToken: { jwt: { claims: { sub: id, sid: `session_${id}` } } } };
+      const next = { ...resources, user: nextUser, session: nextSession, client: { ...resources.client, sessions: [nextSession] } };
+      Object.assign((window as unknown as { Clerk: object }).Clerk, next, { __internal_lastEmittedResources: next });
+      listeners.forEach(listener => listener(next));
+    }, Clerk: { ...resources, loaded: true, status: 'ready', __internal_lastEmittedResources: resources,
       load: async () => {}, addListener: (listener: (value: unknown) => void, options?: { skipInitialEmit?: boolean }) => {
-        if (!options?.skipInitialEmit) listener(resources); return () => {};
+        listeners.add(listener); if (!options?.skipInitialEmit) listener(resources); return () => { listeners.delete(listener); };
       }, on: (event: string, listener: (value: string) => void, options?: { notify?: boolean }) => {
         if (event === 'status' && options?.notify) listener('ready'); return () => {};
       }, off: () => {}, __internal_updateProps: async () => {}, telemetry: { record: () => {} },
@@ -193,6 +201,41 @@ test('a partial answer stays readable and can be continued', async ({ page }) =>
   await expect(chat.getByText('A useful partial answer.', { exact: true })).toBeVisible(); await expect(chat.getByText('Answer paused', { exact: true })).toBeVisible();
   await chat.getByRole('button', { name: 'Continue', exact: true }).click(); await expect(chat.getByText('The continued answer.', { exact: true })).toBeVisible();
   expect(requests[1]!.context.history?.at(-1)).toEqual({ role: 'assistant', text: 'A useful partial answer.' });
+});
+
+test('continuing a partial answer after editing never sends stale history', async ({ page }) => {
+  const requests: AiRequest[] = [];
+  await page.route('**/api/v1/ai/requests', async route => {
+    const request = route.request().postDataJSON() as AiRequest; requests.push(request);
+    await route.fulfill({ contentType: 'text/event-stream', body:
+      `event: accepted\ndata: ${JSON.stringify({ type: 'accepted', requestId: request.requestId })}\n\nevent: delta\ndata: ${JSON.stringify({ type: 'delta', text: 'Old partial facts.' })}\n\n` });
+  });
+  await openPdf(page, false, 1); let chat = await chatOn(page);
+  await chat.getByRole('textbox', { name: 'Message' }).fill('Explain revenue.');
+  await chat.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect(chat.getByRole('button', { name: 'Continue', exact: true })).toBeVisible();
+  await page.getByRole('navigation', { name: 'PDF tools', exact: true }).getByRole('button', { name: 'Pages', exact: true }).click();
+  await page.getByRole('button', { name: 'Rotate right', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Undo \(/ })).toBeEnabled();
+  chat = await chatOn(page);
+  await chat.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(chat.getByText('The original context has changed. Retry with the current version.', { exact: true })).toBeVisible();
+  expect(requests).toHaveLength(1);
+});
+
+test('switching account cancels the old request even when the new profile is unavailable', async ({ page }) => {
+  let calls = 0; const aborted: string[] = [];
+  page.on('requestfailed', request => { if (request.url().includes('/api/v1/ai/requests')) aborted.push(request.url()); });
+  await page.route('**/api/v1/ai/requests', () => { calls++; });
+  await openPdf(page, false, 1); const chat = await chatOn(page);
+  await chat.getByRole('textbox', { name: 'Message' }).fill('Account A private question.');
+  await chat.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(() => calls).toBe(1);
+  await page.route('**/api/account', route => route.fulfill({ status: 503, json: { error: { message: 'Profile unavailable' } } }));
+  await page.evaluate(() => (window as unknown as { switchKomoTestAccount(id: string): void }).switchKomoTestAccount('user_b'));
+  await expect(page.locator('.komo-chat-user')).toHaveCount(0);
+  await expect.poll(() => aborted.length).toBe(1);
+  expect(calls).toBe(1);
 });
 
 test('each PDF keeps its own answers and unfinished draft', async ({ page }) => {

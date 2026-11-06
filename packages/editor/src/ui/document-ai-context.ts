@@ -82,7 +82,7 @@ export function readingTextPassages(text: string): { text: string }[] {
   return splitBlock(text).map(range => ({ text: text.slice(...range) }));
 }
 
-export function selectRelevantPassages<T extends { text: string }>(passages: readonly T[], question: string): T[] {
+export function selectRelevantPassages<T extends { text: string }>(passages: readonly T[], question: string, budget = 36_000, maxPassages = 24): T[] {
   const query = [...new Set(terms(question))];
   if (!query.length) return [];
   const documentTerms = passages.map(passage => terms(passage.text));
@@ -98,8 +98,8 @@ export function selectRelevantPassages<T extends { text: string }>(passages: rea
   const selected: typeof ranked = [];
   let characters = 0;
   for (const item of ranked) {
-    if (selected.length === 24) break;
-    if (characters + item.passage.text.length > 36_000) continue;
+    if (selected.length === maxPassages) break;
+    if (characters + item.passage.text.length > budget) continue;
     selected.push(item);
     characters += item.passage.text.length;
   }
@@ -287,7 +287,7 @@ export async function analyzeFullDocument(options: {
               range: [0, summary.text.length] });
           }
           if (next.length >= level.length) {
-            return { text: 'The document was fully scanned, but its section summaries could not be condensed further. Read each section below.', citations: [] };
+            return { text: level.map(section => section.text).join('\n\n'), citations: [] };
           }
           level = next;
           depth += 1;

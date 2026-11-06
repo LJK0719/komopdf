@@ -61,14 +61,15 @@ export class AccountStore {
       return { lease, maxOutput };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  settle(lease: AccountLease, usage: AiUsage | null, completed: boolean): void {
+  settle(lease: AccountLease, usage: AiUsage | null, completed: boolean, deliveredOutputTokens = 0): void {
     const tokens = usage?.totalTokenCount ?? ((usage?.promptTokenCount ?? 0) +
       (usage?.candidatesTokenCount ?? 0) + (usage?.thoughtsTokenCount ?? 0));
-    // Successful upstreams must report usage. Missing usage consumes the reserved bound;
-    // failures with no observed usage release it. Partial observed usage is still counted.
+    // Preserve explicit zero usage. Cancelled streams without usage only pay the
+    // bounded estimate for output already delivered, never the full reservation.
     const hasUsage = usage && [usage.totalTokenCount, usage.promptTokenCount, usage.candidatesTokenCount, usage.thoughtsTokenCount]
       .some(value => value !== undefined);
-    const charged = Math.max(0, hasUsage ? tokens : (completed ? lease.reserved : 0));
+    const charged = Math.max(0, hasUsage ? tokens : completed ? lease.reserved
+      : Math.min(lease.reserved, Math.max(0, Math.ceil(deliveredOutputTokens))));
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const result = this.db.prepare('INSERT OR IGNORE INTO usage VALUES (?,?,?,?)').run(lease.id, lease.userId, charged, Date.now());

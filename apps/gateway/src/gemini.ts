@@ -8,7 +8,7 @@ import type { GatewayConfig } from './config.js';
 import type { ProviderAdapter, ProviderEvent, ProviderInput, ProviderResult } from './provider-types.js';
 
 export class ProviderError extends Error {
-  constructor(public readonly code: 'CONNECT_TIMEOUT' | 'UPSTREAM_HTTP' | 'UPSTREAM_PROTOCOL' | 'UPSTREAM_LIMIT', message: string) {
+  constructor(public readonly code: 'CONNECT_TIMEOUT' | 'UPSTREAM_HTTP' | 'UPSTREAM_PROTOCOL' | 'UPSTREAM_LIMIT', message: string, public readonly upstreamStatus?: number) {
     super(message);
     this.name = 'ProviderError';
   }
@@ -120,7 +120,7 @@ function usage(metadata: unknown): AiUsage | null {
 async function readJsonResponse(response: IncomingMessage, maxBytes: number): Promise<GeminiPayload> {
   if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
     response.destroy();
-    throw new ProviderError('UPSTREAM_HTTP', 'Upstream returned error status');
+    throw new ProviderError('UPSTREAM_HTTP', 'Upstream returned error status', response.statusCode);
   }
   const contentType = response.headers['content-type'] ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
@@ -153,12 +153,13 @@ function separator(buffer: Buffer): { index: number; length: number } | null {
   return { index: lf, length: 2 };
 }
 
-function parseSseFrame(frame: Buffer): GeminiPayload | null {
+function parseSseFrame(frame: Buffer): GeminiPayload | 'done' | null {
   const data = frame.toString('utf8').split(/\r?\n/)
     .filter(line => line.startsWith('data:'))
     .map(line => line.slice(5).trimStart())
     .join('\n');
-  if (!data || data === '[DONE]') return null;
+  if (data === '[DONE]') return 'done';
+  if (!data) return null;
   try {
     return JSON.parse(data) as GeminiPayload;
   } catch {
@@ -169,7 +170,7 @@ function parseSseFrame(frame: Buffer): GeminiPayload | null {
 async function* readSseResponse(response: IncomingMessage, frameBytes: number, totalBytes: number): AsyncGenerator<GeminiPayload> {
   if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
     response.destroy();
-    throw new ProviderError('UPSTREAM_HTTP', 'Upstream returned error status');
+    throw new ProviderError('UPSTREAM_HTTP', 'Upstream returned error status', response.statusCode);
   }
   const contentType = response.headers['content-type'] ?? '';
   if (!contentType.toLowerCase().includes('text/event-stream')) {
@@ -195,6 +196,7 @@ async function* readSseResponse(response: IncomingMessage, frameBytes: number, t
         throw new ProviderError('UPSTREAM_LIMIT', 'Upstream SSE frame exceeded size limit');
       }
       const payload = parseSseFrame(frame);
+      if (payload === 'done') return;
       if (payload) yield payload;
       boundary = separator(pending);
     }
@@ -209,7 +211,7 @@ async function* readSseResponse(response: IncomingMessage, frameBytes: number, t
       throw new ProviderError('UPSTREAM_LIMIT', 'Upstream SSE frame exceeded size limit');
     }
     const payload = parseSseFrame(pending);
-    if (payload) yield payload;
+    if (payload && payload !== 'done') yield payload;
   }
 }
 
@@ -226,13 +228,30 @@ export class GeminiNativeAdapter implements ProviderAdapter {
   async *stream(input: ProviderInput, signal: AbortSignal): AsyncIterable<ProviderEvent> {
     const url = new URL(`${this.config.provider.baseUrl}/v1beta/models/${encodeURIComponent(this.config.provider.model)}:streamGenerateContent?alt=sse`);
     const response = await openResponse(url, generationBody(input), this.apiKey, signal, this.config.limits.connectTimeoutMs);
-    for await (const payload of readSseResponse(response, this.config.limits.upstreamFrameBytes, this.config.limits.upstreamStreamBytes)) {
-      const text = visibleText(payload);
-      if (text) yield { type: 'text', text };
-      const reason = finishReason(payload);
-      if (reason) yield { type: 'finish', finishReason: reason };
-      const currentUsage = usage(payload.usageMetadata);
-      if (currentUsage) yield { type: 'usage', usage: currentUsage };
+    let finished = false;
+    let settled = false;
+    let trailingUsageTimer: NodeJS.Timeout | undefined;
+    try {
+      for await (const payload of readSseResponse(response, this.config.limits.upstreamFrameBytes, this.config.limits.upstreamStreamBytes)) {
+        const text = visibleText(payload);
+        if (text && !finished) yield { type: 'text', text };
+        const reason = finishReason(payload);
+        if (reason && !finished) {
+          finished = true;
+          yield { type: 'finish', finishReason: reason };
+          // Some proxies send usage in a separate final frame without closing HTTP.
+          trailingUsageTimer = setTimeout(() => { settled = true; response.destroy(); }, 1000);
+          trailingUsageTimer.unref();
+        }
+        const currentUsage = usage(payload.usageMetadata);
+        if (currentUsage) yield { type: 'usage', usage: currentUsage };
+        if (finished && currentUsage?.totalTokenCount !== undefined) return;
+      }
+    } catch (error) {
+      if (!settled || signal.aborted) throw error;
+    } finally {
+      if (trailingUsageTimer) clearTimeout(trailingUsageTimer);
+      response.destroy();
     }
   }
 }

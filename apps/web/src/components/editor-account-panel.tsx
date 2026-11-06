@@ -8,8 +8,8 @@ import '../app/account/account.css';
 function AccountChat({ context, store, onOwner }: { context: EditorAiContext; store: KomoChatStore; onOwner(owner: string | null | undefined): void }) {
   const { userId, account, signedIn, ready, authenticatedFetch, refresh } = useKomoAccount();
   useEffect(() => onOwner(userId), [userId, onOwner]);
-  const identityPending = store.owner != null && (!ready || (signedIn && !account));
-  const sessionOwner = account?.userId ?? (!signedIn && ready ? null : undefined);
+  const identityPending = store.owner != null && !ready;
+  const sessionOwner = userId;
   return <><AccountStrip /><div className="komo-account-chat" hidden={identityPending}><KomoChatPanel store={store} {...(sessionOwner !== undefined ? { sessionOwner } : {})}
     context={{ ...context, handoff: identityPending ? null : context.handoff ?? null,
       disabled: context.disabled || !signedIn || !account || (account.plan === 'free' && account.remainingCredits <= 0) }}

@@ -59,7 +59,10 @@ export async function postAiRequest(options: PostAiRequestOptions): Promise<AiRe
   });
 
   if (!response.ok) {
-    throw new AiClientError('HTTP_ERROR', `AI request failed (HTTP ${response.status})`, response.status);
+    const body = await response.json().catch(() => null) as { error?: { code?: unknown } } | null;
+    const code = body?.error?.code;
+    const known = typeof code === 'string' && /^(INVALID_REQUEST|PAYLOAD_TOO_LARGE|RATE_LIMIT|REQUEST_TIMEOUT|UPSTREAM_TIMEOUT)$/.test(code);
+    throw new AiClientError('HTTP_ERROR', `${known ? `${code}: ` : ''}AI request failed (HTTP ${response.status})`, response.status);
   }
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
   if (!contentType.startsWith('text/event-stream')) {
@@ -74,8 +77,10 @@ export async function postAiRequest(options: PostAiRequestOptions): Promise<AiRe
   let visibleBytes = 0;
   let terminal: 'done' | 'error' | undefined;
 
-  for await (const event of parseAiEventStream(response.body)) {
+  events: for await (const event of parseAiEventStream(response.body)) {
     if (terminal) throw new AiClientError('INVALID_SSE', 'SSE received data after terminal event');
+    if (event.type === 'accepted' || event.type === 'done') assertRequestId(request, event.requestId);
+    if (event.type === 'result') assertResponseIdentity(request, event.response);
     options.onEvent?.(event);
 
     switch (event.type) {
@@ -106,7 +111,7 @@ export async function postAiRequest(options: PostAiRequestOptions): Promise<AiRe
       case 'done':
         assertRequestId(request, event.requestId);
         terminal = 'done';
-        break;
+        break events;
       case 'error':
         terminal = 'error';
         throw new AiClientError('REMOTE_ERROR', `${event.code}: ${event.message}`);

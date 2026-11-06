@@ -3,7 +3,7 @@ import type { EditorAiContext } from './EditorShell.js';
 import type { AiHandoff, AiMaterial } from './text-actions.js';
 import { collectDocumentPassages, type DocumentPassage } from './document-ai-context.js';
 
-export type MaterialDocuments = Pick<EditorAiContext, 'document' | 'documents' | 'getDocumentInfo'>;
+export type MaterialDocuments = Pick<EditorAiContext, 'document' | 'documents' | 'getDocumentInfo'> & { passageCache?: Map<string, DocumentPassage[]> };
 export const MATERIAL_EXPIRED = 'The document changed while preparing your materials. Send again to use the latest version.';
 export const MATERIAL_UPDATE_PROMPT = 'Update material';
 export const MATERIAL_CLOSED = 'This reference PDF is closed. Open it again to continue.';
@@ -121,8 +121,10 @@ export async function materialPassages(material: AiMaterial, context: MaterialDo
   const document = materialDocument(context, material.documentId);
   if (!document || !isMaterialCurrent(material, context)) throw new MaterialContextError(MATERIAL_EXPIRED);
   if (material.kind === 'document') {
-    const passages = await collectDocumentPassages(context.engine, document, signal);
+    const key = JSON.stringify([document.id, document.revision]);
+    const passages = context.passageCache?.get(key) ?? await collectDocumentPassages(context.engine, document, signal);
     if (!isMaterialCurrent(material, context)) throw new MaterialContextError(MATERIAL_EXPIRED);
+    context.passageCache?.set(key, passages);
     return passages;
   }
   if (material.kind === 'text') return [];

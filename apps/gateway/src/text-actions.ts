@@ -163,7 +163,13 @@ export function registerTextActionRoute(app: FastifyInstance, options: {
         await reply.code(504).send(errorBody('REQUEST_TIMEOUT', 'AI request processing timed out'));
       } else if (error instanceof InvalidOutputError) {
         await reply.code(502).send(errorBody('INVALID_MODEL_OUTPUT', 'Unable to finish this request. Please try again.'));
-      } else if (error instanceof ProviderError && error.code === 'CONNECT_TIMEOUT') {
+      } else if (error instanceof ProviderError && error.upstreamStatus === 429) {
+        await reply.code(429).send(errorBody('RATE_LIMIT', 'AI service is busy. Try again shortly.'));
+      } else if (error instanceof ProviderError && error.upstreamStatus === 413) {
+        await reply.code(413).send(errorBody('PAYLOAD_TOO_LARGE', 'The request exceeds the AI service limit.'));
+      } else if (error instanceof ProviderError && (error.upstreamStatus === 400 || error.upstreamStatus === 422)) {
+        await reply.code(400).send(errorBody('INVALID_REQUEST', 'The AI service could not accept this request.'));
+      } else if (error instanceof ProviderError && (error.code === 'CONNECT_TIMEOUT' || error.upstreamStatus === 408 || error.upstreamStatus === 504)) {
         await reply.code(504).send(errorBody('UPSTREAM_TIMEOUT', 'Temporarily unable to connect to AI service'));
       } else {
         await reply.code(502).send(errorBody('UPSTREAM_UNAVAILABLE', 'AI service temporarily unavailable'));

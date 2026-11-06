@@ -10,6 +10,12 @@ export function identityReply(request: AiRequest): AiResult {
     : 'I am komo, the PDF assistant in komopdf. I can help you read documents, summarize content and edit text.' };
 }
 
+// Hold incomplete identity claims until the final citations can be checked.
+export function identitySafePrefix(text: string): string {
+  const claim = /\bI(?: am|'m)\b|\bmy (?:underlying |actual |internal )?model\b|我是|我的(?:底层|实际|内部)?模型|(?:实际|底层|内部)(?:使用的)?模型/iu.exec(text);
+  return text.slice(0, Math.min(claim?.index ?? text.length, Math.max(0, text.length - 160)));
+}
+
 /** Only guard assistant identity claims, never document translations or cited model names. */
 export function protectKomoIdentity(result: AiResult, request: AiRequest, provider: { model: string; displayName: string }): AiResult {
   if (result.kind !== 'answer' && result.kind !== 'clarification') return result;

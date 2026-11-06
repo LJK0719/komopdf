@@ -9,7 +9,9 @@ import { KolmoConnectionForm } from './KolmoConnectionForm.js';
 import { readWithKolmo } from './kolmo-reading.js';
 import { useI18n, localizedPath } from './i18n.js';
 import { CHAT_COPY_RESTRICTED, ChatContextError, prepareChatContext, SCAN_RECOMMENDATION, type ChatScope, type ChatVisualMode } from './komo-chat-context.js';
-import { CHAT_CONTEXT_EXPIRED, attachChatHandoff, canRetryContext, createChatSession, createKomoChatStore, freezeChatRequestContext, synchronizeChatOwner, chatFailure, chatHistory, type KomoChatStore, type ChatSession, type ChatRequestContext, type ChatExchange, type ChatCitation } from './komo-chat-state.js';
+import { PartialReadingError } from './reading-analysis.js';
+import type { DocumentPassage } from './document-ai-context.js';
+import { CHAT_CONTEXT_EXPIRED, attachChatHandoff, canRetryContext, compactChatContext, createChatSession, createKomoChatStore, freezeChatRequestContext, synchronizeChatOwner, chatFailure, chatHistory, type KomoChatStore, type ChatSession, type ChatRequestContext, type ChatExchange, type ChatCitation } from './komo-chat-state.js';
 import { isMaterialCurrent, materialDocument, prepareMaterials, resolveMaterialCitation } from './komo-materials.js';
 import { KomoMaterials } from './KomoMaterials.js';
 import type { AiMaterial } from './text-actions.js';
@@ -103,9 +105,11 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
     void context.saveServiceFile?.({ kind: 'bytes', name: reading.filename, mimeType: 'text/markdown;charset=utf-8',
       bytes: new TextEncoder().encode(reading.text).buffer }, reading.jobId).catch(() => setNotice('Unable to download this file.'));
   };
-  const send = async (question = instruction, nextScope = scope, nextVisualMode = visualMode, retry?: ChatRequestContext, continuation?: ChatExchange) => {
+  const send = async (question = instruction, nextScope = scope, nextVisualMode = visualMode, retry?: ChatRequestContext, continuation?: ChatExchange, intent?: 'summary') => {
     const prompt = question.trim();
     if (!canSend || !prompt || controller.current || !context.document) return;
+    if (continuation && !retryIsCurrent(continuation.requestContext)) { setNotice(CHAT_CONTEXT_EXPIRED); return; }
+    const passageCache = new Map<string, DocumentPassage[]>();
     if (nextScope === 'document' && /\b(this|current) page\b|当前页|本页/iu.test(prompt)) nextScope = 'page';
     const targetId = context.document.id;
     const abort = new AbortController(); controller.current = abort;
@@ -115,7 +119,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
       if (context.draftDirty && await context.finishDrafts?.() !== true) throw new ChatContextError('Unable to finish the current text edit.');
       abort.signal.throwIfAborted();
       if (!retry) {
-        const prepared = await prepareMaterials(materials, { ...latest.current, getDocumentInfo: getDocument }, abort.signal);
+        const prepared = await prepareMaterials(materials, { ...latest.current, getDocumentInfo: getDocument, passageCache }, abort.signal);
         if (!prepared) { controller.current = null; setBusy(false); return; }
         nextMaterials = prepared;
         patch({ materials: prepared });
@@ -131,7 +135,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
     let saved = retry && retryIsCurrent(retry) ? retry : freezeChatRequestContext({
       documentId: document.id, revision: document.revision, scope: nextScope,
       pageId: context.pageId ?? context.page?.id ?? document.pageOrder[0] ?? null,
-      selectedIds: [...context.selectedIds], visualMode: nextVisualMode, materials: nextMaterials, history,
+      selectedIds: [...context.selectedIds], visualMode: nextVisualMode, materials: nextMaterials, history, ...(intent ? { intent } : {}),
     });
     const id = crypto.randomUUID();
     updateSession(previous => ({ ...previous, ...(question === instruction ? { instruction: '' } : {}),
@@ -144,8 +148,8 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
           : saved.pageId ? await context.engine.describePage(document.id, saved.pageId) : null;
         abort.signal.throwIfAborted();
         prepared = await prepareChatContext({ engine: context.engine, document, page, currentPageId: saved.pageId ?? document.pageOrder[0]!, selectedIds: saved.selectedIds,
-          scope: saved.scope, visualMode: saved.visualMode, instruction: prompt, history: saved.history ?? [], signal: abort.signal,
-          materials: saved.materials ?? [], materialContext: { ...context, getDocumentInfo: getDocument }, name: materialName,
+          scope: saved.scope, visualMode: saved.visualMode, ...(saved.intent ? { intent: saved.intent } : {}), instruction: prompt, history: saved.history ?? [], signal: abort.signal,
+          materials: saved.materials ?? [], materialContext: { ...context, getDocumentInfo: getDocument, passageCache }, name: materialName,
           ...(reading ? { reading } : {}), ...(session.sourceContext ? { sourceContext: session.sourceContext } : {}),
           readDocument: () => readWithKolmo(latest.current, abort.signal, () => update(id, { progress: 'Reading document…' })),
           endpoint, ...(fetch ? { fetch } : {}), onProgress: () => update(id, { progress: 'Reading document…' }),
@@ -165,7 +169,11 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
       });
       let partial = '';
       const outcome = await workflow.run({ request: prepared.request, snapshot: prepared.snapshot, sourceIds: prepared.sourceIds, signal: abort.signal,
-        onDelta: text => { partial += text; update(id, { answer: partial.replace(/\[(?:e|r)\d+\]/g, '') }); } });
+        onDelta: text => {
+          if (abort.signal.aborted) return;
+          if (!retryIsCurrent(saved)) { abort.abort(); return; }
+          partial += text; update(id, { answer: partial.replace(/\[(?:e|r)\d+\]/g, '') });
+        } });
       abort.signal.throwIfAborted();
       const result = outcome.response.result;
       if (result.kind !== 'answer' && result.kind !== 'clarification') throw new Error('Unable to finish this answer.');
@@ -183,12 +191,15 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
         if (!citations.some(citation => citation.documentId === document.id && citation.pageNumber === pageNumber)) citations.push({ documentId: document.id,
           revision: document.revision, name: materialName, pageId: document.pageOrder[pageNumber - 1]!, pageNumber });
       }
-      update(id, { status: 'complete', answer: result.kind === 'answer' ? result.text : result.question, citations });
+      update(id, { status: 'complete', answer: result.kind === 'answer' ? result.text : result.question, citations,
+        requestContext: compactChatContext(saved) });
     } catch (caught) {
       if (abort.signal.aborted) update(id, { status: 'cancelled' });
       else {
         if (caught instanceof ChatContextError) patch({ scanned: caught.scanned });
-        update(id, { status: 'failed', failure: chatFailure(caught) });
+        update(id, { status: 'failed', ...(caught instanceof PartialReadingError
+          ? { answer: caught.sections.join('\n\n'), failure: { message: caught.message, retryable: false } }
+          : { failure: chatFailure(caught) }) });
       }
     } finally { controller.current = null; setBusy(false); onComplete?.(); }
   };
@@ -234,7 +245,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
       }}>
         {!exchanges.length && <div className="komo-chat-empty"><h3>{t('Ask about this PDF')}</h3><p>{t('Ask a question, explore an idea, or get a summary.')}</p>
           <div className="komo-chat-suggestions">{['Summarize this document', 'What are the key takeaways?'].map(prompt =>
-            <button type="button" key={prompt} disabled={!canSend} onClick={() => void send(t(prompt))}>{t(prompt)}</button>)}</div></div>}
+            <button type="button" key={prompt} disabled={!canSend} onClick={() => void send(t(prompt), scope, visualMode, undefined, undefined, 'summary')}>{t(prompt)}</button>)}</div></div>}
         {exchanges.map(exchange => <div className="komo-chat-exchange" key={exchange.id}>
           <article className="komo-chat-message komo-chat-user"><strong>{t('You')}</strong><p>{exchange.prompt}</p></article>
           <article className="komo-chat-message komo-chat-assistant" aria-busy={exchange.status === 'pending'}><strong translate="no">komo</strong>
@@ -263,7 +274,7 @@ function Chat({ context, endpoint = '/api/v1/ai/requests', fetch, disabledReason
       </div>
       {readingBusy && <div className="komo-reading-progress" role="status"><span>{t('Reading document…')}</span>
         {typeof readingJob?.progress === 'number' && <progress max="100" value={readingJob.progress} />}
-        <button type="button" className="text-button" onClick={() => { readingController.current?.abort(); if (readingJob) void context.aiServices?.cancelKolmoJob(readingJob.id); }}>{t('Stop')}</button></div>}
+        <button type="button" className="text-button" onClick={() => { readingController.current?.abort(); }}>{t('Stop')}</button></div>}
       {newAnswer && <button type="button" className="komo-new-answer" onClick={() => {
         followLatest.current = true; setNewAnswer(false); if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight;
       }}>{t('New answer · scroll to latest')}</button>}

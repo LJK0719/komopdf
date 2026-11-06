@@ -6,7 +6,8 @@ import type { AiHandoff, AiMaterial } from './text-actions.js';
 
 export type ChatRequestContext = {
   documentId: string; revision: number; scope: ChatScope; pageId: string | null;
-  selectedIds: string[]; visualMode: ChatVisualMode;
+  selectedIds: string[]; visualMode: ChatVisualMode; intent?: 'summary';
+  sources?: { id: string; revision: number; generated: boolean }[];
   materials?: AiMaterial[]; history?: ChatTurn[]; prepared?: PreparedChatContext;
 };
 type RetryDocument = { id: string; revision: number; pageOrder: readonly string[]; permissions?: { copy: boolean } };
@@ -16,11 +17,12 @@ export function canRetryContext(saved: ChatRequestContext | undefined, document:
     || (saved.scope !== 'document' && (!saved.pageId || !document.pageOrder.includes(saved.pageId)))
     || (saved.scope === 'selection' && !saved.selectedIds.length)) return false;
   const request = saved.prepared?.request;
-  const sources = request?.context.sourceDocuments?.filter(source => request.context.referenceEvidence?.some(evidence => evidence.docId === source.id && evidence.revision === source.revision && evidence.kind !== 'generated'))
-    ?? saved.materials?.filter(material => material.kind !== 'text').map(material => ({ id: material.documentId, revision: material.revision })) ?? [];
+  const sources = saved.sources ?? request?.context.sourceDocuments?.map(source => ({ id: source.id, revision: source.revision,
+    generated: !request.context.referenceEvidence?.some(evidence => evidence.docId === source.id && evidence.revision === source.revision && evidence.kind !== 'generated') }))
+    ?? saved.materials?.map(material => ({ id: material.documentId, revision: material.revision, generated: material.kind === 'text' })) ?? [];
   return sources.every(source => {
     const current = source.id === document.id ? document : getDocument?.(source.id);
-    return !!current && current.revision === source.revision && current.permissions?.copy !== false;
+    return !!current && (source.generated || current.revision === source.revision) && current.permissions?.copy !== false;
   });
 }
 export type ChatSession = {
@@ -61,6 +63,15 @@ export function freezeChatRequestContext(context: ChatRequestContext): ChatReque
     materials: Object.freeze(freezeMaterials(context.materials ?? [])) as unknown as AiMaterial[] });
 }
 
+export function compactChatContext(saved: ChatRequestContext): ChatRequestContext {
+  const request = saved.prepared?.request;
+  const sources = request?.context.sourceDocuments?.map(source => ({ id: source.id, revision: source.revision,
+    generated: !request.context.referenceEvidence?.some(evidence => evidence.docId === source.id && evidence.revision === source.revision && evidence.kind !== 'generated') }))
+    ?? saved.sources ?? saved.materials?.map(material => ({ id: material.documentId, revision: material.revision, generated: material.kind === 'text' })) ?? [];
+  const { prepared: _prepared, materials: _materials, history: _history, ...identity } = saved;
+  return { ...identity, sources };
+}
+
 export type ChatCitation = {
   pageId?: string; pageNumber?: number; blockId?: string; range?: { start: number; end: number };
   documentId?: string; revision?: number; name?: string; materialId?: string; kind?: 'source' | 'generated' | 'analysis'; role?: 'attached' | 'result';
@@ -88,7 +99,7 @@ export function chatFailure(error: unknown): ChatFailure {
     if (error.status === 402) return { message: 'Not enough credits. Open Account to continue.', action: 'account', retryable: false };
     if (error.status === 429 || /^(IP_RATE_LIMIT|RATE_LIMIT|IP_CONCURRENCY_LIMIT):/.test(error.message)) return { message: 'komo is receiving too many requests. Wait a moment, then retry this question.' };
     if (error.status === 413 || /^(INVALID_REQUEST|PAYLOAD_TOO_LARGE):/.test(error.message)) return { message: 'This request is too large or its context is unsupported. Choose the current page and try again.', action: 'page' };
-    if (error.status === 504 || /^REQUEST_TIMEOUT:/.test(error.message)) return { message: 'komo took too long to respond. Retry this question or choose a smaller scope.' };
+    if (error.status === 504 || /^(REQUEST_TIMEOUT|UPSTREAM_TIMEOUT):/.test(error.message)) return { message: 'komo took too long to respond. Retry this question or choose a smaller scope.' };
     if (error.code === 'INVALID_SSE' || error.code === 'TRUNCATED_SSE' || error.code === 'MISSING_RESULT' || /^INVALID_MODEL_OUTPUT:/.test(error.message)) return { message: 'The connection was interrupted. Continue the answer or try again.' };
   }
   return { message: 'komo is temporarily unavailable. Your question is kept here; try again later.' };

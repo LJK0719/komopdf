@@ -32,14 +32,27 @@ function prefix(text: string, limit: number): string {
   }
   return text.slice(0, end);
 }
-export function relevantContextPassages(passages: readonly DocumentPassage[], question: string, budget: number): DocumentPassage[] {
-  if (passages.reduce((sum, passage) => sum + passage.text.length, 0) <= budget) return [...passages];
-  const relevant = selectRelevantPassages(passages, question);
-  const candidates = relevant.length ? relevant : passages;
+export function relevantContextPassages(passages: readonly DocumentPassage[], question: string, budget: number, maxPassages = 256): DocumentPassage[] {
+  if (passages.length <= maxPassages && passages.reduce((sum, passage) => sum + passage.text.length, 0) <= budget) return [...passages];
+  // Split before ranking so a large high-scoring block can fit the actual budget.
+  const pieces = passages.flatMap(passage => {
+    if (passage.text.length <= budget) return [passage];
+    const result: DocumentPassage[] = [];
+    let start = 0;
+    while (start < passage.text.length) {
+      const text = prefix(passage.text.slice(start), budget);
+      if (!text) break;
+      result.push({ ...passage, text, range: [passage.range[0] + start, passage.range[0] + start + text.length] });
+      start += text.length;
+    }
+    return result;
+  });
+  const relevant = selectRelevantPassages(pieces, question, budget, maxPassages);
+  const candidates = relevant.length ? relevant : pieces;
   const selected: DocumentPassage[] = [];
   let remaining = budget;
   for (const passage of candidates) {
-    if (remaining <= 0) break;
+    if (remaining <= 0 || selected.length >= maxPassages) break;
     const text = prefix(passage.text, remaining);
     if (!text) continue;
     selected.push({ ...passage, text, range: [passage.range[0], passage.range[0] + text.length] });
@@ -51,7 +64,7 @@ export function relevantContextPassages(passages: readonly DocumentPassage[], qu
 export async function prepareChatContext(options: {
   engine: EngineAdapter; document: DocumentInfo; page: PageModel | null; currentPageId?: string;
   selectedIds: readonly string[]; scope: ChatScope; instruction: string;
-  visualMode?: ChatVisualMode; history: readonly ChatTurn[]; signal: AbortSignal;
+  visualMode?: ChatVisualMode; intent?: 'summary'; history: readonly ChatTurn[]; signal: AbortSignal;
   materials?: readonly AiMaterial[]; materialContext?: MaterialDocuments; name?: string;
   reading?: DocumentReading; sourceContext?: ChatSourceContext; readDocument?(): Promise<DocumentReading | null>;
   endpoint?: string; fetch?: typeof fetch; onProgress?(message: string): void;
@@ -97,34 +110,41 @@ export async function prepareChatContext(options: {
     assertCurrent(document);
   }
   const materials = options.materials ?? [];
-  const budget = Math.max(1000, Math.floor(CHAT_TEXT_LIMIT / (materials.length + 1)));
-  const fullQuestion = needsFullDocument(options.instruction);
+  if (materials.length > 15) throw new ChatContextError('This question includes too much material. Remove an attachment and try again.');
+  const budget = Math.floor(CHAT_TEXT_LIMIT / (materials.length + 1));
+  const referenceLimit = Math.max(1, Math.floor(250 / Math.max(1, materials.length)) - 3);
+  const fullQuestion = options.intent === 'summary' || needsFullDocument(options.instruction);
   const referenceEvidence: ReferenceEvidence[] = [];
   const sourceDocuments = new Map<string, AiSourceDocument>();
   const coverage: { documentId: string; name: string; kind: 'full' | 'excerpts' | 'analysis'; pages: number[]; pagesScanned: number }[] = [];
   const sourceIds = new Set(document.sourceIds);
   const declare = (source: DocumentInfo, name: string, kind: 'full' | 'excerpts' | 'analysis', pages: number[], pagesScanned: number) => {
-    sourceDocuments.set(JSON.stringify([source.id, source.revision]), { id: source.id, revision: source.revision, name,
-      sourceIds: [...source.sourceIds], pageIds: [...source.pageOrder], coverage: { kind, pageNumbers: pages, pagesScanned } });
+    const key = JSON.stringify([source.id, source.revision]);
+    const previous = sourceDocuments.get(key);
+    sourceDocuments.set(key, { id: source.id, revision: source.revision, name,
+      sourceIds: [...new Set([...(previous?.sourceIds ?? []), ...source.sourceIds])],
+      pageIds: source.pageOrder.length ? [...source.pageOrder] : previous?.pageIds ?? [],
+      coverage: !source.pageOrder.length && previous?.coverage ? previous.coverage
+        : { kind, pageNumbers: pages, pagesScanned } });
     source.sourceIds.forEach(id => sourceIds.add(id));
     coverage.push({ documentId: source.id, name, kind, pages, pagesScanned });
   };
   const mainName = options.name || 'Current PDF';
-  const readingOptions = () => {
+  const readingOptions = (source = document, name = mainName) => {
     if (!options.endpoint) throw new ChatContextError('Unable to connect to komo.');
-    return { document, name: mainName, endpoint: options.endpoint, ...(options.fetch ? { fetch: options.fetch } : {}),
-      signal, currentDocument: () => assertCurrent(document), instruction: options.instruction,
+    return { document: source, name, endpoint: options.endpoint, ...(options.fetch ? { fetch: options.fetch } : {}),
+      signal, currentDocument: () => assertCurrent(source), instruction: options.instruction,
       ...(options.onProgress ? { onProgress: options.onProgress } : {}) };
   };
   const referenceText = (text: string, materialId: string) => referenceEvidence.push({ id: `r${referenceEvidence.length + 1}`,
     docId: document.id, revision: document.revision, sourceId: document.sourceIds[0]!, materialId, kind: 'analysis', text });
-  const analyze = async (source: DocumentInfo, name: string, materialId: string) => {
+  const analyze = async (source: DocumentInfo, name: string, materialId: string, sourcePassages?: DocumentPassage[]) => {
     if (!options.endpoint) throw new ChatContextError('Unable to connect to komo.');
     const authorization = new DocumentAiAuthorization(source.id);
     authorization.enable(source.sourceIds);
     try {
       const analysis = await analyzeFullDocument({ engine, document: source, authorization,
-        ...(source.id === document.id ? { passages } : {}),
+        ...(source.id === document.id ? { passages } : sourcePassages ? { passages: sourcePassages } : {}),
         endpoint: options.endpoint, ...(options.fetch ? { fetch: options.fetch } : {}),
         feature: 'document.summarize', instruction: options.instruction, signal,
         currentDocument: () => assertCurrent(source), onProgress: message => options.onProgress?.(message),
@@ -134,13 +154,13 @@ export async function prepareChatContext(options: {
       const sourceId = source.sourceIds[0];
       if (!sourceId) throw new MaterialContextError(MATERIAL_EXPIRED);
       referenceEvidence.push({ id: `r${referenceEvidence.length + 1}`, docId: source.id, revision: source.revision,
-        sourceId, materialId, kind: 'analysis', text: analysis.overview,
+        sourceId, materialId, kind: 'analysis', text: await condenseReading(readingOptions(source, name), analysis.overview, budget),
         ...(location ? { pageId: location.pageId, pageNumber: location.pageNumber, blockId: location.blockId } : {}) });
       declare(source, name, 'analysis', source.pageOrder.map((_, i) => i + 1), analysis.pagesScanned);
     } finally { authorization.revoke(); }
   };
 
-  const primaryTooLong = passages.reduce((sum, passage) => sum + passage.text.length, 0) > budget;
+  const primaryTooLong = passages.length > 256 || passages.reduce((sum, passage) => sum + passage.text.length, 0) > budget;
   let primary = relevantContextPassages(passages, options.instruction, budget);
   if (reading) {
     primary = [];
@@ -148,7 +168,7 @@ export async function prepareChatContext(options: {
     const text = fullQuestion && !complete ? await condenseReading(readingOptions(), reading.text, budget)
       : complete ? reading.text : (() => {
         const sections = readingTextPassages(reading.text);
-        const relevant = selectRelevantPassages(sections, options.instruction);
+        const relevant = selectRelevantPassages(sections, options.instruction, budget);
         return prefix((relevant.length ? relevant : sections).map(section => section.text).join('\n\n'), budget);
       })();
     referenceText(text, `kolmo:${reading.jobId}`);
@@ -163,20 +183,20 @@ export async function prepareChatContext(options: {
     : visualMode === 'always' ? [...pageIds]
       : [...(reading ? [] : scanPageIds), ...(visualQuestion ? [currentPageId, ...primary.map(passage => passage.pageId)] : [])];
   imagePageIds = [...new Set(imagePageIds)].filter(id => pageIds.includes(id));
-  const imagesFor = async (ids: readonly string[]) => {
+  const imagesFor = async (ids: readonly string[], source = document) => {
     const images: NonNullable<AiRequest['context']['images']> = [];
     for (const pageId of ids) {
-      signal.throwIfAborted(); assertCurrent(document);
-      const description = page?.id === pageId ? page : await engine.describePageMetrics(document.id, pageId);
+      signal.throwIfAborted(); assertCurrent(source);
+      const description = source.id === document.id && page?.id === pageId ? page : await engine.describePageMetrics(source.id, pageId);
       const scale = Math.min(1.5, AI_LIMITS.imageLongestEdge / Math.max(description.widthPt, description.heightPt));
-      const render = await engine.render({ docId: document.id, pageId, scale }, { signal });
-      signal.throwIfAborted(); assertCurrent(document);
+      const render = await engine.render({ docId: source.id, pageId, scale }, { signal });
+      signal.throwIfAborted(); assertCurrent(source);
       images.push({ mimeType: 'image/jpeg', data: encodeRenderedImage(render, 'image/jpeg') });
     }
     return images;
   };
   const pagesFor = (ids: readonly string[]) => ids.map(id => ({ id, pageNumber: document.pageOrder.indexOf(id) + 1 }));
-  if (imagePageIds.length > AI_LIMITS.imageCount && (fullQuestion || !passages.length)) {
+  if (imagePageIds.length > AI_LIMITS.imageCount) {
     const summaries: string[] = [];
     for (let offset = 0; offset < imagePageIds.length; offset += AI_LIMITS.imageCount) {
       options.onProgress?.('Reading document…');
@@ -185,6 +205,7 @@ export async function prepareChatContext(options: {
         passages.filter(passage => ids.includes(passage.pageId)).map(passage => passage.text), { images: await imagesFor(ids), pages: pagesFor(ids) }));
     }
     referenceText(await condenseReading(readingOptions(), summaries.join('\n\n'), budget), 'visual-reading');
+    declare(document, mainName, 'analysis', pageIds.map(id => document.pageOrder.indexOf(id) + 1), pageIds.length);
     imagePageIds = [];
   } else imagePageIds = imagePageIds.slice(0, AI_LIMITS.imageCount);
 
@@ -203,17 +224,39 @@ export async function prepareChatContext(options: {
       continue;
     }
     const original = await materialPassages(material, { ...documents, engine }, signal);
-    const tooLong = original.reduce((sum, passage) => sum + passage.text.length, 0) > budget;
-    if (material.kind === 'document' && tooLong && fullQuestion) await analyze(source, material.name, material.id);
+    const tooLong = original.length > referenceLimit || original.reduce((sum, passage) => sum + passage.text.length, 0) > budget;
+    const visualPages: string[] = [];
+    if (material.kind === 'document' && visualMode !== 'text') for (const pageId of source.pageOrder) {
+      signal.throwIfAborted(); assertCurrent(source);
+      const pagePassages = original.filter(passage => passage.pageId === pageId);
+      if (!pagePassages.length || visualMode === 'always'
+        || unrecognizedImageRegions(await engine.describePage(source.id, pageId)).length) visualPages.push(pageId);
+    }
+    if (visualPages.length) {
+      const summaries: string[] = [];
+      for (let offset = 0; offset < visualPages.length; offset += AI_LIMITS.imageCount) {
+        const ids = visualPages.slice(offset, offset + AI_LIMITS.imageCount);
+        summaries.push(await askReading({ ...readingOptions(source, material.name),
+          instruction: `Read these pages and summarize the details relevant to: ${options.instruction}` },
+          original.filter(passage => ids.includes(passage.pageId)).map(passage => passage.text),
+          { images: await imagesFor(ids, source), pages: ids.map(id => ({ id, pageNumber: source.pageOrder.indexOf(id) + 1 })) }));
+      }
+      referenceEvidence.push({ id: `r${referenceEvidence.length + 1}`, docId: source.id, revision: source.revision,
+        sourceId: source.sourceIds[0]!, materialId: material.id, kind: 'analysis',
+        text: await condenseReading(readingOptions(source, material.name), summaries.join('\n\n'), budget) });
+    }
+    if (material.kind === 'document' && tooLong && fullQuestion) await analyze(source, material.name, material.id, original);
     else {
-      const selected = relevantContextPassages(original, options.instruction, budget);
+      const selected = relevantContextPassages(original, options.instruction, visualPages.length ? Math.floor(budget / 2) : budget, referenceLimit);
       for (const passage of selected) referenceEvidence.push({
         id: `r${referenceEvidence.length + 1}`, docId: source.id, revision: source.revision, sourceId: passage.sourceId,
         materialId: material.id, kind: 'source', text: passage.text,
         pageId: passage.pageId, pageNumber: passage.pageNumber, blockId: passage.blockId, characterRange: passage.range,
       });
-      declare(source, material.name, material.kind === 'document' && !tooLong ? 'full' : 'excerpts',
-        [...new Set(selected.map(passage => passage.pageNumber))], material.kind === 'document' ? source.pageOrder.length : new Set(material.locations.map(location => location.pageId)).size);
+      const completeText = selected.reduce((sum, passage) => sum + passage.text.length, 0) === original.reduce((sum, passage) => sum + passage.text.length, 0);
+      declare(source, material.name, visualPages.length ? 'analysis' : material.kind === 'document' && completeText && original.length ? 'full' : 'excerpts',
+        [...new Set([...selected.map(passage => passage.pageNumber), ...visualPages.map(id => source.pageOrder.indexOf(id) + 1)])],
+        material.kind === 'document' ? source.pageOrder.length : new Set(material.locations.map(location => location.pageId)).size);
     }
     if (material.generatedText) {
       const sourceId = source.sourceIds[0];
@@ -239,7 +282,13 @@ export async function prepareChatContext(options: {
     }, instruction: options.instruction, options: {},
   });
   const limit = images.length ? AI_LIMITS.imageBodyBytes : AI_LIMITS.textBodyBytes;
-  if (new TextEncoder().encode(JSON.stringify(request)).length > limit) throw new ChatContextError('This question includes too much material. Remove an attachment and try again.');
+  const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+  const history = request.context.history!;
+  while (history.length && (bytes(history) > 128 * 1024 || bytes(request) > limit)) {
+    history.shift();
+    while (history[0]?.role === 'assistant') history.shift();
+  }
+  if (bytes(request) > limit) throw new ChatContextError('This request is too large or its context is unsupported. Choose the current page and try again.', false, 'page');
   const snapshot = createEvidenceSnapshot(request, primary.map((item, index) => ({ evidenceId: `e${index + 1}`, sourceId: item.sourceId, blockText: item.blockText })));
   return { request, snapshot, scanned: scanPageIds.length > 0, coverage, sourceIds: [...sourceIds], sourceContext, reading,
     pageNumbers: [...new Set(primary.map(item => item.pageNumber))], imagePageNumbers: pagesFor(imagePageIds).map(item => item.pageNumber) };
