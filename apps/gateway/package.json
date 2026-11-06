@@ -11,14 +11,18 @@
     "test": "vitest run test"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.84",
     "@clerk/backend": "^3.23.0",
     "@pdf-editor/contracts": "workspace:*",
+    "ai": "^7.0.162",
     "fastify": "5.12.5",
+    "nodemailer": "^10.3.1",
     "stripe": "^23.0.0",
     "tsx": "4.23.15"
   },
   "devDependencies": {
     "@types/node": "24",
+    "@types/nodemailer": "^8.0.2",
     "typescript": "7.0.2",
     "vitest": "5.0.1"
   }

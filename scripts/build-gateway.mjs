@@ -9,6 +9,7 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node24',
+  banner: { js: "import { createRequire as createNodeRequire } from 'node:module'; const require = createNodeRequire(import.meta.url);" },
   external: ['fastify', '@clerk/backend', 'stripe'],
   logLevel: 'info',
 });

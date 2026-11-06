@@ -2,6 +2,7 @@
 
 import { SiteNav, SiteFooter } from '@/components/navigation';
 import { useI18n } from '@pdf-editor/editor/i18n';
+import { supportCopy } from '@pdf-editor/editor/support-copy';
 
 const sections = [
   ['Working with files', 'Your PDF is opened from your computer. Ordinary editing and saving do not upload it to a cloud drive. Passwords are handled on your device.'],
@@ -13,7 +14,7 @@ const sections = [
 ] as const;
 
 export default function PrivacyPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n(); const support = supportCopy(locale);
   return <main className="site-shell"><SiteNav /><header className="site-page-heading"><span className="site-kicker">{t('Privacy')}</span><h1>{t('Your files. Your control.')}</h1><p>{t('Opening, editing and saving your PDF happens on your device.')}</p></header>
-    <article className="site-prose">{sections.map(([title, text]) => <section key={title}><h2>{t(title)}</h2><p>{t(text)}</p></section>)}<section><h2>{t('Questions about privacy?')}</h2><p><a href="mailto:security@komopdf.com">security@komopdf.com</a></p></section></article><SiteFooter /></main>;
+    <article className="site-prose">{sections.map(([title, text]) => <section key={title}><h2>{t(title)}</h2><p>{t(text)}</p></section>)}<section><h2>{support.privacyTitle}</h2><p>{support.privacyText}</p></section><section><h2>{t('Questions about privacy?')}</h2><p><a href="mailto:security@komopdf.com">security@komopdf.com</a></p></section></article><SiteFooter /></main>;
 }

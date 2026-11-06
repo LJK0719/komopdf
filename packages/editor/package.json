@@ -11,6 +11,11 @@
     "./i18n-resources": "./src/ui/i18n-resources.ts",
     "./web": "./src/host/web-host-adapter.ts",
     "./browser": "./src/browser.ts",
+    "./support-client": "./src/ui/support/types.ts",
+    "./support-copy": "./src/ui/support/copy.ts",
+    "./support-panel": "./src/ui/support/panel.tsx",
+    "./support-admin": "./src/ui/support/admin.tsx",
+    "./support.css": "./src/ui/support/support.css",
     "./tokens.css": "./src/ui/tokens.css",
     "./brand.css": "./brand/brand.css"
   },

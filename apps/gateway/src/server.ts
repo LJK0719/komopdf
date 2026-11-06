@@ -23,6 +23,7 @@ import { ReadingAnswerStream } from './reading-answer.js';
 import { OutputValidationError, parseAndValidateResult } from './validation.js';
 import { registerTextActionRoute } from './text-actions.js';
 import { registerKolmoService } from './kolmo-service.js';
+import { registerSupport } from './support/routes.js';
 
 const ERROR_RESPONSE_SCHEMA = {
   type: 'object',
@@ -52,6 +53,7 @@ export type RuntimeLogRecord = {
 
 export type GatewayRuntimeLogger = { write(record: RuntimeLogRecord): void };
 export type BuildGatewayOptions = {
+  support?: import('./support/routes.js').SupportOptions;
   config: GatewayConfig;
   apiKey?: string;
   provider?: ProviderAdapter;
@@ -397,6 +399,7 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
 
   registerTextActionRoute(app, { provider, limits: options.config.limits, admit: admissionHook(false, false, false) });
   registerKolmoService(app, { admit: admissionHook(false, false, false) });
+  if (options.support) registerSupport(app, options.support, options.accounts);
 
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/api/v1/capabilities', async () => ({

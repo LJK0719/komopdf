@@ -1,0 +1,13 @@
+import l0 from './locales/en.json';
+import l1 from './locales/zh-CN.json';
+import l2 from './locales/zh-TW.json';
+import l3 from './locales/ja.json';
+import l4 from './locales/ko.json';
+import l5 from './locales/de.json';
+import l6 from './locales/fr.json';
+import l7 from './locales/es.json';
+import l8 from './locales/pt-BR.json';
+import l9 from './locales/it.json';
+import l10 from './locales/ru.json';
+const copies: Record<string, typeof l0> = { 'en': l0, 'zh-CN': l1, 'zh-TW': l2, 'ja': l3, 'ko': l4, 'de': l5, 'fr': l6, 'es': l7, 'pt-BR': l8, 'it': l9, 'ru': l10 };
+export const supportCopy = (locale: string) => copies[locale] || copies.en!;
