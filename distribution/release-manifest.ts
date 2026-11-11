@@ -4,6 +4,8 @@ export type DesktopTarget = typeof desktopTargets[number];
 
 export interface DesktopArtifact {
   target: DesktopTarget;
+  /** A platform can retain its last published build during a staggered release. */
+  version?: string;
   name: string;
   url: string;
   sha256: string;
@@ -72,8 +74,12 @@ export function parseReleaseManifest(input: unknown): ReleaseManifest {
     }
     const target = asset.target as DesktopTarget;
     targets.add(target);
-    const name = releaseAssetName(version, target);
-    if (asset.name !== name || asset.url !== releaseAssetUrl(version, name)) {
+    const artifactVersion = asset.version ?? version;
+    if (typeof artifactVersion !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(artifactVersion)) {
+      throw new Error('An installer requires a numeric version.');
+    }
+    const name = releaseAssetName(artifactVersion, target);
+    if (asset.name !== name || asset.url !== releaseAssetUrl(artifactVersion, name)) {
       throw new Error('Installer URLs must refer to the matching version and architecture in the public release repository.');
     }
     if (typeof asset.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sha256) || typeof asset.bytes !== 'number' || !Number.isSafeInteger(asset.bytes) || asset.bytes <= 0) {
@@ -82,7 +88,7 @@ export function parseReleaseManifest(input: unknown): ReleaseManifest {
     if (typeof asset.minimumOs !== 'string' || !asset.minimumOs.trim() || asset.minimumOs.length > 120) {
       throw new Error('An installer requires its minimum OS.');
     }
-    return { target, name, url: asset.url, sha256: asset.sha256, bytes: asset.bytes, minimumOs: asset.minimumOs };
+    return { target, ...(asset.version !== undefined ? { version: artifactVersion } : {}), name, url: asset.url, sha256: asset.sha256, bytes: asset.bytes, minimumOs: asset.minimumOs };
   });
   return { schemaVersion: 1, product: 'komopdf', channel: 'stable', version, publishedAt: value.publishedAt, releaseUrl: value.releaseUrl, artifacts };
 }

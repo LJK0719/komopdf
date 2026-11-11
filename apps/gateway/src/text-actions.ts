@@ -6,6 +6,7 @@ import {
 import type { GatewayConfig } from './config.js';
 import { ProviderError } from './gemini.js';
 import type { ProviderAdapter, ProviderInput } from './provider-types.js';
+import { extractJsonTextPrefix, finishSse, sendJsonEvent, startSse } from './sse.js';
 
 const ACTION_INSTRUCTIONS: Record<TextAction, string> = {
   assist: 'Help with the selected text according to the user instruction. For questions, explanations or summaries return kind="answer". For proofreading, rewriting, shortening or other requested text edits return kind="replacement" and only the revised passage in each segment. Reply in the language of the user instruction; preserve the source language when editing unless translation is requested.',
@@ -101,6 +102,7 @@ function errorBody(code: string, message: string) {
 
 export function registerTextActionRoute(app: FastifyInstance, options: {
   provider: ProviderAdapter;
+  translationProvider?: ProviderAdapter;
   limits: GatewayConfig['limits'];
   admit: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
 }): void {
@@ -149,31 +151,61 @@ export function registerTextActionRoute(app: FastifyInstance, options: {
     };
     fastifyRequest.raw.once('aborted', cancel);
     reply.raw.once('close', cancel);
+    const streaming = parsed.data.action === 'translate' && parsed.data.segments.length === 1
+      && fastifyRequest.headers.accept?.includes('text/event-stream');
+    const provider = parsed.data.action === 'translate' ? options.translationProvider ?? options.provider : options.provider;
+    const input = prepareInput(parsed.data, options.limits.textActionOutputTokens ?? options.limits.maxOutputTokens);
     try {
       if (fastifyRequest.raw.aborted || reply.raw.destroyed) cancel();
       controller.signal.throwIfAborted();
-      const generated = await options.provider.generate(prepareInput(parsed.data, options.limits.textActionOutputTokens ?? options.limits.maxOutputTokens), controller.signal);
-      controller.signal.throwIfAborted();
-      if (generated.finishReason !== 'STOP') throw new InvalidOutputError();
-      const result = validateOutput(generated.text, parsed.data, options.limits.visibleResultBytes);
-      await reply.send(result);
+      if (streaming) {
+        reply.hijack();
+        startSse(reply.raw);
+        let text = '', preview = '', finishReason: string | null = null, bytes = 0;
+        for await (const event of provider.stream(input, controller.signal)) {
+          controller.signal.throwIfAborted();
+          if (event.type === 'finish') finishReason = event.finishReason;
+          if (event.type !== 'text') continue;
+          bytes += Buffer.byteLength(event.text, 'utf8');
+          if (bytes > options.limits.visibleResultBytes) throw new InvalidOutputError();
+          text += event.text;
+          const segments = /"segments"\s*:\s*\[/.exec(text);
+          const next = segments ? extractJsonTextPrefix(text.slice(segments.index + segments[0].length)) : null;
+          if (next && next.startsWith(preview) && next.length > preview.length) {
+            const delta = { type: 'delta', text: next.slice(preview.length) };
+            await sendJsonEvent(reply.raw, delta, controller.signal);
+            preview = next;
+          }
+        }
+        controller.signal.throwIfAborted();
+        if (finishReason !== 'STOP') throw new InvalidOutputError();
+        const completed = { type: 'result', result: validateOutput(text, parsed.data, options.limits.visibleResultBytes) };
+        await sendJsonEvent(reply.raw, completed, controller.signal);
+        await finishSse(reply.raw, controller.signal);
+      } else {
+        const generated = await provider.generate(input, controller.signal);
+        controller.signal.throwIfAborted();
+        if (generated.finishReason !== 'STOP') throw new InvalidOutputError();
+        await reply.send(validateOutput(generated.text, parsed.data, options.limits.visibleResultBytes));
+      }
     } catch (error) {
       if (fastifyRequest.raw.aborted || reply.raw.destroyed) return;
+      let status = 502, body = errorBody('UPSTREAM_UNAVAILABLE', 'AI service temporarily unavailable');
       if (controller.signal.reason instanceof RequestTimeoutError) {
-        await reply.code(504).send(errorBody('REQUEST_TIMEOUT', 'AI request processing timed out'));
+        status = 504; body = errorBody('REQUEST_TIMEOUT', 'AI request processing timed out');
       } else if (error instanceof InvalidOutputError) {
-        await reply.code(502).send(errorBody('INVALID_MODEL_OUTPUT', 'Unable to finish this request. Please try again.'));
+        body = errorBody('INVALID_MODEL_OUTPUT', 'Unable to finish this request. Please try again.');
       } else if (error instanceof ProviderError && error.upstreamStatus === 429) {
-        await reply.code(429).send(errorBody('RATE_LIMIT', 'AI service is busy. Try again shortly.'));
+        status = 429; body = errorBody('RATE_LIMIT', 'AI service is busy. Try again shortly.');
       } else if (error instanceof ProviderError && error.upstreamStatus === 413) {
-        await reply.code(413).send(errorBody('PAYLOAD_TOO_LARGE', 'The request exceeds the AI service limit.'));
+        status = 413; body = errorBody('PAYLOAD_TOO_LARGE', 'The request exceeds the AI service limit.');
       } else if (error instanceof ProviderError && (error.upstreamStatus === 400 || error.upstreamStatus === 422)) {
-        await reply.code(400).send(errorBody('INVALID_REQUEST', 'The AI service could not accept this request.'));
+        status = 400; body = errorBody('INVALID_REQUEST', 'The AI service could not accept this request.');
       } else if (error instanceof ProviderError && (error.code === 'CONNECT_TIMEOUT' || error.upstreamStatus === 408 || error.upstreamStatus === 504)) {
-        await reply.code(504).send(errorBody('UPSTREAM_TIMEOUT', 'Temporarily unable to connect to AI service'));
-      } else {
-        await reply.code(502).send(errorBody('UPSTREAM_UNAVAILABLE', 'AI service temporarily unavailable'));
+        status = 504; body = errorBody('UPSTREAM_TIMEOUT', 'Temporarily unable to connect to AI service');
       }
+      if (reply.raw.headersSent) reply.raw.end(`event: error\ndata: ${JSON.stringify({ type: 'error', ...body })}\n\n`);
+      else await reply.code(status).send(body);
     } finally {
       clearTimeout(timeout);
       fastifyRequest.raw.removeListener('aborted', cancel);

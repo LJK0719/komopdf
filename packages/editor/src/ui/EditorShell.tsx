@@ -47,6 +47,7 @@ import { OcrPanel } from './OcrPanel.js';
 import { PdfSearchPanel } from './PdfSearchPanel.js';
 import { PagePlacementLayer, type PagePlacementRequest } from './PagePlacementLayer.js';
 import { PageThumbnail } from './PageThumbnail.js';
+import { DocumentOutline } from './DocumentOutline.js';
 import { PageOrganizer, PageContextMenu, usePageTools, type PageAction } from './PageOrganizer.js';
 import { captureReadingSelection, type TextSelectionTarget } from './PdfTextLayer.js';
 import { textActionSelection, textActionTarget, selectionMaterial, type TextActionSelection, type AiMaterial, type AiHandoff } from './text-actions.js';
@@ -268,6 +269,7 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
   const searchLocationSequence = useRef(0);
   const [outline, setOutline] = useState<OutlineEntry[]>([]);
   const [outlineError, setOutlineError] = useState(false);
+  const [outlineLoading, setOutlineLoading] = useState(false);
   const [pageAnnotationData, setPageAnnotationData] = useState<{ docId: string; pageId: string; version: number;
     items: import('@pdf-editor/contracts').PdfAnnotationInfo[] } | null>(null);
   const [editPending, setEditPending] = useState(false);
@@ -368,11 +370,12 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
     const info = document?.info;
     setOutline([]);
     setOutlineError(false);
+    setOutlineLoading(Boolean(info && engine.describeOutline));
     if (!info || !engine.describeOutline) return;
     let cancelled = false;
     void engine.describeOutline(info.id).then(entries => {
       if (!cancelled) setOutline(entries);
-    }).catch(() => { if (!cancelled) setOutlineError(true); });
+    }).catch(() => { if (!cancelled) setOutlineError(true); }).finally(() => { if (!cancelled) setOutlineLoading(false); });
     return () => { cancelled = true; };
   }, [engine, document?.info.id, outlineOrder]);
 
@@ -1668,11 +1671,11 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
           <IconButton label="Pages" disabled={!document} aria-pressed={railOpen && railTab === 'pages'} onClick={() => { setRailTab('pages'); setRailOpen(!railOpen || railTab !== 'pages'); }}><LayoutGrid size={18} /></IconButton>
           <IconButton label="Bookmarks" disabled={!document} aria-pressed={railOpen && railTab === 'bookmarks'} onClick={() => { setRailTab('bookmarks'); setRailOpen(!railOpen || railTab !== 'bookmarks'); }}><Bookmark size={18} /></IconButton>
         </nav>
-        <aside className="page-rail" aria-label={t(railTab === 'files' ? 'Files' : 'Pages')} hidden={!railVisible}>
+        <aside className="page-rail" aria-label={t(railTab === 'files' ? 'Files' : railTab === 'pages' ? 'Pages' : 'Bookmarks')} hidden={!railVisible}>
           {hasWorkspace && <div className="workspace-rail-content" hidden={railTab !== 'files'}>{workspacePanel}</div>}
           <div className="rail-heading" hidden={railTab === 'files'}>
             <span>{t(railTab === 'pages' ? "Pages" : "Bookmarks")}</span>
-            <small>{document?.info.pageOrder.length ?? 0}</small>
+            <small>{railTab === 'bookmarks' ? outline.length : document?.info.pageOrder.length ?? 0}</small>
           </div>
           <div className="page-list" hidden={railTab !== 'pages'}>
             {document ? document.info.pageOrder.map((pageId, index) => (
@@ -1690,18 +1693,11 @@ export function EditorShell({ engine, host, preferenceOwner, productName = 'komo
               <div className="rail-empty">—</div>
             )}
           </div>
-          <nav hidden={railTab !== 'bookmarks'} className="bookmark-list" aria-label={t("PDF bookmarks")}>
-            <strong>{t("Bookmarks")}</strong>
-            {outlineError ? <span role="status">{t("Bookmarks could not be read")}</span> : outline.map((entry, index) =>
-              <button type="button" key={`${index}-${entry.title}`} disabled={!entry.pageId || navigationBusy || previewActive}
-                style={{ paddingLeft: `${6 + Math.min(entry.level, 5) * 8}px` }}
-                aria-label={t('Go to bookmark {title}', { title: entry.title || t('Untitled') })}
-                title={entry.title || t("Untitled")}
-                onClick={() => { if (entry.pageId) void switchPage(entry.pageId); }}>
-                {entry.title || t("Untitled")}
-              </button>)}
-            {!outline.length && !outlineError && <span>{t("No bookmarks in this document.")}</span>}
-          </nav>
+          <div className="outline-panel" hidden={railTab !== 'bookmarks'}>
+            <DocumentOutline key={document?.info.id} entries={outline} pageOrder={document?.info.pageOrder ?? []}
+              currentPageId={document?.page.id} disabled={navigationBusy || previewActive} loading={outlineLoading} error={outlineError}
+              onNavigate={pageId => { void switchPage(pageId); }} />
+          </div>
         </aside>
 
         <section ref={stageRef} hidden={previewActive} className={`canvas-stage ${dragOver ? 'is-dragging' : ''} ${pointer === 'hand' ? 'hand-tool' : ''}`}

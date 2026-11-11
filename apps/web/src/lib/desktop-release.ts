@@ -14,6 +14,7 @@ export {
   type DesktopArtifact,
   type DesktopTarget,
 };
+export { releasePageUrl } from '../../../../distribution/release-manifest';
 
 export interface TargetMetadata {
   target: DesktopTarget;

@@ -38,7 +38,7 @@ export type KolmoSavedJob = { job: KolmoJob; name: string; createdAt: number; do
 
 /** Services have their own credentials and billing; neither channel launches the document agent. */
 export interface EditorAiServices {
-  textAction(request: TextActionRequest, signal: AbortSignal): Promise<TextActionResult>;
+  textAction(request: TextActionRequest, signal: AbortSignal, onDelta?: (text: string) => void): Promise<TextActionResult>;
   kolmoConnection(signal?: AbortSignal): Promise<KolmoConnection>;
   configureKolmo(key: string): Promise<KolmoConnection>;
   subscribeKolmoConnection?(listener: () => void): Promise<() => void>;

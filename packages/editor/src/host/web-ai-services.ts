@@ -51,13 +51,33 @@ export class WebAiServices implements EditorAiServices {
     } catch { /* Retain current-session service access when storage is unavailable. */ }
   }
 
-  async textAction(request: TextActionRequest, signal: AbortSignal): Promise<TextActionResult> {
+  async textAction(request: TextActionRequest, signal: AbortSignal, onDelta?: (text: string) => void): Promise<TextActionResult> {
     signal.throwIfAborted();
     const body = JSON.stringify(textActionRequestSchema.parse(request));
     try {
       const response = await this.request('/api/v1/ai/text-actions', { method: 'POST', body,
-        headers: { 'content-type': 'application/json' }, signal });
-      return textActionResultSchema.parse(await response.json());
+        headers: { 'content-type': 'application/json', ...(onDelta ? { accept: 'text/event-stream' } : {}) }, signal });
+      if (!response.headers.get('content-type')?.includes('text/event-stream')) return textActionResultSchema.parse(await response.json());
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('The AI service returned an invalid response. Try again.');
+      const decoder = new TextDecoder();
+      let pending = '';
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          signal.throwIfAborted();
+          pending += decoder.decode(value, { stream: !done });
+          const lines = pending.split('\n'); pending = lines.pop()!;
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            const event = JSON.parse(line.slice(5)) as { type: string; text?: string; result?: unknown; error?: { message: string } };
+            if (event.type === 'error') throw new Error(event.error?.message ?? 'AI service temporarily unavailable');
+            if (event.type === 'result') return textActionResultSchema.parse(event.result);
+            if (event.type === 'delta' && typeof event.text === 'string') onDelta?.(event.text);
+          }
+          if (done) throw new Error('The AI service returned an invalid response. Try again.');
+        }
+      } finally { await reader.cancel(); reader.releaseLock(); }
     } catch (error) {
       if (!signal.aborted && error instanceof TypeError) throw new Error('Unable to connect to the AI service. Check your connection and try again.');
       throw error;

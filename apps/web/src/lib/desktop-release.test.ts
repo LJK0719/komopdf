@@ -15,6 +15,14 @@ describe('desktop-release lib', () => {
     expect(getStableRelease()).toEqual(parseReleaseManifest(stableJson));
   });
 
+  it('retains an explicitly versioned previous platform without relabeling its installer', () => {
+    const mac = stableJson.artifacts.find(artifact => artifact.target === 'macos-arm64')!;
+    const version = 'version' in mac ? mac.version : stableJson.version;
+    const manifest = parseReleaseManifest({ ...stableJson, version: '9.0.0', releaseUrl: 'https://github.com/LJK0719/komopdf-releases/releases/tag/v9.0.0',
+      artifacts: [{ ...mac, version }] });
+    expect(manifest.artifacts[0]).toMatchObject({ version, name: mac.name });
+  });
+
   it('represents an unpublished release without guessed downloads', () => {
     const manifest = getStableRelease({ schemaVersion: 1, product: 'komopdf', channel: 'stable',
       version: null, publishedAt: null, releaseUrl: null, artifacts: [] });

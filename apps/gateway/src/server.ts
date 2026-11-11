@@ -22,6 +22,7 @@ import { identitySafePrefix, isIdentityQuestion, protectKomoIdentity } from './k
 import { ReadingAnswerStream } from './reading-answer.js';
 import { OutputValidationError, parseAndValidateResult } from './validation.js';
 import { registerTextActionRoute } from './text-actions.js';
+import { TranslationProvider } from './translation-provider.js';
 import { registerKolmoService } from './kolmo-service.js';
 import { registerSupport } from './support/routes.js';
 
@@ -404,7 +405,9 @@ export function buildGateway(options: BuildGatewayOptions): FastifyInstance {
     reply.raw.once('close', result.release);
   };
 
-  registerTextActionRoute(app, { provider, limits: options.config.limits, admit: admissionHook(false, false, false) });
+  registerTextActionRoute(app, { provider,
+    translationProvider: options.provider ?? (options.apiKey ? new TranslationProvider(options.config, options.apiKey) : provider),
+    limits: options.config.limits, admit: admissionHook(false, false, false) });
   registerKolmoService(app, { admit: admissionHook(false, false, false) });
   if (options.support) registerSupport(app, options.support, options.accounts);
 

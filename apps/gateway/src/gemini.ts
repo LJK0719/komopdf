@@ -38,7 +38,7 @@ function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new DOMException('Request aborted', 'AbortError');
 }
 
-function openResponse(url: URL, body: Buffer, apiKey: string, signal: AbortSignal, connectTimeoutMs: number): Promise<IncomingMessage> {
+export function openResponse(url: URL, body: Buffer, apiKey: string, signal: AbortSignal, connectTimeoutMs: number, headers: Record<string, string> = {}): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
       method: 'POST',
@@ -46,7 +46,8 @@ function openResponse(url: URL, body: Buffer, apiKey: string, signal: AbortSigna
         accept: url.searchParams.get('alt') === 'sse' ? 'text/event-stream' : 'application/json',
         'content-type': 'application/json',
         'content-length': String(body.byteLength),
-        'x-goog-api-key': apiKey,
+        ...(apiKey ? { 'x-goog-api-key': apiKey } : {}),
+        ...headers,
       },
     });
     let settled = false;
@@ -153,7 +154,7 @@ function separator(buffer: Buffer): { index: number; length: number } | null {
   return { index: lf, length: 2 };
 }
 
-function parseSseFrame(frame: Buffer): GeminiPayload | 'done' | null {
+function parseSseFrame<T>(frame: Buffer): T | 'done' | null {
   const data = frame.toString('utf8').split(/\r?\n/)
     .filter(line => line.startsWith('data:'))
     .map(line => line.slice(5).trimStart())
@@ -161,13 +162,13 @@ function parseSseFrame(frame: Buffer): GeminiPayload | 'done' | null {
   if (data === '[DONE]') return 'done';
   if (!data) return null;
   try {
-    return JSON.parse(data) as GeminiPayload;
+    return JSON.parse(data) as T;
   } catch {
     throw new ProviderError('UPSTREAM_PROTOCOL', 'Upstream SSE frame is not valid JSON');
   }
 }
 
-async function* readSseResponse(response: IncomingMessage, frameBytes: number, totalBytes: number): AsyncGenerator<GeminiPayload> {
+export async function* readSseResponse<T = GeminiPayload>(response: IncomingMessage, frameBytes: number, totalBytes: number): AsyncGenerator<T> {
   if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
     response.destroy();
     throw new ProviderError('UPSTREAM_HTTP', 'Upstream returned error status', response.statusCode);
@@ -195,7 +196,7 @@ async function* readSseResponse(response: IncomingMessage, frameBytes: number, t
         response.destroy();
         throw new ProviderError('UPSTREAM_LIMIT', 'Upstream SSE frame exceeded size limit');
       }
-      const payload = parseSseFrame(frame);
+      const payload = parseSseFrame<T>(frame);
       if (payload === 'done') return;
       if (payload) yield payload;
       boundary = separator(pending);
@@ -210,7 +211,7 @@ async function* readSseResponse(response: IncomingMessage, frameBytes: number, t
       response.destroy();
       throw new ProviderError('UPSTREAM_LIMIT', 'Upstream SSE frame exceeded size limit');
     }
-    const payload = parseSseFrame(pending);
+    const payload = parseSseFrame<T>(pending);
     if (payload && payload !== 'done') yield payload;
   }
 }

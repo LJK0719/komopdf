@@ -59,6 +59,7 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--komo-accent); 
 .editor-ribbon { grid-area: ribbon; }
 .editor-workspace { grid-area: workspace; --navigation-size: 42px; --utility-size: 0px; --rail-size: 180px; --panel-size: 344px; position: relative; display: grid; grid-template-columns: var(--navigation-size) var(--rail-size) minmax(0, 1fr) var(--panel-size); min-width: 0; min-height: 0; overflow: hidden; }
 .editor-workspace[data-rail-tab='files'] { --rail-size: 244px; }
+.editor-workspace[data-rail-tab='bookmarks'] { --rail-size: 260px; }
 .editor-workspace[data-rail='false'] { --rail-size: 0px; }
 .editor-workspace[data-panel='false'] { --panel-size: 0px; }
 .navigation-tools { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; align-items: center; padding: 10px 4px; gap: 8px; background: var(--komo-surface-subtle); border-right: 1px solid var(--line); }
@@ -71,9 +72,19 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--komo-accent); 
 .page-chip { display: flex; flex-direction: column-reverse; align-items: center; gap: 8px; width: 100%; margin-bottom: 14px; padding: 6px; border-radius: 6px; background: transparent; border: 1px solid transparent; font-size: 12px; }
 .page-chip-active { color: var(--accent); background: var(--acid); border-color: var(--accent); }
 .page-thumbnail { display: block; width: 100%; height: auto; min-height: 64px; aspect-ratio: .72; object-fit: contain; background: white; box-shadow: 0 1px 5px #20362a15; border: 1px solid var(--line); }
-.bookmark-list { display: flex; flex-direction: column; grid-row: 2; overflow: auto; padding: 14px; gap: 8px; font-size: 12px; }
-.bookmark-list button { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 7px; background: transparent; border: 0; border-radius: 4px; }
-.bookmark-list button:hover { background: var(--acid); }
+.outline-panel { grid-row: 2; min-height: 0; overflow: auto; }
+.bookmark-list { padding: 8px; font-size: 12px; }
+.outline-branches { list-style: none; padding: 0; margin: 0; }
+.outline-branches .outline-branches { padding-left: 16px; }
+.outline-row { display: flex; align-items: flex-start; min-height: 32px; }
+.bookmark-list button { text-align: left; background: transparent; border: 0; border-radius: 4px; }
+.bookmark-list button:hover:not(:disabled), .outline-link[aria-current='page'] { background: var(--acid); color: var(--accent); }
+.outline-toggle, .outline-spacer { flex: none; width: 24px; height: 32px; }
+.outline-toggle { display: grid; place-items: center; padding: 0; }
+.outline-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
+.outline-link { display: flex; flex: 1; align-items: baseline; gap: 8px; min-width: 0; padding: 8px 6px; line-height: 1.4; }
+.outline-link > span { flex: 1; overflow-wrap: anywhere; }
+.outline-link > small { flex: none; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .workspace-rail-content { grid-row: 1 / -1; min-width: 0; min-height: 0; overflow: auto; }
 .canvas-stage { grid-column: 3; grid-row: 1; position: relative; min-width: 0; min-height: 0; overflow: auto; overflow-anchor: auto; background: var(--canvas); }
 .canvas-stage.is-dragging { outline: 3px dashed var(--accent); outline-offset: -10px; background: var(--acid); }
@@ -187,7 +198,7 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--komo-accent); 
   .save-document-button, .assistant-button, .open-document-button { width: 34px; padding: 7px; }
   .editor-document-tabs { padding-inline: 4px; }
   .document-tab { max-width: 195px; }
-  .editor-workspace, .editor-workspace[data-rail-tab='files'] { --navigation-size: 36px; --rail-size: 0px; --panel-size: 0px; }
+  .editor-workspace, .editor-workspace[data-rail-tab='files'], .editor-workspace[data-rail-tab='bookmarks'] { --navigation-size: 36px; --rail-size: 0px; --panel-size: 0px; }
   .page-rail { position: absolute; inset: 0 auto 0 36px; z-index: 15; width: min(260px, calc(100% - 36px)); box-shadow: 8px 0 24px #193c3215; }
   .inspector-panel, .editor-workspace[data-ai-panel='true'][data-ai-overlay='true'] .inspector-panel { position: absolute; inset: 0 0 0 36px; grid-column: 1 / -1; z-index: 20; width: auto; max-width: calc(100% - 36px); box-shadow: none; }
   .editor-workspace[data-panel='true'][data-ai-panel='true'] { --panel-size: 0px; }

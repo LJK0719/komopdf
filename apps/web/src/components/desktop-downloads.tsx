@@ -5,7 +5,7 @@ import { Monitor, Apple, Globe, Download, ArrowRight } from 'lucide-react';
 import { SiteNav, SiteFooter } from './navigation';
 import { useI18n } from '@pdf-editor/editor/i18n';
 import { localizedPath } from '@pdf-editor/editor/i18n-locales';
-import { type ReleaseManifest, desktopTargets, TARGET_METADATA, getArtifactForTarget } from '@/lib/desktop-release';
+import { type ReleaseManifest, desktopTargets, TARGET_METADATA, getArtifactForTarget, releasePageUrl } from '@/lib/desktop-release';
 
 export function DesktopDownloads({ manifest }: { manifest: ReleaseManifest }) {
   const { t, locale } = useI18n();
@@ -16,7 +16,7 @@ export function DesktopDownloads({ manifest }: { manifest: ReleaseManifest }) {
       {availableTargets.map(target => {
         const meta = TARGET_METADATA[target]; const artifact = getArtifactForTarget(manifest, target)!; const Icon = meta.platform === 'windows' ? Monitor : Apple;
         return <article key={target} className="download-card"><Icon size={28} strokeWidth={1.6} aria-hidden="true" /><h2>{meta.title}</h2><p>{meta.platform === 'windows' ? t('For your Windows PC.') : target.includes('arm64') ? t('For Mac with Apple silicon.') : t('For Mac with an Intel processor.')}</p><small>{artifact.minimumOs ?? meta.defaultMinimumOs}</small>
-          <p className="download-version">{t('Version {version}', { version: manifest.version! })}{manifest.releaseUrl ? <> · <a href={manifest.releaseUrl} target="_blank" rel="noreferrer">{t('Release notes')}</a></> : null}</p><a href={artifact.url} download={artifact.name} className="site-button site-button-primary"><Download size={16} aria-hidden="true" />{t('Download')}</a>
+          <p className="download-version">{t('Version {version}', { version: artifact.version ?? manifest.version! })}{manifest.releaseUrl ? <> · <a href={releasePageUrl(artifact.version ?? manifest.version!)} target="_blank" rel="noreferrer">{t('Release notes')}</a></> : null}</p><a href={artifact.url} download={artifact.name} className="site-button site-button-primary"><Download size={16} aria-hidden="true" />{t('Download')}</a>
         </article>;
       })}</section>
     {!availableTargets.length ? <p className="download-note">{t('No desktop release is available right now. You can use the web editor.')}</p> : null}

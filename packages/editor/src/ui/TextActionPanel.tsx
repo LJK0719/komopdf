@@ -27,6 +27,7 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
   const [targetLanguage, setTargetLanguage] = useState(() => preferredAiLanguage(locale, preferenceOwner));
   const [choosingLanguage, setChoosingLanguage] = useState(isTranslation);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [preview, setPreview] = useState('');
   const [showOriginal, setShowOriginal] = useState(false);
   const preferenceState = useRef({ owner: preferenceOwner, edited: false, save: false });
   useEffect(() => {
@@ -72,13 +73,14 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
   const run = async () => {
     if (controller.current || disabled || !document.permissions.copy || (custom && !instruction.trim())) return;
     const abort = new AbortController(); controller.current = abort;
-    setBusy(true); setError(''); setNotice(''); setLayout({});
+    setBusy(true); setError(''); setNotice(''); setLayout({}); setOutcome(null); setPreview('');
     try {
       const unit = units[0];
       if (!unit?.text.trim()) throw new Error('Select text to continue.');
       const response = await services.textAction({ requestId: crypto.randomUUID(), action,
         ...(custom ? { instruction: instruction.trim() } : {}),
-        segments: [{ id: unit.id, text: unit.text }], sourceLanguage: 'auto', targetLanguage, tone: 'neutral' }, abort.signal);
+        segments: [{ id: unit.id, text: unit.text }], sourceLanguage: 'auto', targetLanguage, tone: 'neutral' }, abort.signal,
+        isTranslation ? delta => { if (mounted.current && !abort.signal.aborted) setPreview(previous => previous + delta); } : undefined);
       abort.signal.throwIfAborted();
       const result = response.segments.find(item => item.id === unit.id);
       if (!result?.text.trim()) throw new Error('Unable to finish this request. Please try again.');
@@ -196,7 +198,10 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
               <button type="submit" className="button button-primary" disabled={busy || disabled || !instruction.trim()}><ArrowUp size={15} />{t('Send')}</button>
             </form></>}
           {busy && <p role="status">{t('Working…')}</p>}
-          {!outcome && !custom && <div className="ai-pending-source"><strong>{t('Selected text')}</strong><p dir="auto">{units.map(unit => unit.text).join('\n\n')}</p></div>}
+          {busy && preview && <div className="ai-text-result"><article className="ai-text-candidate"><label><span>{t('Translation')}</span>
+            <textarea readOnly dir="auto" aria-label={t('Translation')} value={preview} />
+          </label></article></div>}
+          {!outcome && !custom && !(busy && preview) && <div className="ai-pending-source"><strong>{t('Selected text')}</strong><p dir="auto">{units.map(unit => unit.text).join('\n\n')}</p></div>}
           {outcome && <div className="ai-text-result">
             {isTranslation && <div className="ai-result-actions"><div className="ai-result-language"><label>{t('Target language')}<select aria-label={t('Target language')} value={targetLanguage} disabled={busy} onChange={event => chooseLanguage(event.target.value, true)}>
               {TEXT_LANGUAGES.map(language => <option key={language.code} value={language.code}>{language.name}</option>)}</select></label>

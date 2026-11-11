@@ -127,6 +127,55 @@ describe('text action contracts', () => {
   });
 });
 
+describe('streaming translation', () => {
+  it('delivers translated text before the model finishes and returns one validated result', async () => {
+    let unblock!: () => void;
+    const wait = new Promise<void>(resolve => { unblock = resolve; });
+    const provider = fakeProvider({ stream: async function* () {
+      yield { type: 'text', text: '{"segments":[{"id":"s1","text":"你好' };
+      await wait;
+      yield { type: 'text', text: '，世界。"}],"detectedLanguage":"en"}' };
+      yield { type: 'finish', finishReason: 'STOP' };
+    } });
+    const { app } = fixture(provider);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address(); if (!address || typeof address === 'string') throw new Error('Missing address');
+    const response = await fetch(`http://127.0.0.1:${address.port}${url}`, { method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify(requestBody) });
+    expect(response.headers.get('x-accel-buffering')).toBe('no');
+    const reader = response.body!.getReader(), decoder = new TextDecoder();
+    let text = '';
+    try {
+      while (!text.includes('你好')) { const chunk = await reader.read(); if (chunk.done) break; text += decoder.decode(chunk.value, { stream: true }); }
+      expect(text).toContain('"type":"delta","text":"你好"');
+      expect(text).not.toContain('event: result');
+    } finally { unblock(); }
+    while (true) { const chunk = await reader.read(); if (chunk.done) break; text += decoder.decode(chunk.value, { stream: true }); }
+    const events = text.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)));
+    expect(events.filter(event => event.type === 'delta').map(event => event.text).join('')).toBe('你好，世界。');
+    expect(events.at(-1)).toEqual({ type: 'result', result: resultBody });
+    expect(provider.generate).not.toHaveBeenCalled();
+  });
+
+  it.each(['MAX_TOKENS', 'error', 'timeout'])('does not promote a partial %s response to a completed result', async mode => {
+    const provider = fakeProvider({ stream: async function* (_input, signal) {
+      yield { type: 'text', text: '{"segments":[{"id":"s1","text":"Partial' };
+      if (mode === 'error') throw new Error('secret upstream details');
+      if (mode === 'timeout') await new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      yield { type: 'finish', finishReason: 'MAX_TOKENS' };
+    } });
+    const { app } = fixture(provider, { requestTimeoutMs: 25, perIpInFlight: 1 });
+    for (let i = 0; i < 2; i++) {
+      const response = await app.inject({ method: 'POST', url, payload: requestBody, headers: { accept: 'text/event-stream' } });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('event: delta');
+      expect(response.body).toContain('event: error');
+      expect(response.body).not.toContain('event: result');
+      expect(response.body).not.toContain('secret upstream details');
+    }
+  });
+});
+
 describe('anonymous, unbilled text action route', () => {
   const templates = [
     ['translate', 'Translate the complete selected text faithfully'],

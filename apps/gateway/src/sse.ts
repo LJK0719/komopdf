@@ -27,9 +27,13 @@ export function startSse(response: ServerResponse): void {
 }
 
 export async function sendEvent(response: ServerResponse, event: AiEvent, signal: AbortSignal): Promise<void> {
+  await sendJsonEvent(response, aiEventSchema.parse(event), signal);
+}
+
+export async function sendJsonEvent(response: ServerResponse, event: { type: string }, signal: AbortSignal): Promise<void> {
   if (signal.aborted) throw abortReason(signal);
   if (response.destroyed || response.writableEnded) throw new SseClosedError();
-  if (response.write(eventFrame(event))) return;
+  if (response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)) return;
 
   await new Promise<void>((resolve, reject) => {
     const cleanup = (): void => {
@@ -113,6 +117,13 @@ export function extractAnswerTextPrefix(json: string): string | null {
   const answer = /"kind"\s*:\s*"answer"/.exec(json);
   const match = /"text"\s*:\s*"/.exec(json);
   if (!answer || !match || answer.index > match.index) return null;
+  return extractJsonTextPrefix(json);
+}
+
+/** Preview only; the completed JSON is still validated before it becomes an actionable result. */
+export function extractJsonTextPrefix(json: string): string | null {
+  const match = /"text"\s*:\s*"/.exec(json);
+  if (!match) return null;
   let index = match.index + match[0].length;
   let output = '';
   while (index < json.length) {

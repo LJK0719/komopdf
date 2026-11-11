@@ -15,6 +15,28 @@ function memoryStorage() {
 const balance = () => Response.json({ configured: true, points: 90 });
 
 describe('WebAiServices', () => {
+  it('streams UTF-8 translation previews before completion and rejects unfinished streams', async () => {
+    const request: TextActionRequest = { requestId: 'one', action: 'translate', sourceLanguage: 'auto', targetLanguage: 'zh', tone: 'neutral', segments: [{ id: 's1', text: 'Hello' }] };
+    const result = { ...request, detectedLanguage: 'en', segments: [{ id: 's1', text: '你好😀' }] };
+    const output = { requestId: result.requestId, action: result.action, detectedLanguage: result.detectedLanguage, segments: result.segments };
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(stream, { headers: { 'content-type': 'text/event-stream' } }));
+    const service = new WebAiServices({ fetch: fetcher, storage: null });
+    const delta = vi.fn(); let completed = false;
+    const promise = service.textAction(request, signal(), delta).then(value => { completed = true; return value; });
+    const bytes = new TextEncoder().encode('event: delta\ndata: {"type":"delta","text":"你好😀"}\n\n');
+    for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+    await vi.waitFor(() => expect(delta).toHaveBeenCalledWith('你好😀'));
+    expect(completed).toBe(false);
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({ accept: 'text/event-stream' });
+    controller.enqueue(new TextEncoder().encode(`event: result\ndata: ${JSON.stringify({ type: 'result', result: output })}\n\n`));
+    await expect(promise).resolves.toEqual(output);
+    for (const ending of ['', 'event: error\ndata: {"type":"error","error":{"message":"AI request processing timed out"}}\n\n']) {
+      fetcher.mockResolvedValueOnce(new Response('data: {"type":"delta","text":"partial"}\n\n' + ending, { headers: { 'content-type': 'text/event-stream' } }));
+      await expect(service.textAction(request, signal(), vi.fn())).rejects.toThrow(ending ? 'timed out' : 'invalid response');
+    }
+  });
   it('keeps the connection across reloads, verifies a replacement first and notifies all panels', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
       const key = (init?.headers as Record<string, string>)['x-kolmo-api-key'];
