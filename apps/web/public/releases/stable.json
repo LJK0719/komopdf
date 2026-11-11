@@ -16,11 +16,10 @@
     },
     {
       "target": "macos-arm64",
-      "version": "0.1.23",
-      "name": "komopdf-0.1.23-macos-arm64.dmg",
-      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.23/komopdf-0.1.23-macos-arm64.dmg",
-      "sha256": "5a082358363483ea828994997849b5911a7ce192ed74207c0e139958c80259fd",
-      "bytes": 294032233,
+      "name": "komopdf-0.1.24-macos-arm64.dmg",
+      "url": "https://github.com/LJK0719/komopdf-releases/releases/download/v0.1.24/komopdf-0.1.24-macos-arm64.dmg",
+      "sha256": "7fa67b35e882b0afc96170436159abc353640db302c57bdc1ce9aa48fada4f2f",
+      "bytes": 316894884,
       "minimumOs": "macOS 13.0 or later, Apple Silicon"
     }
   ]
