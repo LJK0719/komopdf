@@ -23,7 +23,7 @@ async function mockServer(handler: (request: IncomingMessage, response: ServerRe
 
 function config(baseUrl: string, overrides: Partial<GatewayConfig['limits']> = {}): GatewayConfig {
   return {
-    provider: { baseUrl, model: 'gemini-3.8-flash-high', displayName: 'Gemini Test' },
+    provider: { baseUrl, model: 'gemini-4-hydrogen-xhigh', displayName: 'Gemini Test' },
     credentialName: 'gemini-api-key',
     limits: {
       inFlight: 12, imageInFlight: 2, perIpInFlight: 2, perIpPerMinute: 60,

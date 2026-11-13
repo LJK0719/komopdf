@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cp, lstat, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { cp, lstat, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,11 +8,16 @@ import { fileURLToPath } from 'node:url';
 if (process.platform !== 'linux') throw new Error('Build the production web/gateway release on Linux (CI or a Linux build host). Windows development builds remain supported.');
 const root = fileURLToPath(new URL('..', import.meta.url));
 const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-const version = process.argv[2] || `v0.1.0-${timestamp}`;
+const args = process.argv.slice(2);
+const force = args.includes('--force');
+const version = args.find(arg => !arg.startsWith('--')) || `v0.1.0-${timestamp}`;
 if (!/^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)) throw new Error('Expected a vMAJOR.MINOR.PATCH release identifier.');
 const stageDir = path.join(root, 'tmp', `release-${version}`);
 const tarPath = `${stageDir}.tar.gz`;
-if (existsSync(stageDir) || existsSync(tarPath)) throw new Error(`Release already exists: ${stageDir}`);
+if (force) {
+  await rm(stageDir, { recursive: true, force: true });
+  await rm(tarPath, { force: true });
+}
 const run = (command, args) => execFileSync(command, args, { cwd: root, stdio: 'inherit' });
 
 console.log('[1/4] Preparing pinned Web engines/fonts and building applications...');

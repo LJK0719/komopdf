@@ -36,7 +36,7 @@ export class DocumentAiAuthorization {
   }
 
   get authorizedSourceIds(): readonly string[] {
-    return Object.freeze([...this.#sourceIds]);
+    return [...this.#sourceIds];
   }
 
   enable(sourceIds: readonly string[]): void {
@@ -52,8 +52,7 @@ export class DocumentAiAuthorization {
   }
 
   missingSourceIds(sourceIds: readonly string[]): readonly string[] {
-    const missing = validateSourceIds(sourceIds).filter(sourceId => !this.#sourceIds.has(sourceId));
-    return Object.freeze(missing);
+    return validateSourceIds(sourceIds).filter(sourceId => !this.#sourceIds.has(sourceId));
   }
 
   isAuthorized(docId: string, sourceIds: readonly string[]): boolean {

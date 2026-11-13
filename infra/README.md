@@ -14,7 +14,7 @@
 
 ## 凭证和绑定
 
-部署前读取账号 registry，绑定实际 VPS、域名与下载资源。不猜测域名或赞助账号。上游使用指定的 `https://gemini.openjk.space` / `gemini-3.8-flash-high`，不替换成 Google 官方域名。
+部署前读取账号 registry，绑定实际 VPS、域名与下载资源。不猜测域名或赞助账号。上游使用指定的 `https://gemini.openjk.space` / `gemini-4-hydrogen-xhigh`，不替换成 Google 官方域名。
 
 密钥由部署过程在内存中从 vault 读取，写入服务器受限凭证文件 `/etc/pdf-editor/credentials/gemini`（目录 0700，文件 root:root 0400），由 `LoadCredential` 注入。不要把实际密钥粘贴进命令行、Shell 历史、项目配置或日志。宿主受限凭证文件本身包含秘密，不能宣传为“密钥从不落盘”。
 

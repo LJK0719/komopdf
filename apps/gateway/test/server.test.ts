@@ -6,7 +6,7 @@ import type { GatewayConfig } from '../src/config.js';
 import type { ProviderAdapter, ProviderEvent, ProviderInput, ProviderResult } from '../src/provider-types.js';
 
 const config: GatewayConfig = {
-  provider: { baseUrl: 'https://example.invalid', model: 'gemini-3.8-flash-high', displayName: 'Gemini Test' },
+  provider: { baseUrl: 'https://example.invalid', model: 'gemini-4-hydrogen-xhigh', displayName: 'Gemini Test' },
   credentialName: 'gemini-api-key',
   limits: {
     inFlight: 12, imageInFlight: 2, perIpInFlight: 2, perIpPerMinute: 60,

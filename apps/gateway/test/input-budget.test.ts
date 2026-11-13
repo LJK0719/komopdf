@@ -9,7 +9,7 @@ import type { ProviderAdapter } from '../src/provider-types.js';
 import { buildGateway } from '../src/server.js';
 
 const config: GatewayConfig = {
-  provider: { baseUrl: 'https://example.invalid', model: 'gemini-3.8-flash-high', displayName: 'test' },
+  provider: { baseUrl: 'https://example.invalid', model: 'gemini-4-hydrogen-xhigh', displayName: 'test' },
   credentialName: 'test',
   limits: { ...AI_LIMITS, agentBodyBytes: AI_LIMITS.imageBodyBytes, upstreamFrameBytes: AI_LIMITS.upstreamBytes,
     upstreamStreamBytes: AI_LIMITS.upstreamBytes * 4, agentMaxOutputTokens: 32_768 },

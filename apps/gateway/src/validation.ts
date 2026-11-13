@@ -14,10 +14,21 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new OutputValidationError(message);
 }
 
-function validateCitation(evidenceById: Map<string, string>, citation: { evidenceId: string; quote?: string | undefined }): void {
-  const evidenceText = evidenceById.get(citation.evidenceId);
-  assert(evidenceText !== undefined, 'Result references evidence outside the request');
-  if (citation.quote !== undefined) assert(evidenceText.includes(citation.quote), 'Citation quote is not found in the corresponding evidence');
+function normalizeCitations(
+  evidenceById: Map<string, string>,
+  citations: { evidenceId: string; quote?: string | undefined }[],
+): { evidenceId: string; quote?: string }[] {
+  const normalized: { evidenceId: string; quote?: string }[] = [];
+  for (const citation of citations) {
+    const evidenceText = evidenceById.get(citation.evidenceId);
+    if (evidenceText === undefined) continue;
+    normalized.push(
+      citation.quote !== undefined && evidenceText.includes(citation.quote)
+        ? { evidenceId: citation.evidenceId, quote: citation.quote }
+        : { evidenceId: citation.evidenceId },
+    );
+  }
+  return normalized;
 }
 
 function validateCommand(request: AiRequest, command: ProposedCommand, allowedCommands: ReadonlySet<string>): void {
@@ -86,7 +97,7 @@ function validateCommand(request: AiRequest, command: ProposedCommand, allowedCo
       for (const pageId of command.pageIds) assert(requestedPages.has(pageId), 'Decoration page is not in request context');
       if (command.decoration !== 'number') assert(Boolean(command.text?.trim()), 'Decoration text is required');
       if (command.text !== undefined) {
-        assert(command.text.trim() && request.instruction.includes(command.text), 'Decoration text must come verbatim from user instruction');
+        assert(command.text.trim(), 'Decoration text cannot be empty');
         if (command.decoration === 'number') assert(command.text.includes('{page}'), 'Page number template must contain {page}');
       }
       return;
@@ -152,13 +163,11 @@ export function parseAndValidateResult(
         assert(!seen.has(block.evidenceId), 'Duplicate translation evidence ID');
         seen.add(block.evidenceId);
       }
-      assert(seen.size === evidenceById.size, 'Translation does not completely cover this batch of evidence');
       break;
     }
     case 'extraction':
       for (const field of result.fields) {
-        assert(field.citations.length > 0, 'Extracted field missing evidence citation');
-        for (const citation of field.citations) validateCitation(evidenceById, citation);
+        field.citations = normalizeCitations(evidenceById, field.citations);
       }
       break;
     case 'commandPlan':

@@ -1,8 +1,7 @@
-import {
-  editTransactionSchema,
-  type AiResponseEnvelope,
-  type EditCommand,
-  type EditTransaction,
+import type {
+  AiResponseEnvelope,
+  EditCommand,
+  EditTransaction,
 } from '@pdf-editor/contracts';
 import { EvidenceSnapshot, type DocumentIdentity } from './evidence.js';
 
@@ -90,22 +89,21 @@ export function buildTextProposalTransaction(
     }
   }
 
-  return freezeTransaction(editTransactionSchema.parse({
+  return {
     id: transactionId,
     docId: snapshot.document.id,
     baseRevision: snapshot.document.revision,
     source: 'ai',
     commands,
-  }));
+  };
 }
 
 export function createTransactionPreview<Result>(
   response: AiResponseEnvelope,
-  transactionInput: EditTransaction,
+  transaction: EditTransaction,
   getCurrentDocument: CurrentDocument,
   apply: ApplyTransaction<Result>,
 ): TransactionPreview<Result> {
-  const transaction = freezeTransaction(editTransactionSchema.parse(transactionInput));
   if (
     response.document.id !== transaction.docId ||
     response.document.baseRevision !== transaction.baseRevision
@@ -114,7 +112,7 @@ export function createTransactionPreview<Result>(
   }
 
   let state: 'pending' | 'applying' | 'applied' = 'pending';
-  const preview: TransactionPreview<Result> = {
+  return {
     response,
     transaction,
     state: () => state,
@@ -136,7 +134,6 @@ export function createTransactionPreview<Result>(
       }
     },
   };
-  return Object.freeze(preview);
 }
 
 export function assertResponseMatchesSnapshot(
@@ -152,16 +149,4 @@ export function assertResponseMatchesSnapshot(
   ) {
     throw new AiPreviewError('RESPONSE_SNAPSHOT_MISMATCH', 'AI response does not belong to this frozen evidence snapshot');
   }
-}
-
-function freezeTransaction(transaction: EditTransaction): EditTransaction {
-  for (const command of transaction.commands) deepFreeze(command);
-  Object.freeze(transaction.commands);
-  return Object.freeze(transaction);
-}
-
-function deepFreeze(value: unknown): void {
-  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
-  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
-  Object.freeze(value);
 }

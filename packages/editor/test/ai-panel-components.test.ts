@@ -60,7 +60,7 @@ describe('分批长任务持久化存储 (IndexedDbTaskStore)', () => {
       taskType: 'document.translate',
       scope: { page: 1 },
       contentFingerprint: 'fp-1',
-      model: 'gemini-3.8-flash-high',
+      model: 'gemini-4-hydrogen-xhigh',
       templateVersion: '1',
       protocolVersion: 1,
       settings: { targetLanguage: 'English' },

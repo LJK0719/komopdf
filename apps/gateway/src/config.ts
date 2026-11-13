@@ -3,8 +3,8 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AI_LIMITS } from '@pdf-editor/contracts';
 
-// Deployment-only model identity; never export it through the browser contracts.
-const AI_MODEL = 'gemini-3.8-flash-high';
+// Deployment-only default model identity; never export it through the browser contracts.
+const AI_MODEL = 'gemini-4-hydrogen-xhigh';
 
 export type GatewayLimits = {
   inFlight: number;
@@ -31,7 +31,7 @@ export type GatewayLimits = {
 export type GatewayConfig = {
   provider: {
     baseUrl: string;
-    model: typeof AI_MODEL;
+    model: string;
     displayName: string;
   };
   credentialName: string;
@@ -88,8 +88,7 @@ export async function loadGatewayConfig(path = DEFAULT_CONFIG_PATH): Promise<Gat
   if (baseUrl.protocol !== 'https:' || baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) {
     throw new Error('provider.baseUrl must be an HTTPS URL without credentials, query parameters, or hash');
   }
-  const model = stringField(provider, 'model');
-  if (model !== AI_MODEL) throw new Error(`provider.model must be ${AI_MODEL}`);
+  const model = typeof provider.model === 'string' && provider.model.trim() ? provider.model.trim() : AI_MODEL;
   const credentialName = stringField(root, 'credentialName');
   if (credentialName.includes('/') || credentialName.includes('\\')) throw new Error('credentialName cannot contain path separators');
 

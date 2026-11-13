@@ -21,6 +21,6 @@ Tool pages enter a dedicated workspace when opened. Marketing navigation is hidd
 
 ## Checks
 
-Use the existing TypeScript, Vitest and Playwright commands. Locale tests verify message coverage, parameters, plural forms and generated resource equivalence. Website tests cover static metadata, reciprocal alternatives, 404/noindex behavior, account language selection, unsaved-work navigation and export after switching through all supported languages.
+Use the existing TypeScript, Vitest and Playwright commands (`pnpm typecheck`, `pnpm test`, `pnpm test:browser`). Locale tests verify message coverage, interpolation parameters and generated public resource equivalence.
 
 References: [Google localized pages](https://developers.google.com/search/docs/specialty/international/localized-versions), [Google multilingual sites](https://developers.google.com/search/docs/specialty/international/managing-multi-regional-sites), [Next.js static exports](https://nextjs.org/docs/app/guides/static-exports), [react-i18next SSR](https://react.i18next.com/latest/ssr).

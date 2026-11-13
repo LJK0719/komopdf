@@ -24,23 +24,36 @@ export async function stageFonts(coreRoot, destination, { profile = 'web' } = {}
     if (error.code === 'ENOENT') return [];
     throw error;
   });
+  const previousById = new Map(previous.map(item => [item.id, item]));
   const resources = [];
   const selected = selectPreparedFonts(records, profile);
   if (!selected.some(record => record.id === 'noto-sans-cjk-sc-regular') ||
       !selected.some(record => record.id === 'liberation-sans-regular')) {
     throw new Error('The prepared font library is missing required offline fallback fonts.');
   }
+  const { stat } = await import('node:fs/promises');
+  const copiedLicenses = new Set();
   for (const record of selected) {
-    const input = path.join(coreRoot, record.path);
-    const bytes = await readFile(input);
-    if (bytes.length !== record.bytes || createHash('sha256').update(bytes).digest('hex') !== record.sha256) {
-      throw new Error(`Prepared font does not match its manifest: ${record.id}`);
-    }
     const sourceName = path.parse(record.path);
     const filename = `${sourceName.name}.${record.sha256.slice(0, 16)}${sourceName.ext}`;
     const licenseName = record.licenseOwner === 'lxgw-wenkai' ? 'LXGW-WenKai-OFL.txt' : `${record.licenseOwner}-${path.basename(record.licensePath)}`;
-    await writeFile(path.join(destination, filename), bytes);
-    await copyFile(path.join(coreRoot, record.licensePath), path.join(destination, licenseName));
+    const targetFont = path.join(destination, filename);
+    const prev = previousById.get(record.id);
+    const targetFontStat = await stat(targetFont).catch(() => null);
+    if (!prev || prev.sha256 !== record.sha256 || prev.url !== `/fonts/${filename}` || targetFontStat?.size !== record.bytes) {
+      const bytes = await readFile(path.join(coreRoot, record.path));
+      if (bytes.length !== record.bytes || createHash('sha256').update(bytes).digest('hex') !== record.sha256) {
+        throw new Error(`Prepared font does not match its manifest: ${record.id}`);
+      }
+      await writeFile(targetFont, bytes);
+    }
+    if (!copiedLicenses.has(licenseName)) {
+      const targetLicense = path.join(destination, licenseName);
+      if (!(await stat(targetLicense).catch(() => null))) {
+        await copyFile(path.join(coreRoot, record.licensePath), targetLicense);
+      }
+      copiedLicenses.add(licenseName);
+    }
     const { id, family, style, weight, italic, format, sha256 } = record;
     resources.push({ id, family, style, weight, italic, format, sha256, url: `/fonts/${filename}`, licenseUrl: `/fonts/${licenseName}` });
   }

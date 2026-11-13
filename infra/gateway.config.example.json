@@ -1,8 +1,8 @@
 {
   "provider": {
     "baseUrl": "https://gemini.openjk.space",
-    "model": "gemini-3.8-flash-high",
-    "displayName": "Gemini 3.8 Flash High"
+    "model": "gemini-4-hydrogen-xhigh",
+    "displayName": "Gemini 4 Hydrogen XHigh"
   },
   "credentialName": "gemini-api-key",
   "limits": {

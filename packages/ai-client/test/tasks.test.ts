@@ -46,7 +46,7 @@ async function makeTask(): Promise<LongTaskRecord<Payload, Result>> {
     taskType: 'document.translate',
     scope: { pageIds: ['page-1'] },
     contentFingerprint: 'document-content-hash',
-    model: 'gemini-3.8-flash-high',
+    model: 'gemini-4-hydrogen-xhigh',
     templateVersion: '1',
     protocolVersion: 1,
     settings: { targetLanguage: 'zh' },
@@ -128,7 +128,7 @@ describe('长任务恢复与去重', () => {
     authorization.enable(['source-1']);
     const input = {
       docId: 'doc-1', sourceIds: ['source-1'], taskType: 'document.translate', scope: { scope: 'document' },
-      model: 'gemini-3.8-flash-high', templateVersion: '1', protocolVersion: 1,
+      model: 'gemini-4-hydrogen-xhigh', templateVersion: '1', protocolVersion: 1,
       settings: { targetLanguage: 'zh' },
     };
     const oldTask = await createLongTask<Payload, Result>({ ...input, id: 'old', baseRevision: 1,

@@ -1,5 +1,5 @@
 import { DocumentAiAuthorization, type AuthorizedRequestHandle } from './authorization.js';
-import { hashStableValue, sha256Text } from './hash.js';
+import { stableStringify } from './hash.js';
 
 export type LongTaskStatus = 'paused' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type LongTaskBatchStatus = 'pending' | 'paused' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -79,8 +79,8 @@ export async function createLongTask<Payload, Result = unknown>(
   const batchIds = uniqueNonempty(input.batches.map(batch => batch.id), 'batch id');
   if (batchIds.length !== input.batches.length || batchIds.length === 0) throw new Error('Batch IDs must be unique and non-empty');
 
-  const settingsHash = await hashStableValue(input.settings ?? null);
-  const hashKey = await hashStableValue({
+  const settingsHash = stableStringify(input.settings ?? null);
+  const hashKey = stableStringify({
     taskType: input.taskType,
     contentFingerprint: input.contentFingerprint,
     model: input.model,
@@ -89,7 +89,7 @@ export async function createLongTask<Payload, Result = unknown>(
     settingsHash,
   });
   // 整篇指纹只用于任务快照身份；批次复用不能绑定整篇内容，否则单块修改会让全部批次失效。
-  const batchContextKey = await hashStableValue({
+  const batchContextKey = stableStringify({
     docId: input.docId,
     taskType: input.taskType,
     model: input.model,
@@ -97,13 +97,13 @@ export async function createLongTask<Payload, Result = unknown>(
     protocolVersion: input.protocolVersion,
     settingsHash,
   });
-  const batches = await Promise.all(input.batches.map(async batch => {
-    const contentHash = await sha256Text(batch.content);
-    const payloadHash = await hashStableValue(batch.payload);
+  const batches = input.batches.map(batch => {
+    const contentHash = batch.content;
+    const payloadHash = stableStringify(batch.payload);
     const sourceId = batch.payload && typeof batch.payload === 'object' && 'sourceId' in batch.payload
       ? batch.payload.sourceId : undefined;
     const sourceIdentity = typeof sourceId === 'string' ? sourceId : sourceIds;
-    const cacheKey = await hashStableValue({ batchContextKey, sourceIdentity, contentHash, payloadHash });
+    const cacheKey = stableStringify({ batchContextKey, sourceIdentity, contentHash, payloadHash });
     return {
       id: batch.id,
       content: batch.content,
@@ -113,7 +113,7 @@ export async function createLongTask<Payload, Result = unknown>(
       payload: batch.payload,
       status: 'pending' as const,
     };
-  }));
+  });
 
   return {
     id: input.id,

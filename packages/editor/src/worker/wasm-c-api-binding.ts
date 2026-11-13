@@ -815,11 +815,9 @@ export class CApiWasmEngineAdapter implements EngineAdapter {
     this.requireAbi3();
     if (!this.module._pde_preview_text_insert) throw unsupported('Text box layout preview is unavailable in this core');
     const session = this.document(request.docId);
-    const transaction = editTransactionSchema.parse({ id: 'text-layout-preview', docId: request.docId,
-      baseRevision: request.baseRevision, source: 'manual', commands: [request.command] });
-    const command = transaction.commands[0]!;
+    const command = request.command;
     if (command.type !== 'text.insert' && command.type !== 'text.reflow') throw new EngineError('INVALID_REQUEST', 'Text insertion or reflow command required');
-    if (session.info.revision !== transaction.baseRevision) throw new EngineError('STALE_REVISION', 'Document has changed');
+    if (session.info.revision !== request.baseRevision) throw new EngineError('STALE_REVISION', 'Document has changed');
     if (command.style.fontId) await this.requireFontRegistry().ensureRegistered(command.style.fontId);
     const allocations = new WasmAllocations(this.module);
     try {

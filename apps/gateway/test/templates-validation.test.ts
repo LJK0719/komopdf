@@ -165,8 +165,8 @@ describe('feature templates and output validation', () => {
       .toThrow(/not in request context/);
     expect(() => validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'header' }]))
       .toThrow(/text is required/);
-    expect(() => validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'header', text: 'Invented' }]))
-      .toThrow(/verbatim/);
+    expect(validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'header', text: 'Normalized Header' }]).kind)
+      .toBe('commandPlan');
     expect(() => validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'number', text: 'Project Q3' }]))
       .toThrow(/template must contain/);
     expect(() => validate([{ type: 'pages.decorate', pageIds: ['p1'], decoration: 'footer', text: 'Project Q3',
@@ -174,7 +174,7 @@ describe('feature templates and output validation', () => {
       .toThrow(/output contract/);
   });
 
-  it('requires document translation to cover every evidence ID exactly once', () => {
+  it('allows partial or full translation blocks within requested evidence IDs and rejects unknown IDs', () => {
     const translationRequest: AiRequest = {
       ...request('document.translate'),
       context: {
@@ -186,9 +186,12 @@ describe('feature templates and output validation', () => {
       },
     };
     const prepared = prepareProviderInput(translationRequest, 8192);
-    const incomplete = JSON.stringify({ kind: 'translation', blocks: [{ evidenceId: 'e1', text: 'first translated' }] });
-    expect(() => parseAndValidateResult(incomplete, translationRequest, prepared.expectedKind, prepared.allowedCommands, 1024 * 1024))
-      .toThrow(/completely cover/);
+    const partial = JSON.stringify({ kind: 'translation', blocks: [{ evidenceId: 'e1', text: 'first translated' }] });
+    expect(parseAndValidateResult(partial, translationRequest, prepared.expectedKind, prepared.allowedCommands, 1024 * 1024).kind)
+      .toBe('translation');
+    const foreign = JSON.stringify({ kind: 'translation', blocks: [{ evidenceId: 'unknown', text: 'x' }] });
+    expect(() => parseAndValidateResult(foreign, translationRequest, prepared.expectedKind, prepared.allowedCommands, 1024 * 1024))
+      .toThrow(/outside the request/);
     const complete = JSON.stringify({ kind: 'translation', blocks: [
       { evidenceId: 'e1', text: 'first translated' }, { evidenceId: 'e2', text: 'second translated' },
     ] });

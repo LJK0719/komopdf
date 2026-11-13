@@ -25,12 +25,12 @@ describe('low-effort translation provider', () => {
     servers.push(server);
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing address');
-    const config = { provider: { baseUrl: `http://127.0.0.1:${address.port}`, model: 'gemini-3.8-flash-high' },
+    const config = { provider: { baseUrl: `http://127.0.0.1:${address.port}`, model: 'gemini-4-hydrogen-xhigh' },
       limits: { connectTimeoutMs: 1000, upstreamFrameBytes: 10000, upstreamStreamBytes: 10000 } } as GatewayConfig;
     const events = [];
     for await (const event of new TranslationProvider(config, 'test-key').stream(input, AbortSignal.timeout(2000))) events.push(event);
     expect(events).toEqual([{ type: 'text', text: '你好' }, { type: 'finish', finishReason: 'STOP' }]);
-    expect(received).toEqual({ model: 'gemini-3.8-flash-high', reasoning_effort: 'low', stream: true, max_tokens: 65536,
+    expect(received).toEqual({ model: 'gemini-4-hydrogen-xhigh', reasoning_effort: 'low', stream: true, max_tokens: 65536,
       response_format: { type: 'json_object' }, messages: [{ role: 'system', content: input.systemInstruction }, { role: 'user', content: 'Hello' }] });
   });
 });

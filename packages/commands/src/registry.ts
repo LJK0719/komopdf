@@ -50,8 +50,15 @@ function validatePermission(context: CommandContext, command: EditCommand): void
 }
 
 // 核心仍须在提交队列中复核身份/能力/原子性；这里为手工和 AI 提供同一预览前检查。
-export function validateTransaction(input: unknown, context: CommandContext): EditTransaction {
-  const transaction = editTransactionSchema.parse(input);
+export function validateTransaction(input: EditTransaction | unknown, context: CommandContext): EditTransaction {
+  if (!input || typeof input !== 'object') invalid('Invalid transaction');
+  const candidate = input as EditTransaction;
+  if (typeof candidate.id !== 'string' || !candidate.id || typeof candidate.docId !== 'string' ||
+      !Number.isInteger(candidate.baseRevision) || candidate.baseRevision < 0 ||
+      !Array.isArray(candidate.commands) || candidate.commands.length === 0) {
+    invalid('Invalid transaction');
+  }
+  const transaction = candidate;
   if (transaction.docId !== context.document.id || transaction.baseRevision !== context.document.revision) {
     throw new EngineError('STALE_REVISION', 'Document has changed; please regenerate modifications based on current revision');
   }
@@ -382,6 +389,6 @@ export class CommandRegistry {
       .map(schema => ({ type: schema.shape.type.value, label: labels[schema.shape.type.value], schema }));
   }
   execute(input: unknown, context: CommandContext) {
-    return this.engine.apply(validateTransaction(input, context));
+    return this.engine.apply(validateTransaction(editTransactionSchema.parse(input), context));
   }
 }

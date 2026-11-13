@@ -11,7 +11,7 @@ Use service-native environment files or systemd credentials, outside the reposit
 - `KOMO_SUPPORT_DB`: persistent SQLite path, for example `/var/lib/pdf-editor/support.sqlite`.
 - `KOMO_SUPPORT_ADMIN_IDS`: comma-separated Clerk user IDs allowed to manage support.
 - `ASSISTANT_LLM_BASE_URL`: OpenAI-compatible `/v1` base URL; default `https://gemini.openjk.space/v1`.
-- `ASSISTANT_LLM_MODEL`: default `gemini-3.8-flash-high`.
+- `ASSISTANT_LLM_MODEL`: default `gemini-4-hydrogen-xhigh`.
 - `ASSISTANT_LLM_API_KEY`: environment or same-named systemd credential.
 - `SUPPORT_SMTP_HOST`, `SUPPORT_SMTP_PORT`, `SUPPORT_SMTP_USER`, `SUPPORT_SMTP_PASSWORD`.
 - `SUPPORT_FROM_EMAIL`: SMTP-authorized sender.

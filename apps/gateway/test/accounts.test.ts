@@ -10,7 +10,7 @@ const stores: AccountStore[] = [];
 const apps: ReturnType<typeof buildGateway>[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const app of apps.splice(0)) await app.close(); for (const store of stores.splice(0)) store.close(); });
 function store() { const result = new AccountStore(':memory:'); stores.push(result); return result; }
-const config: GatewayConfig = { provider: { baseUrl: 'https://example.invalid', model: 'gemini-3.8-flash-high', displayName: 'test' }, credentialName: 'test',
+const config: GatewayConfig = { provider: { baseUrl: 'https://example.invalid', model: 'gemini-4-hydrogen-xhigh', displayName: 'test' }, credentialName: 'test',
   limits: { ...AI_LIMITS, agentBodyBytes: AI_LIMITS.imageBodyBytes, upstreamFrameBytes: AI_LIMITS.upstreamBytes,
     upstreamStreamBytes: AI_LIMITS.upstreamBytes * 4, agentMaxOutputTokens: 32_768 } };
 

@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -10,19 +10,27 @@ async function stage(source, destination, desktop) {
   const manifest = JSON.parse(await readFile(path.join(source, 'manifest.json'), 'utf8'));
   const previous = await readFile(path.join(destination, 'manifest.json'), 'utf8')
     .then(JSON.parse).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  const prevByPath = new Map((previous?.files ?? []).map(f => [f.path, f]));
   const files = [];
   for (const file of manifest.files) {
     const name = file.path;
     const selected = name.startsWith('licenses/') || (desktop ? name.startsWith('bin/') : /\.(js|wasm)$/.test(name));
     if (!selected) continue;
-    const bytes = await readFile(path.join(source, name));
-    if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw new Error(`QPDF artifact hash mismatch: ${name}`);
     const relative = desktop && name.startsWith('bin/') ? name.slice(4) : name;
     const target = path.join(destination, relative);
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, bytes);
-    if (desktop && process.platform !== 'win32' && !name.startsWith('licenses/')) {
-      await chmod(target, 0o755);
+    const sourceFile = path.join(source, name);
+    const prev = prevByPath.get(relative);
+    const [sourceStat, targetStat] = await Promise.all([stat(sourceFile), stat(target).catch(() => null)]);
+    if (!prev || prev.sha256 !== file.sha256 || !targetStat || targetStat.size !== sourceStat.size || targetStat.mtimeMs < sourceStat.mtimeMs) {
+      const bytes = await readFile(sourceFile);
+      if (file.sha256 && createHash('sha256').update(bytes).digest('hex') !== file.sha256) {
+        throw new Error(`QPDF artifact hash mismatch: ${name}`);
+      }
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, bytes);
+      if (desktop && process.platform !== 'win32' && !name.startsWith('licenses/')) {
+        await chmod(target, 0o755);
+      }
     }
     files.push({ ...file, path: relative });
   }

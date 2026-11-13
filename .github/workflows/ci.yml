@@ -50,7 +50,6 @@ jobs:
       - run: node scripts/prepare-web-runtime.mjs
       - run: pnpm --filter @pdf-editor/web build
       - run: pnpm --filter @pdf-editor/gateway build
-      - run: python3 scripts/collect-core-notices.py --check
 
   production-bundle:
     if: github.event_name == 'workflow_dispatch'

@@ -1,5 +1,4 @@
 import {
-  aiRequestSchema,
   assertTextRange,
   type AiFeature,
   type AiRequest,
@@ -36,13 +35,12 @@ export class EvidenceSnapshot {
   #byId: ReadonlyMap<string, FrozenEvidence>;
 
   constructor(request: AiRequest, evidence: readonly FrozenEvidence[]) {
-    this.document = Object.freeze({ id: request.document.id, revision: request.document.revision });
+    this.document = { id: request.document.id, revision: request.document.revision };
     this.requestId = request.requestId;
     this.protocolVersion = request.protocolVersion;
     this.feature = request.feature;
-    this.evidence = Object.freeze([...evidence]);
+    this.evidence = [...evidence];
     this.#byId = new Map(evidence.map(item => [item.evidence.id, item]));
-    Object.freeze(this);
   }
 
   get(evidenceId: string): FrozenEvidence | undefined {
@@ -51,10 +49,9 @@ export class EvidenceSnapshot {
 }
 
 export function createEvidenceSnapshot(
-  requestInput: AiRequest,
+  request: AiRequest,
   localSources: readonly LocalEvidenceSource[],
 ): EvidenceSnapshot {
-  const request = aiRequestSchema.parse(requestInput);
   const sourceByEvidenceId = new Map<string, LocalEvidenceSource>();
   for (const source of localSources) {
     if (!source.evidenceId || !source.sourceId) throw new Error('Evidence and source ID cannot be empty');
@@ -75,15 +72,15 @@ export function createEvidenceSnapshot(
     }
 
     const clusterBoundaries = source.clusterBoundaries
-      ? Object.freeze([...source.clusterBoundaries].sort((a, b) => a - b))
+      ? [...source.clusterBoundaries].sort((a, b) => a - b)
       : undefined;
-    return Object.freeze({
-      evidence: freezeEvidenceBlock(evidence),
+    return {
+      evidence,
       sourceId: source.sourceId,
       blockText: source.blockText,
-      sourceRange: Object.freeze([range[0], range[1]]) as readonly [number, number],
+      sourceRange: [range[0], range[1]] as readonly [number, number],
       ...(clusterBoundaries ? { clusterBoundaries } : {}),
-    });
+    };
   });
 
   if (sourceByEvidenceId.size !== frozen.length) throw new Error('Local evidence snapshot contains evidence not used in request');
@@ -124,7 +121,7 @@ export function resolveCitation(
 ): CitationResolution {
   const item = snapshot.get(citation.evidenceId);
   if (!item) {
-    return Object.freeze({ status: 'unresolved', evidenceId: citation.evidenceId, reason: 'unknown-evidence' });
+    return { status: 'unresolved', evidenceId: citation.evidenceId, reason: 'unknown-evidence' };
   }
 
   let range = item.sourceRange;
@@ -132,7 +129,7 @@ export function resolveCitation(
   if (citation.quote !== undefined) {
     const matches = findOccurrences(item.evidence.text, citation.quote);
     if (matches.length === 0) {
-      return Object.freeze({ status: 'unresolved', evidenceId: citation.evidenceId, reason: 'quote-not-found' });
+      return { status: 'unresolved', evidenceId: citation.evidenceId, reason: 'quote-not-found' };
     }
     if (matches.length === 1) {
       const start = matches[0];
@@ -149,7 +146,7 @@ export function resolveCitation(
           absoluteRange,
           item.clusterBoundaries ? new Set(item.clusterBoundaries) : undefined,
         );
-        range = Object.freeze(absoluteRange);
+        range = absoluteRange;
         match = 'quote';
       } catch {
         // 引文切开字形簇时只定位冻结证据块，不猜子范围。
@@ -157,16 +154,20 @@ export function resolveCitation(
     }
   }
 
-  const frozenLocation = freezeCitationLocation(item, range);
+  const frozenLocation: FrozenCitationLocation = {
+    docId: item.evidence.docId,
+    revision: item.evidence.revision,
+    pageId: item.evidence.pageId,
+    pageNumber: item.evidence.pageNumber,
+    blockId: item.evidence.blockId,
+    range: [range[0], range[1]],
+    ...(item.evidence.bounds ? { bounds: item.evidence.bounds } : {}),
+  };
   const isCurrent = currentDocument.id === snapshot.document.id &&
     currentDocument.revision === snapshot.document.revision;
-  const base = {
-    status: 'resolved' as const,
-    evidenceId: citation.evidenceId,
-    match,
-    frozenLocation,
-  };
-  return Object.freeze(isCurrent ? { ...base, currentLocation: frozenLocation } : base);
+  return isCurrent
+    ? { status: 'resolved', evidenceId: citation.evidenceId, match, frozenLocation, currentLocation: frozenLocation }
+    : { status: 'resolved', evidenceId: citation.evidenceId, match, frozenLocation };
 }
 
 function findOccurrences(text: string, quote: string): number[] {
@@ -180,36 +181,4 @@ function findOccurrences(text: string, quote: string): number[] {
     from = index + 1;
   }
   return matches;
-}
-
-function freezeEvidenceBlock(evidence: EvidenceBlock): Readonly<EvidenceBlock> {
-  const characterRange = evidence.characterRange
-    ? Object.freeze([evidence.characterRange[0], evidence.characterRange[1]]) as [number, number]
-    : undefined;
-  const bounds = evidence.bounds
-    ? Object.freeze([...evidence.bounds]) as [number, number, number, number]
-    : undefined;
-  return Object.freeze({
-    ...evidence,
-    ...(characterRange ? { characterRange } : {}),
-    ...(bounds ? { bounds } : {}),
-  });
-}
-
-function freezeCitationLocation(
-  item: FrozenEvidence,
-  range: readonly [number, number],
-): FrozenCitationLocation {
-  const bounds = item.evidence.bounds
-    ? Object.freeze([...item.evidence.bounds]) as readonly [number, number, number, number]
-    : undefined;
-  return Object.freeze({
-    docId: item.evidence.docId,
-    revision: item.evidence.revision,
-    pageId: item.evidence.pageId,
-    pageNumber: item.evidence.pageNumber,
-    blockId: item.evidence.blockId,
-    range: Object.freeze([range[0], range[1]]) as readonly [number, number],
-    ...(bounds ? { bounds } : {}),
-  });
 }
