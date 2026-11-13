@@ -139,9 +139,8 @@ export async function readCredential(config: GatewayConfig, credentialFile?: str
     try { credential = asRecord(JSON.parse(content), 'Credential'); }
     catch { throw new Error('Invalid credential JSON'); }
     if (typeof credential.api_key !== 'string' ||
-        (credential.base_url !== undefined && credential.base_url !== config.provider.baseUrl) ||
-        (credential.model !== undefined && credential.model !== config.provider.model)) {
-      throw new Error('Credential does not match current model configuration');
+        (credential.base_url !== undefined && credential.base_url !== config.provider.baseUrl)) {
+      throw new Error('Credential does not match current provider configuration');
     }
     value = credential.api_key.trim();
   }
