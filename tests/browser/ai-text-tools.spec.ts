@@ -30,7 +30,7 @@ async function runTranslation(page: Page) {
   await expect(panel.getByRole('textbox', { name: 'Original text on page 1' })).toHaveCount(0);
   await panel.getByRole('button', { name: 'View original', exact: true }).click();
   await expect(panel.getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue('Hello');
-  await expect(panel.getByRole('button', { name: 'Apply to PDF', exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Apply to PDF', exact: true })).toHaveCount(0);
   await expect(panel.getByRole('button', { name: 'Review layout', exact: true })).toHaveCount(0);
   return panel;
 }
@@ -96,20 +96,20 @@ test('translation can be saved as a comment without replacing the original text'
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
 });
 
-test('an editing draft keeps its selection and local undo through translation', async ({ page }) => {
+test('an editing draft keeps its selection and local undo through AI rewrite', async ({ page }) => {
   await mockTools(page, 'Draft result'); await page.goto('/editor/'); await openAiPdf(page);
   const before = await page.locator('.pdf-canvas').evaluate(node => (node as HTMLCanvasElement).toDataURL());
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
   await page.locator('.object-hitbox[data-object-type="text"]').first().dblclick();
   const input = page.getByRole('textbox', { name: 'Page text', exact: true });
   await input.fill('My unsaved draft'); await input.press('Control+A'); await input.click({ button: 'right', position: { x: 15, y: 8 } });
-  await page.getByRole('menuitem', { name: 'Translate', exact: true }).click(); const panel = await confirmTranslation(page);
+  await page.getByRole('menuitem', { name: 'Use AI', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'AI text tools', exact: true });
+  await panel.getByRole('textbox', { name: 'AI instruction', exact: true }).fill('Rewrite this draft.');
+  await panel.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('Draft result');
   await expect(input).toHaveText('My unsaved draft');
   expect(await page.locator('.pdf-canvas').evaluate(node => (node as HTMLCanvasElement).toDataURL())).toBe(before);
-  await panel.getByRole('button', { name: 'Expand window', exact: true }).click(); await panel.getByRole('button', { name: 'View original', exact: true }).click();
-  await expect(panel.getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue('My unsaved draft');
-  await panel.getByRole('button', { name: 'Reduce window', exact: true }).click();
   await panel.getByRole('button', { name: 'Apply to draft', exact: true }).click(); await expect(input).toHaveText('Draft result');
   await input.focus(); await input.press('Control+z'); await expect(input).toHaveText('My unsaved draft');
   expect(await page.locator('.pdf-canvas').evaluate(node => (node as HTMLCanvasElement).toDataURL())).toBe(before);
@@ -179,8 +179,10 @@ test('narrow-screen translation keeps controls and results inside the viewport',
   await page.screenshot({ path: 'tmp/browser/ai-text-tools-mobile-zh.png' });
 });
 
-test('a Chinese translation can use an embedded font and remain undoable', async ({ page }) => {
-  await mockTools(page); await page.goto('/editor/'); await openAiPdf(page); const panel = await runTranslation(page);
+test('a Chinese AI replacement can use an embedded font and remain undoable', async ({ page }) => {
+  await mockTools(page, '你好'); await page.goto('/editor/'); await openAiPdf(page);
+  const panel = await runAssist(page, 'Rewrite this in Chinese.');
+  await expect(panel.getByRole('textbox', { name: 'AI result on page 1' })).toHaveValue('你好');
   await panel.locator('.ai-layout-options > summary').click(); const fonts = panel.getByRole('combobox', { name: 'Font', exact: true });
   const id = await fonts.locator('option').evaluateAll(options => (options.find(option => /Noto Sans (CJK )?SC/.test(option.textContent ?? '')) as HTMLOptionElement | undefined)?.value);
   expect(id).toBeTruthy(); await fonts.selectOption(id!); await panel.getByRole('button', { name: 'Apply to PDF', exact: true }).click();

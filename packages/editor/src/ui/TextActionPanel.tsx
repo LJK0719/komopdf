@@ -216,16 +216,16 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
                   {showOriginal && <label><span>{t('Original text')} <small>{languageName(outcome.detectedLanguage)}</small></span>
                     <textarea readOnly dir="auto" aria-label={t('Original text on page {page}', { page: target.pageNumber })} value={unit.text} /></label>}
                   <label><span>{t('Translation')} <small>{languageName(outcome.targetLanguage)}</small></span>
-                    <textarea dir="auto" aria-label={t('AI result on page {page}', { page: target.pageNumber })} value={outcome.texts[unit.id] ?? ''} disabled={applying || applied}
+                    <textarea dir="auto" aria-label={t('AI result on page {page}', { page: target.pageNumber })} value={outcome.texts[unit.id] ?? ''}
                       onChange={event => updateText(unit.id, event.target.value)} /></label>
                 </div> : outcome.kind === 'answer' ? <AiMarkdown text={outcome.texts[unit.id] ?? ''} />
                   : <textarea aria-label={t('AI result on page {page}', { page: target.pageNumber })} rows={5} value={outcome.texts[unit.id] ?? ''} disabled={applying || applied} onChange={event => updateText(unit.id, event.target.value)} />}
                 {canReplace && !isTranslation && <details><summary>{t('Compare with original')}</summary><AiPanelDiff original={unit.text} suggested={outcome.texts[unit.id] ?? ''} showStats={false} /></details>}
-                {layout[unit.id] && layout[unit.id] !== 'Layout checked' && <><p className="task-error">{t(layout[unit.id]!)}</p>
+                {!isTranslation && layout[unit.id] && layout[unit.id] !== 'Layout checked' && <><p className="task-error">{t(layout[unit.id]!)}</p>
                   <button type="button" className="button" onClick={() => onAdjustSource(target)}>{t('Adjust text box')}</button></>}
               </article>;
             })}
-            {canReplace && canModify && !isDraft && !applied && <details className="ai-layout-options"><summary>{t('Layout options')}</summary>
+            {!isTranslation && canReplace && canModify && !isDraft && !applied && <details className="ai-layout-options"><summary>{t('Layout options')}</summary>
               <label>{t('Font')}<select value={fontId} disabled={applying} onChange={event => { setFontId(event.target.value); setLayout({}); }}><option value="">{t('Keep source font')}</option>{fonts.map(font => <option key={font.id} value={font.id}>{font.label ?? `${font.family} ${font.style}`}</option>)}</select></label>
               <label>{t('Font size')}<input type="number" min="1" max="1000" step="0.5" placeholder={t('Keep original')} value={fontSize} onChange={event => { setFontSize(event.target.value); setLayout({}); }} /></label>
             </details>}
@@ -236,7 +236,7 @@ export function TextActionPanel({ preferenceOwner, onCommentCreated, selection, 
           {!busy && !custom && !isTranslation && <button type="button" className="text-button" disabled={disabled} onClick={() => void run()}>{t(outcome ? 'Run again' : 'Try again')}</button>}
           {outcome && <><button type="button" className={isTranslation ? 'button button-primary' : 'button'} onClick={copyResult}><Copy size={16} />{t(isTranslation ? 'Copy translation' : 'Copy result')}</button>
             {document.permissions.annotate && document.capabilities.includes('annotation.add') && <button type="button" className="button" disabled={disabled || applying || !selectedTargets.length} onClick={() => void addNote()}><StickyNote size={16} />{t('Save as comment')}</button>}
-            {canReplace && canModify && <button type="button" className={isTranslation ? 'button' : 'button button-primary'} disabled={disabled || applying || applied || !selectedTargets.length || staleDraft}
+            {!isTranslation && canReplace && canModify && <button type="button" className="button button-primary" disabled={disabled || applying || applied || !selectedTargets.length || staleDraft}
               onClick={() => void apply()}><Check size={16} />{t(applied ? 'Applied' : applying ? 'Applying…' : isDraft ? 'Apply to draft' : 'Apply to PDF')}</button>}</>}
           <button type="button" className="button" onClick={discuss}><MessageSquare size={16} />{t('Continue in komo')}</button>
         </footer>

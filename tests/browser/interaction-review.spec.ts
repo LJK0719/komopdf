@@ -22,7 +22,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/editor/');
 });
 
-test('three selected paragraphs translate once, show one result, and replace as one undoable edit', async ({ page }) => {
+test('three selected paragraphs translate once, show one result, and keep original PDF unchanged', async ({ page }) => {
   const lines = ['First paragraph.', 'Second paragraph.', 'Third paragraph.'];
   await open(page, textPdf(lines.map((text, i) => `BT /F1 16 Tf 30 ${300 - i * 60} Td (${text}) Tj ET`).join('\n')));
   const requests: { segments: { text: string }[] }[] = [];
@@ -42,13 +42,8 @@ test('three selected paragraphs translate once, show one result, and replace as 
   expect(requests[0]!.segments[0]!.text).toBe(lines.join('\n'));
   await result.getByRole('button', { name: 'View original', exact: true }).click();
   await expect(result.getByRole('textbox', { name: 'Original text on page 1' })).toHaveValue(lines.join('\n'));
+  await expect(result.getByRole('button', { name: 'Apply to PDF', exact: true })).toHaveCount(0);
   await expect(page.locator('.save-state')).toHaveText('No changes');
-  await result.getByRole('button', { name: 'Apply to PDF', exact: true }).click();
-  await expect(page.locator('.pdf-text-layer')).toHaveText('One complete translation.');
-  await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
-  await expect(page.locator('.pdf-text-layer')).toHaveText(lines.join('\n\n'));
-  await expect(result.getByRole('button', { name: 'Apply to PDF', exact: true })).toBeEnabled();
-  await expect(result.getByText('Applied', { exact: true })).toHaveCount(0);
   await page.screenshot({ path: 'tmp/browser/review-continuous-translation.png' });
 });
 
