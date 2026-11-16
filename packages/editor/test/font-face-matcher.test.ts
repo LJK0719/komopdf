@@ -13,7 +13,7 @@ import {
   type EditorFont,
 } from '../src/ui/font-resources.js';
 import { packCommands, EDIT_COMMAND_STRIDE } from '../src/worker/abi3-commands.js';
-import { resolveFormattingFont, resolveSourceFont, sourceFontTraits } from '../src/ui/font-face-matcher.js';
+import { resolveFormattingFont, resolveSourceFont, resolveSourceInsertionFont, sourceFontTraits } from '../src/ui/font-face-matcher.js';
 
 const mockFonts: EditorFont[] = [
   { id: 'noto-sans-cjk-sc-regular', family: 'Noto Sans CJK SC', style: 'Regular', weight: 400, italic: false, format: 'otf' },
@@ -70,6 +70,26 @@ describe('font-face-matcher and font-resources', () => {
     expect(resolveSourceFont(mockFonts, { fontId: 'pdf:AAAAAA+SimSun' })).toBeUndefined();
     const newSong = { ...song, id: 'system-font-nsong', family: 'NSimSun', aliases: ['新宋体'] };
     expect(resolveSourceFont([song, newSong], { fontId: 'pdf:AAAAAA+NSimSun' })).toBe(newSong);
+  });
+  it('automatically supplies missing source digits without replacing the source font identity', () => {
+    const style = { fontId: 'pdf:ABCDEF+Helvetica-BoldOblique' };
+    expect(resolveSourceInsertionFont(mockFonts, style, '9')?.id).toBe('liberation-sans-bold-italic');
+    expect(style.fontId).toBe('pdf:ABCDEF+Helvetica-BoldOblique');
+    const original: EditorFont = { id: 'installed-original', family: 'Helvetica', style: 'Bold Oblique',
+      format: 'ttf', weight: 700, italic: true };
+    expect(resolveSourceInsertionFont([...mockFonts, original], style, '9')).toBe(original);
+    expect(resolveSourceInsertionFont([...mockFonts, { ...original, editableEmbedding: false }], style, '9')?.id)
+      .toBe('liberation-sans-bold-italic');
+    expect(resolveSourceInsertionFont([...mockFonts, { ...original, supported: false }], style, '9')?.id)
+      .toBe('liberation-sans-bold-italic');
+  });
+  it('uses script-compatible completion and preserves serif or monospace digits', () => {
+    const fonts: EditorFont[] = [...mockFonts,
+      { id: 'serif', family: 'Liberation Serif', style: 'Regular', format: 'ttf' },
+      { id: 'mono', family: 'Liberation Mono', style: 'Regular', format: 'ttf' }];
+    expect(resolveSourceInsertionFont(fonts, { fontId: 'pdf:ABCDEF+TimesNewRomanPSMT' }, '9')?.id).toBe('serif');
+    expect(resolveSourceInsertionFont(fonts, { fontId: 'pdf:ABCDEF+CourierNewPSMT' }, '9')?.id).toBe('mono');
+    expect(resolveSourceInsertionFont(fonts, { fontId: 'pdf:Helvetica' }, '新增')?.id).toBe('noto-sans-cjk-sc-regular');
   });
   it('does not rescan an unchanged source face on caret or color changes, but refreshes with a new catalog', () => {
     let reads = 0;

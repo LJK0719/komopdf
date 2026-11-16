@@ -9,7 +9,7 @@ import { CommandRegistry } from '@pdf-editor/commands';
 import type { CommitResult, DocumentInfo, EngineAdapter, PageModel, StyledTextRun, TextBlock, TextRange, TextStyle } from '@pdf-editor/contracts';
 import type { PageGeometry } from './draw-render.js';
 import { useFontResources, findSelectionFontInfo, loadFontPreview, prepareEditorFonts } from './font-resources.js';
-import { resolveSourceFont } from './font-face-matcher.js';
+import { resolveSourceFont, resolveSourceInsertionFont } from './font-face-matcher.js';
 import { selectionTextFrame } from './text-frame.js';
 import { selectionScope } from './object-selection.js';
 import { inlineTextClusters } from './inline-text-geometry.js';
@@ -189,8 +189,8 @@ export function DirectTextEditor(props: Props) {
           const change = textChange(original, text);
           let insertionOffset = 0;
           const sourceRun = baseline.runs.find(run => { insertionOffset += run.text.length; return insertionOffset > change.range[0]; }) ?? baseline.runs.at(-1);
-          const insertionFont = sourceRun ? resolveSourceFont(fonts, sourceRun.style) : undefined;
-          const fallbackFont = insertionFont?.editableEmbedding !== false ? insertionFont?.id : undefined;
+          const fallbackFont = block.isParagraph && change.text
+            ? resolveSourceInsertionFont(fonts, sourceRun?.style ?? {}, change.text)?.id : undefined;
           if (virtual && text.length) {
             const id = crypto.randomUUID(); target = id + ':text'; convertedId = id;
             // Materialize source glyphs before changing text or a local style.

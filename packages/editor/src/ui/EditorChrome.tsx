@@ -86,7 +86,8 @@ export function EditorTopbar({ productName = 'komopdf', name, dirty, busy, canUn
       {t(saving ? 'Saving…' : downloaded ? 'Download started' : dirty ? 'Unsaved changes' : hasSaveTarget ? 'Saved' : 'No changes')}
     </span>}</div>
     <div className="topbar-actions">
-      {name && <button className="button button-primary save-document-button" type="button" onClick={onSave} disabled={blocked} aria-label={t(saving ? 'Saving…' : saveLabel)} title={t(saveLabel)}>
+      {/* Save owns draft completion; focus must not commit and disable this button before its click. */}
+      {name && <button className="button button-primary save-document-button ai-owned-focus" type="button" onClick={onSave} disabled={blocked} aria-label={t(saving ? 'Saving…' : saveLabel)} title={t(saveLabel)}>
         {web ? <ArrowDownToLine size={16} /> : <Save size={16} />}<span>{t(saving ? 'Saving…' : saveLabel)}</span>
       </button>}
       {showAi && <button className={`button assistant-button ${tool === 'ai' ? 'is-active' : ''}`} aria-label={t('Ask komo')} aria-pressed={tool === 'ai'} type="button" onClick={() => onTool('ai')}><Sparkles size={16} /><span translate="no">komo</span></button>}

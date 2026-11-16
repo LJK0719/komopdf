@@ -272,6 +272,17 @@ function matchSourceFont(fonts: readonly EditorFont[], style: TextStyle): Editor
     .sort((a, b) => Math.abs(getFontWeight(a) - weight) - Math.abs(getFontWeight(b) - weight))[0];
 }
 
+/** Supply a full face for new glyphs; the core still keeps every encodable source glyph. */
+export function resolveSourceInsertionFont(fonts: readonly EditorFont[], style: TextStyle, text: string): EditorFont | undefined {
+  const available = fonts.filter(font => font.supported !== false && isFontEmbeddable(font));
+  if (!available.length) return;
+  const source = resolveSourceFont(available, style);
+  const family = source?.family ?? sourceFontFamily(style.fontId?.replace(/^pdf:/, '') ?? 'Liberation Sans');
+  const traits = source && !style.fontId?.startsWith('pdf:')
+    ? { weight: getFontWeight(source), italic: getFontItalic(source) } : sourceFontTraits(style);
+  return resolveFormattingFont(available, { family, ...traits, text });
+}
+
 /** Resolve the user's style intent, with script-safe family substitution when needed. */
 export function resolveFormattingFont(fonts: readonly EditorFont[], criteria: FontFaceCriteria & { text: string }): EditorFont {
   if (!fonts.length) throw new Error('Font library is still loading.');

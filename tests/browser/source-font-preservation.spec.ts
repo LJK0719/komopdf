@@ -11,11 +11,13 @@ async function open(page: import('@playwright/test').Page, bytes: Buffer) {
   await page.getByRole('navigation', { name: 'PDF tools' }).getByRole('button', { name: 'Edit', exact: true }).click();
 }
 
-function fixture(): Buffer {
-  const content = 'BT /F1 18 Tf 0.8 Tc 1 0 0 1 40 240 Tm (Original text) Tj ET';
+function fixture(digitsOnly = false): Buffer {
+  const content = `BT /F1 18 Tf 0.8 Tc 1 0 0 1 40 240 Tm ${digitsOnly ? '<01020102>' : '(Original text)'} Tj ET`;
+  // A source encoding with only 1 and 2 reproduces a subset missing the new digit.
+  const encoding = digitsOnly ? `/Encoding << /Type /Encoding /Differences [0 /.notdef /one /two ${Array(253).fill('/.notdef').join(' ')}] >>` : '';
   const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
-    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`, `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica ${encoding} >>`];
   let pdf = '%PDF-1.7\n'; const offsets = [0];
   objects.forEach((object, index) => { offsets.push(Buffer.byteLength(pdf)); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
   const xref = Buffer.byteLength(pdf);
@@ -42,7 +44,7 @@ test('text selection has one painted frame and entering edit leaves the PDF unto
   expect(await canvas.evaluate(node => (node as HTMLCanvasElement).toDataURL())).toBe(original);
   await input.press('Control+Enter');
   await expect(input).toHaveCount(0);
-  await expect(page.locator('.save-state')).toHaveText('Saved');
+  await expect(page.locator('.save-state')).toHaveText('No changes');
   await expect(page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true })).toBeDisabled();
   await hitbox.dblclick({ position: { x: 12, y: 6 } });
   await input.press('End');
@@ -58,6 +60,42 @@ test('text selection has one painted frame and entering edit leaves the PDF unto
   await open(page, saved);
   await page.locator('[data-object-type="text"]').first().dblclick({ position: { x: 12, y: 6 } });
   await expect(input).toHaveText('Original text added');
+});
+
+test('replacing a digit missing from the source font saves and reopens without choosing a font', async ({ page }, testInfo) => {
+  await open(page, fixture(true));
+  const hitbox = page.locator('[data-object-type="text"]').first();
+  const input = page.getByRole('textbox', { name: 'Page text', exact: true });
+  await hitbox.dblclick({ position: { x: 12, y: 6 } });
+  await expect(input).toHaveText('1212');
+  await input.press('End');
+  await input.press('Backspace');
+  await input.pressSequentially('9');
+  // Saving must also commit the active inline draft.
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download PDF', exact: true }).click();
+  await expect(input).toHaveCount(0);
+  await expect(page.locator('.property-error')).toHaveCount(0);
+  const saved = await readFile((await (await download).path())!);
+  expect(saved.toString('latin1')).toContain('/Helvetica');
+  await open(page, saved);
+  await hitbox.dblclick({ position: { x: 12, y: 6 } });
+  await expect(input).toHaveText('1219');
+  const sourceIds = await input.locator('span').evaluateAll(nodes => nodes.map(node => (node as HTMLElement).style.getPropertyValue('--pdf-font-id')));
+  expect(sourceIds.some(id => id.includes('pdf:Helvetica'))).toBe(true);
+  expect(sourceIds.some(id => id.includes('liberation-sans') || id.includes('arimo'))).toBe(true);
+  await input.press('Escape');
+  await page.screenshot({ path: testInfo.outputPath('saved-digit.png') });
+  await hitbox.dblclick({ position: { x: 12, y: 6 } });
+  await input.press('End');
+  await input.press('Backspace');
+  await input.pressSequentially('8');
+  await input.press('Control+Enter');
+  await expect(input).toHaveCount(0);
+  await expect(page.locator('.property-error')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Undo (Ctrl Z)', exact: true }).click();
+  await hitbox.dblclick({ position: { x: 12, y: 6 } });
+  await expect(input).toHaveText('1219');
 });
 
 async function importSong(page: import('@playwright/test').Page) {

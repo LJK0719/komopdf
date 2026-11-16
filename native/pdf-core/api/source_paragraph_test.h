@@ -323,7 +323,7 @@ void TestSubsetSourceParagraphEdit(const std::string& path) {
   const auto seed = pde_open_memory(reinterpret_cast<const uint8_t*>(empty.data()), empty.size(), "subset-seed", "synthetic-empty", nullptr);
   const auto seed_page = PageIdFromDescription(pde_describe_page(seed, 0));
   PdeEditCommand insert{}; insert.type = 3; insert.page_id = seed_page.c_str(); insert.target_id = "subset-origin";
-  insert.text_utf8 = "AB BA"; insert.font_id = "source-completion"; insert.flags = 3 | 1024;
+  insert.text_utf8 = "12 21"; insert.font_id = "source-completion"; insert.flags = 3 | 1024;
   insert.values[0] = 20; insert.values[1] = 20; insert.values[2] = 200; insert.values[3] = 90; insert.values[4] = 18;
   Require(pde_apply_commands(seed, 0, "make-subset", &insert, 1) != nullptr && pde_save_memory(seed) != nullptr, "make a non-sensitive embedded subset");
   std::vector<uint8_t> seed_bytes(pde_binary_data(), pde_binary_data() + pde_binary_size());
@@ -333,8 +333,8 @@ void TestSubsetSourceParagraphEdit(const std::string& path) {
   auto metadata = paragraph->GetMutableDict()->GetMutableDictFor("KomoParagraph");
   metadata->SetNewFor<CPDF_Boolean>("SourceFont", true);
   auto* source_font = paragraph->GetPageObjectByIndex(0)->AsText()->GetFont().Get();
-  Require(source_font->UnicodeFromCharCode(source_font->CharCodeFromUnicode(L'Z')) != L"Z",
-      "synthetic subset really lacks the added Unicode character");
+  Require(source_font->UnicodeFromCharCode(source_font->CharCodeFromUnicode(L'9')) != L"9",
+      "synthetic subset really lacks the replacement digit");
   const uint32_t original_font = source_font->GetFontDictObjNum();
   SourceFixtureWriter writer; Require(FPDF_SaveAsCopy(external, &writer, 0), "save source-font subset fixture");
   FPDF_ClosePage(external_page); FPDF_CloseDocument(external); pde_close(seed);
@@ -342,13 +342,13 @@ void TestSubsetSourceParagraphEdit(const std::string& path) {
   const auto page = PageIdFromDescription(pde_describe_page(doc, 0));
   const auto block = TextBlockIds(pde_describe_page(doc, 0)).front();
   PdeEditCommand replace{}; replace.type = 1; replace.page_id = page.c_str(); replace.target_id = block.c_str();
-  replace.start_utf16 = 0; replace.end_utf16 = 5; replace.text_utf8 = "AB BAZ"; replace.flags = 65536;
+  replace.start_utf16 = 4; replace.end_utf16 = 5; replace.text_utf8 = "9"; replace.flags = 65536;
   const auto before = RequireResult(pde_describe_page(doc, 0), "describe subset before edit");
   Require(pde_preview_commands(doc, 0, &replace, 1) == nullptr && std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
-      std::string(pde_describe_page(doc, 0)) == before, "missing subset glyph fails atomically rather than defaulting to Noto");
+      std::string(pde_describe_page(doc, 0)) == before, "an unprepared completion font fails without changing the document");
   replace.font_id = "source-completion";
   Require(pde_apply_commands(doc, 0, "subset-complete", &replace, 1) != nullptr && pde_save_memory(doc) != nullptr,
-      "only missing added glyph uses the registered same-family full font");
+      "only the missing replacement digit uses the registered full font");
   std::vector<uint8_t> completed(pde_binary_data(), pde_binary_data() + pde_binary_size());
   external = FPDF_LoadMemDocument64(completed.data(), completed.size(), nullptr); external_page = FPDF_LoadPage(external, 0);
   paragraph = CPDFPageObjectFromFPDFPageObject(FPDFPage_GetObject(external_page, 0))->AsForm()->form();
@@ -356,16 +356,16 @@ void TestSubsetSourceParagraphEdit(const std::string& path) {
   for (const auto& child : *paragraph) {
     auto* text = child->AsText(); if (!text) continue;
     const auto unicode = text->GetFont()->UnicodeFromCharCode(text->GetCharCode(0)).ToUTF8();
-    if (unicode == "Z") { ++added; Require(text->GetFont()->GetFontDictObjNum() != original_font, "added glyph has a separate completion resource"); }
+    if (unicode == "9") { ++added; Require(text->GetFont()->GetFontDictObjNum() != original_font, "replacement digit has a separate completion resource"); }
     else { ++unchanged; Require(text->GetFont()->GetFontDictObjNum() == original_font, "all unchanged subset glyphs keep the original font resource"); }
   }
-  Require(unchanged == 5 && added == 1, "subset completion never rewrites the old full text with the supplied font");
+  Require(unchanged == 4 && added == 1, "replacing one digit never rewrites the unchanged text with the supplied font");
   FPDF_ClosePage(external_page); FPDF_CloseDocument(external);
   const auto reopened = pde_open_memory(completed.data(), completed.size(), "subset-reopen", "subset-completed", nullptr);
   const auto reopened_page = PageIdFromDescription(pde_describe_page(reopened, 0));
   const auto reopened_block = TextBlockIds(pde_describe_page(reopened, 0)).front();
-  replace.page_id = reopened_page.c_str(); replace.target_id = reopened_block.c_str(); replace.start_utf16 = 6; replace.end_utf16 = 6;
-  replace.text_utf8 = "Z\nAB"; replace.font_id = nullptr;
+  replace.page_id = reopened_page.c_str(); replace.target_id = reopened_block.c_str(); replace.start_utf16 = 5; replace.end_utf16 = 5;
+  replace.text_utf8 = "9\n12"; replace.font_id = nullptr;
   Require(pde_apply_commands(reopened, 0, "subset-continue", &replace, 1) != nullptr,
       "reopened mixed source and completion paragraph continues in its last source font");
   Require(pde_undo(doc) != nullptr && pde_redo(doc) != nullptr, "subset completion remains one undoable transaction");
@@ -385,8 +385,8 @@ void TestSubsetSourceParagraphEdit(const std::string& path) {
   replace = {}; replace.type = 1; replace.page_id = explicit_page.c_str(); replace.target_id = explicit_block.c_str();
   replace.start_utf16 = 2; replace.end_utf16 = 2; replace.text_utf8 = "\xC4\x80"; replace.font_id = "source-completion"; replace.flags = 65536;
   const auto explicit_before = RequireResult(pde_describe_page(explicit_doc, 0), "describe source before mismatched supplement");
-  Require(pde_preview_commands(explicit_doc, 1, &replace, 1) == nullptr && std::string(pde_error_code()) == "UNSUPPORTED_CAPABILITY" &&
-      std::string(pde_describe_page(explicit_doc, 0)) == explicit_before, "preserveSource rejects a different-family supplement atomically");
+  Require(pde_preview_commands(explicit_doc, 1, &replace, 1) != nullptr &&
+      std::string(pde_describe_page(explicit_doc, 0)) == explicit_before, "preserveSource accepts a compatible different-family supplement without mutating the source");
   replace.flags = 0;
   Require(pde_apply_commands(explicit_doc, 1, "explicit-different-family-insertion", &replace, 1) != nullptr,
       "fontId without preserveSource retains explicit different-font insertion semantics");

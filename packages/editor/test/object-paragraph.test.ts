@@ -176,7 +176,8 @@ describe('paragraph selection and source-preserving formatting', () => {
       { id: 'imported', family: 'Liberation Sans', style: 'Regular', weight: 400, italic: false, format: 'ttf' as const }];
     const source = { id: 'helvetica-bold-italic', family: 'Helvetica', style: 'Bold Oblique', weight: 700, italic: true, format: 'ttf' as const };
     expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'pdf:Helvetica-BoldOblique' }, sourceObjectIds: [] }, [...fonts, source])).toBe(source.id);
-    expect(() => resolveParagraphRunFont({ text: 'word', style: { fontId: 'pdf:Helvetica-BoldOblique' }, sourceObjectIds: [] }, fonts)).toThrow(/original font is unavailable/);
+    expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'pdf:Helvetica-BoldOblique' }, sourceObjectIds: [] }, fonts)).toBe('bold-italic');
+    expect(resolveParagraphRunFont({ text: '8', style: { fontId: 'pdf:Helvetica' }, sourceObjectIds: [] }, fonts)).toBe('regular');
     expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'imported' }, sourceObjectIds: [] }, fonts)).toBe('imported');
     expect(resolveParagraphRunFont({ text: 'word', style: { fontId: 'bold-italic', weight: 350, italic: false }, sourceObjectIds: [] }, fonts)).toBe('bold-italic');
     const formatted = applyParagraphFormats([{ text: 'word', style: { fontId: 'imported', weight: 350, italic: false, characterSpacing: 2 }, sourceObjectIds: [] }],

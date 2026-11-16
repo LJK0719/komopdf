@@ -164,15 +164,6 @@ bool CompleteSourceParagraphFonts(pdf_editor::ParagraphRequest* request,
       request->font_size, request->letter_spacing, request->color, request->underline});
   std::vector<pdf_editor::ParagraphStyleRun> updated;
   std::optional<uint32_t> completion;
-  struct SourceFace { std::string family; bool bold; bool italic; };
-  std::map<CPDF_Font*, SourceFace> source_faces;
-  auto normalize = [](std::string value) {
-    if (value.size() > 7 && value[6] == '+') value.erase(0, 7);
-    std::string result;
-    for (unsigned char c : value) if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
-      result += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 'a' - 'A' : c);
-    return result;
-  };
   for (const auto& run : request->styles) {
     auto* source = (*fonts)[run.font_index]->source_font;
     if (!source || run.range.end <= start || run.range.start >= end) { updated.push_back(run); continue; }
@@ -184,25 +175,11 @@ bool CompleteSourceParagraphFonts(pdf_editor::ParagraphRequest* request,
       const auto value = request->utf8.substr(text.byte_offsets[cursor], text.byte_offsets[next] - text.byte_offsets[cursor]);
       if (cursor >= start && next <= end && text.utf16[cursor] != u'\n' && text.utf16[cursor] != u'\r' && !FontCanEncode(source, value)) {
         if (selected == resources.end()) {
-          SetError("UNSUPPORTED_CAPABILITY", "The original PDF font cannot encode this character; choose the matching font for the added text."); return false;
+          SetError("UNSUPPORTED_CAPABILITY", "No usable font is available for the added text."); return false;
         }
-        auto known = source_faces.find(source);
-        if (known == source_faces.end()) {
-          const auto family = source->GetFont()->GetFamilyName();
-          SourceFace source_face{std::string(family.c_str(), family.GetLength()), source->GetFont()->IsBold(), source->GetFont()->IsItalic()};
-          const auto bytes = source->GetFont()->GetFontSpan();
-          std::vector<pdf_editor::FontFaceInfo> embedded;
-          std::string error_code, error_message;
-          // PDF stem estimates/FreeType flags may disagree with a static face's OS/2 style.
-          if (pdf_editor::InspectFontFaces(std::span<const uint8_t>(bytes.data(), bytes.size()), &embedded, &error_code, &error_message) && embedded.size() == 1)
-            source_face = {embedded[0].family, embedded[0].weight >= 600, embedded[0].italic};
-          known = source_faces.emplace(source, std::move(source_face)).first;
-        }
-        const auto& face = selected->second->face;
-        if (normalize(known->second.family) != normalize(face.family) ||
-            known->second.italic != face.italic || known->second.bold != (face.weight >= 600)) {
-          SetError("UNSUPPORTED_CAPABILITY", "Source-preserving text edits require the exact matching font family and style."); return false;
-        }
+        // The caller prefers the original family and supplies a compatible face
+        // when it is unavailable. Substitute only missing new glyphs, never the
+        // unchanged source text or characters the source font can still encode.
         if (!completion) {
           completion = static_cast<uint32_t>(fonts->size()); fonts->push_back(selected->second);
         }
